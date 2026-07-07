@@ -117,6 +117,11 @@ instance intoWand_persistently_false (q : Bool) [BI PROP] (R P Q : PROP) [Absorb
 @[rocq_alias from_forall_forall]
 instance fromForall_forall [BI PROP] (Φ : α → PROP) : FromForall (BIBase.forall Φ) Φ := ⟨.rfl⟩
 
+@[rocq_alias from_forall_tforall]
+instance fromForall_biTforall [BI PROP] {TT : Tele} (Φ : TT → PROP) :
+    FromForall (biTforall Φ) Φ where
+  from_forall := (biTforall_forall Φ).2
+
 @[rocq_alias from_forall_pure]
 instance fromForall_pure [BI PROP] (Φ : α → Prop) :
   FromForall (PROP:=PROP) iprop(⌜∀ a, Φ a⌝) (λ a => iprop(⌜Φ a⌝)) :=
@@ -158,6 +163,11 @@ instance fromForall_persistently [BI PROP] [BIPersistentlyForall PROP] {A} P (Φ
 @[rocq_alias into_forall_forall]
 instance intoForall_forall [BI PROP] (Φ : α → PROP) : IntoForall iprop(∀ a, Φ a) Φ := ⟨.rfl⟩
 
+@[rocq_alias into_forall_tforall]
+instance intoForall_biTforall [BI PROP] {TT : Tele} (Φ : TT → PROP) :
+    IntoForall (biTforall Φ) Φ where
+  into_forall := (biTforall_forall Φ).1
+
 @[rocq_alias into_forall_affinely]
 instance intoForall_affinely [BI PROP] (P : PROP) (Φ : α → PROP) [h : IntoForall P Φ] :
     IntoForall iprop(<affine> P) (fun a => iprop(<affine> (Φ a))) where
@@ -184,6 +194,11 @@ instance intoForall_wand_pure [BI PROP] (P Q : PROP) Φ
 -- FromExists
 instance (priority := default + 10) fromExists_exists [BI PROP] (Φ : α → PROP) :
     FromExists iprop(∃ a, Φ a) Φ := ⟨.rfl⟩
+
+@[rocq_alias from_exist_texist]
+instance fromExists_biTexist [BI PROP] {TT : Tele} (Φ : TT → PROP) :
+    FromExists (biTexist Φ) Φ where
+  from_exists := (biTexist_exist Φ).2
 
 @[rocq_alias from_exist_pure]
 instance fromExists_pure (φ : α → Prop) [BI PROP] :
@@ -213,6 +228,11 @@ instance fromExists_persistently [BI PROP] (P : PROP) (Φ : α → PROP) [h : Fr
 -- IntoExists
 @[rocq_alias into_exist_exist]
 instance intoExists_exists [BI PROP] (Φ : α → PROP) : IntoExists (BI.exists Φ) Φ := ⟨.rfl⟩
+
+@[rocq_alias into_exist_texist]
+instance intoExists_biTexist [BI PROP] {TT : Tele} (Φ : TT → PROP) :
+    IntoExists (biTexist Φ) Φ where
+  into_exists := (biTexist_exist Φ).1
 
 @[rocq_alias into_exist_pure]
 instance intoExists_pure (φ : α → Prop) [BI PROP] :
