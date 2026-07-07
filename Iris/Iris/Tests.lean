@@ -8,3 +8,4 @@ public import Iris.Tests.Tactics
 public import Iris.Tests.HeapLang
 public import Iris.Tests.Language
 public import Iris.Tests.WeakestPre
+public import Iris.Tests.Atomic
