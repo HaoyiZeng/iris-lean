@@ -222,6 +222,14 @@ theorem Arr.insert_ids_mem (σ : Arr) (id : Nat) (x : Int) (hmem : id ∈ σ.cel
       refine ⟨p, hp, ?_⟩
       unfold Arr.insertBody; by_cases hc : p.1 = id <;> simp [hc]
 
+theorem Arr.insert_counter (σ : Arr) (id : Nat) (x : Int) (hmem : id ∈ σ.cells.map (·.1)) :
+    (σ.insert id x).counter = σ.counter + 1 := by
+  unfold Arr.insert
+  have hany : σ.cells.any (·.1 = id) = true := by
+    obtain ⟨p, hp, hpid⟩ := List.mem_map.mp hmem
+    rw [List.any_eq_true]; exact ⟨p, hp, by simp [hpid]⟩
+  rw [if_pos hany]
+
 def Arr.init_wellFormed (x : Int) : Arr.wellFormed <| Arr.init x := {
   idUqi := by simp [Arr.init, Arr.idUqi]
   counterFresh := by simp [Arr.init]
@@ -326,7 +334,7 @@ abbrev ArrStateRF : COFE.OFunctorPre :=
   constOF (ExclAuth.ExclAuthR (A := LeibnizO Arr))
 
 class ArrG (GF : BundledGFunctors) (H': outParam <| Type → Type) [LawfulFiniteMap H' Nat] where
-  [dmapG : GhostMapG GF Nat (Loc × Int × Option Nat) H']
+  [dmapG : GhostMapG GF Nat (Loc × Int × Option Nat × Bool) H']
   [rootG : ElemG GF ArrNameRF]
   [stateG : ElemG GF ArrStateRF]
 
@@ -343,68 +351,68 @@ abbrev q4 : Qp := Qp.half (Qp.half 1)
 theorem q4_add_q4 : q4 + q4 = q2 := Qp.half_add_half _
 theorem q2_add_q2 : q2 + q2 = 1 := Qp.half_add_half _
 
--- ===== the single id-keyed node map  (Nat → (Loc × Int × Option Nat)) =====
+-- ===== the single id-keyed node map  (Nat → (Loc × Int × Option Nat × Bool)) =====
 -- `dataPointsto γ id loc val succ π` : node with logical `id` lives at physical `loc`,
 -- currently holds `val` and points to successor `succ`.  Fractionally split:
 --   lock 1/2  +  contents 1/4  +  idRecord 1/4  (the "live token").
-def dataMap (γ : GName) (m : H' (Loc × Int × Option Nat)) : IProp GF := γ ↪●MAP m
-def dataPointsto (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (π : DFrac) : IProp GF :=
-  γ ↪◯MAP[id]{π} (loc, v, sl)
+def dataMap (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) : IProp GF := γ ↪●MAP m
+def dataPointsto (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) (π : DFrac) : IProp GF :=
+  γ ↪◯MAP[id]{π} (loc, v, sl, al)
 
-theorem dataMap_alloc : ⊢@{IProp GF} |==> ∃ γ, dataMap γ (∅ : H' (Loc × Int × Option Nat)) := by
+theorem dataMap_alloc : ⊢@{IProp GF} |==> ∃ γ, dataMap γ (∅ : H' (Loc × Int × Option Nat × Bool)) := by
   unfold dataMap; iapply ghost_map_alloc_empty
-theorem dataMap_lookup (γ : GName) (m : H' (Loc × Int × Option Nat)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (π : DFrac) :
-    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl π -∗ ⌜get? m id = some (loc, v, sl)⌝ := by
+theorem dataMap_lookup (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) (π : DFrac) :
+    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl al π -∗ ⌜get? m id = some (loc, v, sl, al)⌝ := by
   unfold dataMap dataPointsto; iapply ghost_map_lookup
-theorem dataPointsto_agree (γ : GName) (id : Nat) (l1 l2 : Loc) (v1 v2 : Int) (s1 s2 : Option Nat) (π1 π2 : DFrac) :
-    ⊢@{IProp GF} dataPointsto γ id l1 v1 s1 π1 -∗ dataPointsto γ id l2 v2 s2 π2 -∗ ⌜l1 = l2 ∧ v1 = v2 ∧ s1 = s2⌝ := by
+theorem dataPointsto_agree (γ : GName) (id : Nat) (l1 l2 : Loc) (v1 v2 : Int) (s1 s2 : Option Nat) (a1 a2 : Bool) (π1 π2 : DFrac) :
+    ⊢@{IProp GF} dataPointsto γ id l1 v1 s1 a1 π1 -∗ dataPointsto γ id l2 v2 s2 a2 π2 -∗ ⌜l1 = l2 ∧ v1 = v2 ∧ s1 = s2 ∧ a1 = a2⌝ := by
   unfold dataPointsto
   iintro H1 H2
   icases ghost_map_elem_agree $$ [$H1 $H2] with %Heq
-  ipureintro; injection Heq with h1 h; injection h with h2 h3; exact ⟨h1, h2, h3⟩
-theorem dataMap_insert (γ : GName) (m : H' (Loc × Int × Option Nat)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat)
+  ipureintro; injection Heq with h1 h; injection h with h2 h; injection h with h3 h4; exact ⟨h1, h2, h3, h4⟩
+theorem dataMap_insert (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool)
     (Hfresh : get? m id = none) :
-    ⊢@{IProp GF} dataMap γ m ==∗ dataMap γ (insert m id (loc, v, sl)) ∗ dataPointsto γ id loc v sl (.own 1) := by
-  unfold dataMap dataPointsto; iapply (ghost_map_insert id (loc, v, sl) Hfresh)
-theorem dataMap_update (γ : GName) (m : H' (Loc × Int × Option Nat)) (id : Nat) (loc : Loc) (v : Int) (sl sl' : Option Nat) :
-    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl (.own 1) ==∗
-      dataMap γ (insert m id (loc, v, sl')) ∗ dataPointsto γ id loc v sl' (.own 1) := by
-  unfold dataMap dataPointsto; iapply (ghost_map_update (loc, v, sl'))
-theorem dataMap_delete (γ : GName) (m : H' (Loc × Int × Option Nat)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) :
-    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl (.own 1) ==∗ dataMap γ (delete m id) := by
-  unfold dataMap dataPointsto; iapply (ghost_map_delete id (loc, v, sl))
-instance (γ : GName) (m : H' (Loc × Int × Option Nat)) : Timeless (PROP := IProp GF) (dataMap γ m) := by
+    ⊢@{IProp GF} dataMap γ m ==∗ dataMap γ (insert m id (loc, v, sl, al)) ∗ dataPointsto γ id loc v sl al (.own 1) := by
+  unfold dataMap dataPointsto; iapply (ghost_map_insert id (loc, v, sl, al) Hfresh)
+theorem dataMap_update (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) (id : Nat) (loc : Loc) (v : Int) (sl sl' : Option Nat) (al al' : Bool) :
+    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl al (.own 1) ==∗
+      dataMap γ (insert m id (loc, v, sl', al')) ∗ dataPointsto γ id loc v sl' al' (.own 1) := by
+  unfold dataMap dataPointsto; iapply (ghost_map_update (loc, v, sl', al'))
+theorem dataMap_delete (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) :
+    ⊢@{IProp GF} dataMap γ m -∗ dataPointsto γ id loc v sl al (.own 1) ==∗ dataMap γ (delete m id) := by
+  unfold dataMap dataPointsto; iapply (ghost_map_delete id (loc, v, sl, al))
+instance (γ : GName) (m : H' (Loc × Int × Option Nat × Bool)) : Timeless (PROP := IProp GF) (dataMap γ m) := by
   unfold dataMap; infer_instance
-instance (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (π : DFrac) : Timeless (PROP := IProp GF) (dataPointsto γ id loc v sl π) := by
+instance (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) (π : DFrac) : Timeless (PROP := IProp GF) (dataPointsto γ id loc v sl al π) := by
   unfold dataPointsto; infer_instance
 
 /-- fractional structure: split/combine a full node fragment along `q1 + q2`. -/
-theorem dataPointsto_frac (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (p q : Qp) :
-    (dataPointsto γ id loc v sl (.own (p + q)) : IProp GF) ⊣⊢
-      dataPointsto γ id loc v sl (.own p) ∗ dataPointsto γ id loc v sl (.own q) :=
-  (@ghost_map_elem_fractional GF Nat (Loc × Int × Option Nat) H' _ _ γ id (loc, v, sl)).fractional p q
+theorem dataPointsto_frac (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) (p q : Qp) :
+    (dataPointsto γ id loc v sl al (.own (p + q)) : IProp GF) ⊣⊢
+      dataPointsto γ id loc v sl al (.own p) ∗ dataPointsto γ id loc v sl al (.own q) :=
+  (@ghost_map_elem_fractional GF Nat (Loc × Int × Option Nat × Bool) H' _ _ γ id (loc, v, sl, al)).fractional p q
 
 theorem one_eq_q2_q4_q4 : (1 : Qp) = q2 + (q4 + q4) := by rw [q4_add_q4, q2_add_q2]
 
 /-- Split a full node share into lock 1/2 + contents 1/4 + record 1/4. -/
-theorem data_split3 (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) :
-    (dataPointsto γ id loc v sl (.own 1) : IProp GF) ⊢
-      dataPointsto γ id loc v sl (.own q2) ∗ dataPointsto γ id loc v sl (.own q4) ∗ dataPointsto γ id loc v sl (.own q4) := by
+theorem data_split3 (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) :
+    (dataPointsto γ id loc v sl al (.own 1) : IProp GF) ⊢
+      dataPointsto γ id loc v sl al (.own q2) ∗ dataPointsto γ id loc v sl al (.own q4) ∗ dataPointsto γ id loc v sl al (.own q4) := by
   rw [one_eq_q2_q4_q4]
   iintro H
-  icases (dataPointsto_frac γ id loc v sl q2 (q4 + q4)).mp $$ H with ⟨H1, H2⟩
-  icases (dataPointsto_frac γ id loc v sl q4 q4).mp $$ H2 with ⟨H3, H4⟩
+  icases (dataPointsto_frac γ id loc v sl al q2 (q4 + q4)).mp $$ H with ⟨H1, H2⟩
+  icases (dataPointsto_frac γ id loc v sl al q4 q4).mp $$ H2 with ⟨H3, H4⟩
   iframe H1 H3 H4
 
 /-- Combine lock 1/2 + contents 1/4 + record 1/4 (same value) into a full node share. -/
-theorem data_combine3 (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) :
-    (dataPointsto γ id loc v sl (.own q2) ∗ dataPointsto γ id loc v sl (.own q4) ∗ dataPointsto γ id loc v sl (.own q4) : IProp GF) ⊢
-      dataPointsto γ id loc v sl (.own 1) := by
+theorem data_combine3 (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option Nat) (al : Bool) :
+    (dataPointsto γ id loc v sl al (.own q2) ∗ dataPointsto γ id loc v sl al (.own q4) ∗ dataPointsto γ id loc v sl al (.own q4) : IProp GF) ⊢
+      dataPointsto γ id loc v sl al (.own 1) := by
   rw [one_eq_q2_q4_q4]
   iintro ⟨H1, H3, H4⟩
-  iapply (dataPointsto_frac γ id loc v sl q2 (q4 + q4)).mpr
+  iapply (dataPointsto_frac γ id loc v sl al q2 (q4 + q4)).mpr
   iframe H1
-  iapply (dataPointsto_frac γ id loc v sl q4 q4).mpr
+  iapply (dataPointsto_frac γ id loc v sl al q4 q4).mpr
   iframe H3 H4
 
 
@@ -465,13 +473,13 @@ variable [HeapLangGS hlc GF] [SpinLockG GF] [ArrG GF H']
 def isArrLockINV_pre (Ψ : GName → Nat → Val → IProp GF) (γL : GName) (id : Nat) (node : Val) : IProp GF := iprop%
   ∃ (lk : Val) (γlock : GName) (ptr : Loc), ⌜node = hl_val((&lk, #ptr))⌝ ∗
     SpinLock.isLock γlock lk iprop(
-      ∃ (x : Int) (nlk : Val),
-        ((dataPointsto γL id ptr x none (DFrac.own q2)) ∗
+      ∃ (x : Int) (nlk : Val) (al : Bool),
+        ((dataPointsto γL id ptr x none al (DFrac.own q2)) ∗
           ptr ↦ hl_val((#x, none()))
           ∨
         (∃ (nid : Nat) (loc : Loc), Ψ γL nid hl_val((&nlk, #loc)) ∗
           ptr ↦ hl_val((#x, some((&nlk, #loc)))) ∗
-          dataPointsto γL id ptr x (some nid) (DFrac.own q2))))
+          dataPointsto γL id ptr x (some nid) al (DFrac.own q2))))
 
 instance isArrLockINV_pre.contractive : OFE.Contractive (isArrLockINV_pre (GF := GF)) := by
   rw [contractive_internalEq (PROP := IProp GF)]
@@ -490,7 +498,7 @@ instance isArrLockINV_pre.contractive : OFE.Contractive (isArrLockINV_pre (GF :=
     iapply SpinLock.is_lock_iff $$ H
     iintro !> !>
     irewrite [HEQ]
-    · exact ⟨fun _ _ _ h => wandIff_ne.ne (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => BI.or_ne.ne .rfl (exists_ne (fun (nid : Nat) => exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL nid hl_val((&nlk, #loc))) .rfl)))))) .rfl⟩
+    · exact ⟨fun _ _ _ h => wandIff_ne.ne (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => exists_ne (fun (al : Bool) => BI.or_ne.ne .rfl (exists_ne (fun (nid : Nat) => exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL nid hl_val((&nlk, #loc))) .rfl))))))) .rfl⟩
     · iapply equiv_wandIff; exact .rfl
   · iintro ⟨%lk, %γlock, %ptr, %Hn, H⟩
     iexists lk, γlock, ptr
@@ -499,7 +507,7 @@ instance isArrLockINV_pre.contractive : OFE.Contractive (isArrLockINV_pre (GF :=
     iapply SpinLock.is_lock_iff $$ H
     iintro !> !>
     irewrite [HEQ]
-    · exact ⟨fun _ _ _ h => wandIff_ne.ne .rfl (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => BI.or_ne.ne .rfl (exists_ne (fun (nid : Nat) => exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL nid hl_val((&nlk, #loc))) .rfl))))))⟩
+    · exact ⟨fun _ _ _ h => wandIff_ne.ne .rfl (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => exists_ne (fun (al : Bool) => BI.or_ne.ne .rfl (exists_ne (fun (nid : Nat) => exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL nid hl_val((&nlk, #loc))) .rfl)))))))⟩
     · iapply equiv_wandIff; exact .rfl
 
 def isArrLockINV : GName → Nat → Val → IProp GF := fixpoint isArrLockINV_pre
@@ -515,12 +523,12 @@ theorem isArrLockINV_unfold' (γL : GName) (id : Nat) (v : Val) :
     (isArrLockINV γL id v : IProp GF) ⊣⊢
       ∃ (lk : Val) (γlock : GName) (ptr : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
         SpinLock.isLock γlock lk iprop(
-          ∃ (x : Int) (nlk : Val),
-            ((dataPointsto γL id ptr x none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x, none()))
+          ∃ (x : Int) (nlk : Val) (al : Bool),
+            ((dataPointsto γL id ptr x none al (DFrac.own q2)) ∗ ptr ↦ hl_val((#x, none()))
               ∨
              (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk, #loc)) ∗
                ptr ↦ hl_val((#x, some((&nlk, #loc)))) ∗
-               dataPointsto γL id ptr x (some nid) (DFrac.own q2)))) :=
+               dataPointsto γL id ptr x (some nid) al (DFrac.own q2)))) :=
   isArrLockINV_unfold γL id v
 
 instance isArrLockINV.persistent (γL : GName) (id : Nat) (v : Val) : Persistent (PROP := IProp GF) (isArrLockINV γL id v) := by
@@ -535,11 +543,11 @@ def contents (γL : GName) (v : Val) (ar : List (Nat × Int)) : IProp GF :=
   | [(id, x)] => iprop%
     ∃ (lk : Val) (ptr : Loc),
       ⌜v = hl_val((&lk, #ptr))⌝ ∗
-      dataPointsto γL id ptr x none (DFrac.own q4)
+      dataPointsto γL id ptr x none true (DFrac.own q4)
   | (id, x) :: (sid, sx) :: cs => iprop%
     ∃ (lk : Val) (ptr : Loc) (nlk : Val) (next : Loc),
       ⌜v = hl_val((&lk, #ptr))⌝ ∗
-      dataPointsto γL id ptr x (some sid) (DFrac.own q4) ∗
+      dataPointsto γL id ptr x (some sid) true (DFrac.own q4) ∗
       contents γL hl_val((&nlk, #next)) ((sid, sx) :: cs)
 
 
@@ -554,13 +562,13 @@ theorem contents_eq_nil (γL : GName) (v : Val) :
 theorem contents_eq_single (γL : GName) (v : Val) (id : Nat) (x : Int) :
     (contents γL v [(id, x)] : IProp GF) = iprop(
       ∃ (lk : Val) (ptr : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
-        dataPointsto γL id ptr x none (DFrac.own q4)) := rfl
+        dataPointsto γL id ptr x none true (DFrac.own q4)) := rfl
 
 theorem contents_cons_ne (γL : GName) (v : Val) (id : Nat) (x : Int)
     (c : Nat × Int) (cs : List (Nat × Int)) :
     (contents γL v ((id, x) :: c :: cs) : IProp GF) = iprop(
       ∃ (lk : Val) (ptr : Loc) (nlk : Val) (next : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
-        dataPointsto γL id ptr x (some c.1) (DFrac.own q4) ∗
+        dataPointsto γL id ptr x (some c.1) true (DFrac.own q4) ∗
         contents γL hl_val((&nlk, #next)) (c :: cs)) := by
   obtain ⟨cid, cx⟩ := c; rfl
 
@@ -568,7 +576,7 @@ theorem contents_cons_ne (γL : GName) (v : Val) (id : Nat) (x : Int)
 theorem contents_single_elim (γL : GName) (v : Val) (id : Nat) (x : Int) :
     (contents γL v [(id, x)] : IProp GF) ⊢ iprop(
       ∃ (lk : Val) (ptr : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
-        dataPointsto γL id ptr x none (DFrac.own q4)) := by
+        dataPointsto γL id ptr x none true (DFrac.own q4)) := by
   rw [contents_eq_single]; iintro h; iexact h
 
 /-- Entailment form of `contents_cons_ne`, usable on proofmode hypotheses via `$$`. -/
@@ -576,7 +584,7 @@ theorem contents_cons_elim (γL : GName) (v : Val) (id : Nat) (x : Int)
     (c : Nat × Int) (cs : List (Nat × Int)) :
     (contents γL v ((id, x) :: c :: cs) : IProp GF) ⊢ iprop(
       ∃ (lk : Val) (ptr : Loc) (nlk : Val) (next : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
-        dataPointsto γL id ptr x (some c.1) (DFrac.own q4) ∗
+        dataPointsto γL id ptr x (some c.1) true (DFrac.own q4) ∗
         contents γL hl_val((&nlk, #next)) (c :: cs)) := by
   rw [contents_cons_ne]; iintro h; iexact h
 
@@ -589,10 +597,10 @@ theorem contents_insertAfter_extract (γL : GName) (id counter : Nat) (xnew : In
       id ∈ cells.map (·.1) → (cells.map (·.1)).Nodup →
       contents γL v cells ⊢@{IProp GF}
         ∃ (ptr : Loc) (x0 : Int) (succ : Option Nat),
-          dataPointsto γL id ptr x0 succ (DFrac.own q4) ∗
+          dataPointsto γL id ptr x0 succ true (DFrac.own q4) ∗
           (∀ (nlkv : Val) (nptr : Loc),
-              (dataPointsto γL id ptr x0 (some counter) (DFrac.own q4) ∗
-               dataPointsto γL counter nptr xnew succ (DFrac.own q4))
+              (dataPointsto γL id ptr x0 (some counter) true (DFrac.own q4) ∗
+               dataPointsto γL counter nptr xnew succ true (DFrac.own q4))
             -∗ contents γL v (cells.flatMap (Arr.insertBody id counter xnew))) := by
   intro cells
   induction cells with
@@ -673,9 +681,9 @@ theorem contents_removeAfter_extract (γL : GName) (id sid : Nat) :
       ((pre ++ (id, x) :: (sid, sx) :: post).map (·.1)).Nodup →
       contents γL v (pre ++ (id, x) :: (sid, sx) :: post) ⊢@{IProp GF}
         ∃ (ptr sptr : Loc) (x0 : Int) (ssucc : Option Nat),
-          dataPointsto γL id ptr x0 (some sid) (DFrac.own q4) ∗
-          dataPointsto γL sid sptr sx ssucc (DFrac.own q4) ∗
-          (dataPointsto γL id ptr x0 ssucc (DFrac.own q4) -∗
+          dataPointsto γL id ptr x0 (some sid) true (DFrac.own q4) ∗
+          dataPointsto γL sid sptr sx ssucc true (DFrac.own q4) ∗
+          (dataPointsto γL id ptr x0 ssucc true (DFrac.own q4) -∗
             contents γL v (pre ++ (id, x) :: post)) := by
   intro pre
   induction pre with
@@ -737,9 +745,10 @@ theorem contents_removeAfter_extract (γL : GName) (id sid : Nat) :
 end ContentsLemmas
 
 def isArrINV (γL γA γS : GName) : IProp GF := iprop%
-  ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat)),
+  ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat × Bool)),
     dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
-  ⌜ ∀ id, dom m id ↔ id ∈ σ.cells.map (·.1) ⌝
+  ⌜ (∀ id, id ∈ σ.cells.map (·.1) ↔ ∃ loc x sl, get? m id = some (loc, x, sl, true))
+    ∧ (∀ id, dom m id → id < σ.counter) ⌝
 
 instance isArrINV_timeless (γL γA γS : GName) :
     Timeless (PROP := IProp GF) (isArrINV γL γA γS) := by
@@ -747,9 +756,10 @@ instance isArrINV_timeless (γL γA γS : GName) :
 
 theorem isArrINV_unfold (γL γA γS : GName) :
     (isArrINV γL γA γS : IProp GF) ⊣⊢
-      ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat)),
+      ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat × Bool)),
         dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
-      ⌜ ∀ id, dom m id ↔ id ∈ σ.cells.map (·.1) ⌝ := .rfl
+      ⌜ (∀ id, id ∈ σ.cells.map (·.1) ↔ ∃ loc x sl, get? m id = some (loc, x, sl, true))
+        ∧ (∀ id, dom m id → id < σ.counter) ⌝ := .rfl
 
 
 -- CORE PREDICATES
@@ -779,7 +789,7 @@ theorem Arr.isContents_unfold (γ : GName) (σ : Arr) :
 def Arr.idRecord (γ : GName) (node : Val) (id : Nat) : IProp GF := iprop%
   ∃ (v: Val) (γL γS : GName) (lk : Val) (ptr : Loc),
     arrRoot γ v γL γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
-    (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ (DFrac.own q4)) ∗
+    (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ true (DFrac.own q4)) ∗
     isArrLockINV γL id node
 
 -- trivial (defeq) unfolding lemmas, to destruct the def-wrapped predicates on proofmode hyps
@@ -791,7 +801,7 @@ theorem Arr.idRecord_unfold (γ : GName) (node : Val) (id : Nat) :
     (Arr.idRecord γ node id : IProp GF) ⊣⊢
       ∃ (v: Val) (γL γS : GName) (lk : Val) (ptr : Loc),
         arrRoot γ v γL γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
-        (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ (DFrac.own q4)) ∗
+        (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ true (DFrac.own q4)) ∗
         isArrLockINV γL id node := .rfl
 
 
@@ -812,18 +822,18 @@ theorem Impl.init_spec (x : Int) :
   iintro !> %c Hc
   iapply fupd_wp
   imod dataMap_alloc with ⟨%γL, HDm⟩
-  imod (dataMap_insert γL ∅ 0 c x none (get?_empty _)) $$ HDm with ⟨HDm, HDf⟩
+  imod (dataMap_insert γL ∅ 0 c x none true (get?_empty _)) $$ HDm with ⟨HDm, HDf⟩
   imod (arrState_alloc (Arr.init x)) with ⟨%γS, HSauth, HSfrag⟩
   imod (arrRoot_alloc hl_val((&lk, #c)) γL γS) with ⟨%γ, #Hroot⟩
-  icases (data_split3 γL 0 c x none) $$ HDf with ⟨HDlock, HDcont, HDrec⟩
+  icases (data_split3 γL 0 c x none true) $$ HDf with ⟨HDlock, HDcont, HDrec⟩
   -- build the node's lock body (LEFT branch: last node, next = none)
-  ihave Hbody : iprop(∃ (x0 : Int) (nlk : Val),
-      ((dataPointsto γL 0 c x0 none (DFrac.own q2)) ∗ c ↦ hl_val((#x0, none()))
+  ihave Hbody : iprop(∃ (x0 : Int) (nlk : Val) (al : Bool),
+      ((dataPointsto γL 0 c x0 none al (DFrac.own q2)) ∗ c ↦ hl_val((#x0, none()))
         ∨
        (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk, #loc)) ∗
          c ↦ hl_val((#x0, some((&nlk, #loc)))) ∗
-         dataPointsto γL 0 c x0 (some nid) (DFrac.own q2)))) $$ [HDlock Hc]
-  · iexists x, lk
+         dataPointsto γL 0 c x0 (some nid) al (DFrac.own q2)))) $$ [HDlock Hc]
+  · iexists x, lk, true
     ileft; iframe HDlock Hc
   ispecialize Hlk $$ %_ %(⊤) Hbody
   imod Hlk with Hlock
@@ -833,12 +843,18 @@ theorem Impl.init_spec (x : Int) :
     iexists (Arr.init x), hl_val((&lk, #c)), _
     iframe HDm Hroot HSauth
     ipureintro
-    intro id
-    simp only [PartialMap.dom, LawfulPartialMap.get?_insert, get?_empty, Arr.init,
-      List.map_cons, List.map_nil, List.mem_singleton]
-    by_cases h0 : id = 0
-    · subst h0; simp
-    · simp [h0, Ne.symm h0]
+    refine ⟨?_, ?_⟩
+    · intro id
+      simp only [Arr.init, List.map_cons, List.map_nil, List.mem_singleton,
+        LawfulPartialMap.get?_insert, get?_empty]
+      by_cases h0 : id = 0
+      · subst h0; simp
+      · simp [h0, Ne.symm h0]
+    · intro id
+      simp only [PartialMap.dom, LawfulPartialMap.get?_insert, get?_empty, Arr.init]
+      by_cases h0 : id = 0
+      · subst h0; intro _; omega
+      · simp [h0, Ne.symm h0]
   ihave #HlockINV : isArrLockINV γL 0 hl_val((&lk, #c)) $$ [Hlock]
   · iapply (isArrLockINV_unfold γL 0 hl_val((&lk, #c))).mpr
     unfold isArrLockINV_pre
@@ -894,7 +910,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
   wp_bind &acquire _
   iapply acquire_spec $$ Hlock
   iintro ⟨Hlocked, HR⟩
-  icases HR with ⟨%x0, %nlk, Hdisj⟩
+  icases HR with ⟨%x0, %nlk, %al0, Hdisj⟩
   wp_pures
   wp_bind !_
   icases Hdisj with (⟨HDlock, Hpt⟩ | ⟨%nid0, %loc0, #HlockSucc, Hpt, HDlock⟩)
@@ -927,35 +943,34 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
-    icases (dataPointsto_agree γL id ptr ptrN x0 rval none rsucc _ _) $$ HDlock HDrec with %HagN
-    obtain ⟨hpN, hrv, hrs⟩ := HagN
-    subst hpN; subst hrv; subst hrs
-    icases (dataMap_lookup γL m id ptr x0 none _) $$ HDm HDrec with %HgetRec
-    have Hmem : id ∈ σ.cells.map (·.1) := (Hcoup id).mp (by simp [PartialMap.dom, HgetRec])
+    icases (dataPointsto_agree γL id ptr ptrN x0 rval none rsucc al0 true _ _) $$ HDlock HDrec with %HagN
+    obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
+    subst hpN; subst hrv; subst hrs; subst hal
+    icases (dataMap_lookup γL m id ptr x0 none true _) $$ HDm HDrec with %HgetRec
+    have Hmem : id ∈ σ.cells.map (·.1) := (Hcoup.1 id).mpr ⟨ptr, x0, none, HgetRec⟩
     have Hnodup : (σ.cells.map (·.1)).Nodup := Hwf.idUqi
     icases (contents_insertAfter_extract γL id σ.counter x σ.cells vc Hmem Hnodup) $$ Hcontents
       with ⟨%ptr2, %x2, %succ2, HDcont, Hwand⟩
-    icases (dataPointsto_agree γL id ptr ptr2 x0 x2 none succ2 _ _) $$ HDlock HDcont with %Hag
-    obtain ⟨hp2, hx2, hs2⟩ := Hag
+    icases (dataPointsto_agree γL id ptr ptr2 x0 x2 none succ2 true true _ _) $$ HDlock HDcont with %Hag
+    obtain ⟨hp2, hx2, hs2, -⟩ := Hag
     subst hp2; subst hx2; subst hs2
-    ihave HDfull : dataPointsto γL id ptr x0 none (DFrac.own 1) $$ [HDlock HDcont HDrec]
+    ihave HDfull : dataPointsto γL id ptr x0 none true (DFrac.own 1) $$ [HDlock HDcont HDrec]
     · iapply data_combine3; iframe HDlock HDcont HDrec
-    imod (dataMap_update γL m id ptr x0 none (some σ.counter)) $$ HDm HDfull with ⟨HDm, HDfull⟩
-    icases (data_split3 γL id ptr x0 (some σ.counter)) $$ HDfull with ⟨HDlock', HDcont', HDrec'⟩
+    imod (dataMap_update γL m id ptr x0 none (some σ.counter) true true) $$ HDm HDfull with ⟨HDm, HDfull⟩
+    icases (data_split3 γL id ptr x0 (some σ.counter) true) $$ HDfull with ⟨HDlock', HDcont', HDrec'⟩
     have hid_lt : id < σ.counter := by
       obtain ⟨p, hp, hpid⟩ := List.mem_map.mp Hmem
       rw [← hpid]; exact Hwf.counterFresh p hp
-    have Hfresh : get? (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter = none := by
+    have Hfresh : get? (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter = none := by
       rw [LawfulPartialMap.get?_insert, if_neg (by omega : ¬ id = σ.counter)]
       cases h : get? m σ.counter with
       | none => rfl
       | some val =>
         exfalso
         have hdom : PartialMap.dom m σ.counter := by simp [PartialMap.dom, h]
-        obtain ⟨p, hp, hpc⟩ := List.mem_map.mp ((Hcoup σ.counter).mp hdom)
-        have := Hwf.counterFresh p hp; rw [hpc] at this; omega
-    imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter nptr x none Hfresh) $$ HDm with ⟨HDm, HDnew⟩
-    icases (data_split3 γL σ.counter nptr x none) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
+        exact absurd (Hcoup.2 σ.counter hdom) (by omega)
+    imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter nptr x none true Hfresh) $$ HDm with ⟨HDm, HDnew⟩
+    icases (data_split3 γL σ.counter nptr x none true) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
     imod (arrState_update γS σ (σ.insert id x)) $$ HSauth HSfrag with ⟨HSauth, HSfrag⟩
     ihave Hcontents' : contents γL vc (σ.cells.flatMap (Arr.insertBody id σ.counter x)) $$ [HDcont' HDncont Hwand]
     · iapply Hwand $$ %nlkv %nptr
@@ -970,29 +985,51 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     -- close the shared invariant with the updated map & state
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
-      iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter (nptr, x, none))
+      iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, none, true))
       iframe HDm HrootI HSauth
       ipureintro
-      intro id'
-      rw [Arr.insert_ids_mem σ id x Hmem id']
-      rw [LawfulPartialMap.dom_insert_iff, LawfulPartialMap.dom_insert_iff, Hcoup id']
-      constructor
-      · rintro (h | h | h)
-        · exact Or.inl h.symm
-        · exact Or.inr (h ▸ Hmem)
-        · exact Or.inr h
-      · rintro (h | h)
-        · exact Or.inl h.symm
-        · exact Or.inr (Or.inr h)
+      refine ⟨?_, ?_⟩
+      · intro id'
+        rw [Arr.insert_ids_mem σ id x Hmem id']
+        by_cases hc : id' = σ.counter
+        · subst hc
+          constructor
+          · intro _; exact ⟨nptr, x, none, by rw [LawfulPartialMap.get?_insert, if_pos rfl]⟩
+          · intro _; exact Or.inl rfl
+        · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hc h.symm)]
+          by_cases hi : id' = id
+          · subst hi
+            constructor
+            · intro _; exact ⟨ptr, x0, some σ.counter, by rw [LawfulPartialMap.get?_insert, if_pos rfl]⟩
+            · intro _; exact Or.inr Hmem
+          · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm), ← Hcoup.1 id']
+            constructor
+            · rintro (h | h)
+              · exact absurd h hc
+              · exact h
+            · intro h; exact Or.inr h
+      · intro id'
+        rw [Arr.insert_counter σ id x Hmem]
+        intro hdom'
+        by_cases hc : id' = σ.counter
+        · omega
+        · by_cases hi : id' = id
+          · omega
+          · have heq : get? (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, none, true)) id' = get? m id' := by
+              rw [LawfulPartialMap.get?_insert, if_neg (fun h => hc h.symm),
+                  LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm)]
+            have hd : PartialMap.dom m id' := by
+              unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
+            have := Hcoup.2 id' hd; omega
     imod Hclinv $$ HInew
     -- build the new node's lock (isArrLockINV γL σ.counter (&nlkv,#nptr))
-    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val),
-        ((dataPointsto γL σ.counter nptr x0' none (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
+    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+        ((dataPointsto γL σ.counter nptr x0' none al' (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
           ∨
          (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
            nptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL σ.counter nptr x0' (some nid) (DFrac.own q2)))) $$ [HDnlock Hnptr]
-    · iexists x, lk
+           dataPointsto γL σ.counter nptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDnlock Hnptr]
+    · iexists x, lk, true
       ileft; iframe HDnlock Hnptr
     ispecialize Hnlk $$ %_ %(⊤) Hnbody
     imod Hnlk with Hnlock
@@ -1005,28 +1042,28 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexact Hnlock
     imodintro
     -- rebuild old node's lock body (RIGHT form: succ = some nptr) and release
-    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val),
-        ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+        ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
           ∨
          (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
            ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL id ptr x0' (some nid) (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
-    · iexists x0, nlkv
+           dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
+    · iexists x0, nlkv, true
       iright; iexists σ.counter, nptr
       iframe HnlockINV Hpt HDlock'
     ihave Hres : iprop(SpinLock.isLock γlock lk
-        iprop(∃ (x0' : Int) (nlk' : Val),
-          ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+        iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
             ∨
            (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
              ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) (DFrac.own q2)))) ∗
-        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val),
-          ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
+        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
             ∨
            (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
              ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
+             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
     · iframe Hlock Hlocked HRnew
     wp_bind &release _
     iapply release_spec $$ Hres
@@ -1082,35 +1119,34 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
-    icases (dataPointsto_agree γL id ptr ptrN x0 rval (some nid0) rsucc _ _) $$ HDlock HDrec with %HagN
-    obtain ⟨hpN, hrv, hrs⟩ := HagN
-    subst hpN; subst hrv; subst hrs
-    icases (dataMap_lookup γL m id ptr x0 (some nid0) _) $$ HDm HDrec with %HgetRec
-    have Hmem : id ∈ σ.cells.map (·.1) := (Hcoup id).mp (by simp [PartialMap.dom, HgetRec])
+    icases (dataPointsto_agree γL id ptr ptrN x0 rval (some nid0) rsucc al0 true _ _) $$ HDlock HDrec with %HagN
+    obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
+    subst hpN; subst hrv; subst hrs; subst hal
+    icases (dataMap_lookup γL m id ptr x0 (some nid0) true _) $$ HDm HDrec with %HgetRec
+    have Hmem : id ∈ σ.cells.map (·.1) := (Hcoup.1 id).mpr ⟨ptr, x0, some nid0, HgetRec⟩
     have Hnodup : (σ.cells.map (·.1)).Nodup := Hwf.idUqi
     icases (contents_insertAfter_extract γL id σ.counter x σ.cells vc Hmem Hnodup) $$ Hcontents
       with ⟨%ptr2, %x2, %succ2, HDcont, Hwand⟩
-    icases (dataPointsto_agree γL id ptr ptr2 x0 x2 (some nid0) succ2 _ _) $$ HDlock HDcont with %Hag
-    obtain ⟨hp2, hx2, hs2⟩ := Hag
+    icases (dataPointsto_agree γL id ptr ptr2 x0 x2 (some nid0) succ2 true true _ _) $$ HDlock HDcont with %Hag
+    obtain ⟨hp2, hx2, hs2, -⟩ := Hag
     subst hp2; subst hx2; subst hs2
-    ihave HDfull : dataPointsto γL id ptr x0 (some nid0) (DFrac.own 1) $$ [HDlock HDcont HDrec]
+    ihave HDfull : dataPointsto γL id ptr x0 (some nid0) true (DFrac.own 1) $$ [HDlock HDcont HDrec]
     · iapply data_combine3; iframe HDlock HDcont HDrec
-    imod (dataMap_update γL m id ptr x0 (some nid0) (some σ.counter)) $$ HDm HDfull with ⟨HDm, HDfull⟩
-    icases (data_split3 γL id ptr x0 (some σ.counter)) $$ HDfull with ⟨HDlock', HDcont', HDrec'⟩
+    imod (dataMap_update γL m id ptr x0 (some nid0) (some σ.counter) true true) $$ HDm HDfull with ⟨HDm, HDfull⟩
+    icases (data_split3 γL id ptr x0 (some σ.counter) true) $$ HDfull with ⟨HDlock', HDcont', HDrec'⟩
     have hid_lt : id < σ.counter := by
       obtain ⟨p, hp, hpid⟩ := List.mem_map.mp Hmem
       rw [← hpid]; exact Hwf.counterFresh p hp
-    have Hfresh : get? (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter = none := by
+    have Hfresh : get? (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter = none := by
       rw [LawfulPartialMap.get?_insert, if_neg (by omega : ¬ id = σ.counter)]
       cases h : get? m σ.counter with
       | none => rfl
       | some val =>
         exfalso
         have hdom : PartialMap.dom m σ.counter := by simp [PartialMap.dom, h]
-        obtain ⟨p, hp, hpc⟩ := List.mem_map.mp ((Hcoup σ.counter).mp hdom)
-        have := Hwf.counterFresh p hp; rw [hpc] at this; omega
-    imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter nptr x (some nid0) Hfresh) $$ HDm with ⟨HDm, HDnew⟩
-    icases (data_split3 γL σ.counter nptr x (some nid0)) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
+        exact absurd (Hcoup.2 σ.counter hdom) (by omega)
+    imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter nptr x (some nid0) true Hfresh) $$ HDm with ⟨HDm, HDnew⟩
+    icases (data_split3 γL σ.counter nptr x (some nid0) true) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
     imod (arrState_update γS σ (σ.insert id x)) $$ HSauth HSfrag with ⟨HSauth, HSfrag⟩
     ihave Hcontents' : contents γL vc (σ.cells.flatMap (Arr.insertBody id σ.counter x)) $$ [HDcont' HDncont Hwand]
     · iapply Hwand $$ %nlkv %nptr
@@ -1124,28 +1160,50 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       iexact Hcontents'
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
-      iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter (nptr, x, some nid0))
+      iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, some nid0, true))
       iframe HDm HrootI HSauth
       ipureintro
-      intro id'
-      rw [Arr.insert_ids_mem σ id x Hmem id']
-      rw [LawfulPartialMap.dom_insert_iff, LawfulPartialMap.dom_insert_iff, Hcoup id']
-      constructor
-      · rintro (h | h | h)
-        · exact Or.inl h.symm
-        · exact Or.inr (h ▸ Hmem)
-        · exact Or.inr h
-      · rintro (h | h)
-        · exact Or.inl h.symm
-        · exact Or.inr (Or.inr h)
+      refine ⟨?_, ?_⟩
+      · intro id'
+        rw [Arr.insert_ids_mem σ id x Hmem id']
+        by_cases hc : id' = σ.counter
+        · subst hc
+          constructor
+          · intro _; exact ⟨nptr, x, some nid0, by rw [LawfulPartialMap.get?_insert, if_pos rfl]⟩
+          · intro _; exact Or.inl rfl
+        · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hc h.symm)]
+          by_cases hi : id' = id
+          · subst hi
+            constructor
+            · intro _; exact ⟨ptr, x0, some σ.counter, by rw [LawfulPartialMap.get?_insert, if_pos rfl]⟩
+            · intro _; exact Or.inr Hmem
+          · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm), ← Hcoup.1 id']
+            constructor
+            · rintro (h | h)
+              · exact absurd h hc
+              · exact h
+            · intro h; exact Or.inr h
+      · intro id'
+        rw [Arr.insert_counter σ id x Hmem]
+        intro hdom'
+        by_cases hc : id' = σ.counter
+        · omega
+        · by_cases hi : id' = id
+          · omega
+          · have heq : get? (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, some nid0, true)) id' = get? m id' := by
+              rw [LawfulPartialMap.get?_insert, if_neg (fun h => hc h.symm),
+                  LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm)]
+            have hd : PartialMap.dom m id' := by
+              unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
+            have := Hcoup.2 id' hd; omega
     imod Hclinv $$ HInew
-    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val),
-        ((dataPointsto γL σ.counter nptr x0' none (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
+    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+        ((dataPointsto γL σ.counter nptr x0' none al' (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
           ∨
          (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
            nptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL σ.counter nptr x0' (some nid) (DFrac.own q2)))) $$ [HDnlock Hnptr HlockSucc]
-    · iexists x, nlk
+           dataPointsto γL σ.counter nptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDnlock Hnptr HlockSucc]
+    · iexists x, nlk, true
       iright; iexists nid0, loc0
       iframe HlockSucc Hnptr HDnlock
     ispecialize Hnlk $$ %_ %(⊤) Hnbody
@@ -1158,28 +1216,28 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · ipureintro; rfl
       · iexact Hnlock
     imodintro
-    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val),
-        ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+        ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
           ∨
          (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
            ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL id ptr x0' (some nid) (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
-    · iexists x0, nlkv
+           dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
+    · iexists x0, nlkv, true
       iright; iexists σ.counter, nptr
       iframe HnlockINV Hpt HDlock'
     ihave Hres : iprop(SpinLock.isLock γlock lk
-        iprop(∃ (x0' : Int) (nlk' : Val),
-          ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+        iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
             ∨
            (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
              ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) (DFrac.own q2)))) ∗
-        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val),
-          ((dataPointsto γL id ptr x0' none (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
+        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
             ∨
            (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
              ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
+             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
     · iframe Hlock Hlocked HRnew
     wp_bind &release _
     iapply release_spec $$ Hres
