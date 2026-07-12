@@ -10,6 +10,31 @@ public import Iris.ProgramLogic.Atomic
 @[expose] public section
 namespace Iris.Examples.HeapLang
 
+/-
+================================================================================
+  ArrayCopy — logically-atomic singly-linked list with per-node locks
+  Line statistics (approx., by section):
+
+    Abstract model + pure list helpers ....  278   (Arr, init/insert/remove,
+                                                     adjacent, wellFormed, flatMap)
+    HeapLang implementations ..............   41   (Impl.init/insert/remove)
+    RA layer (ghost state) ................  145   (dataMap, dataPointsto,
+                                                     arrRoot, arrState + lemmas)
+    Lock invariant (isArrLockINV) .........   71   (pre + contractive + unfold)
+    contents predicate + lemmas ...........  207   (incl. insert/removeAfter extract)
+    Core predicates .......................   60   (isArrINV, isArr, isContents,
+                                                     idRecord)
+    ------------------------------------------------
+    init_spec   proof .....................   87
+    insert_spec proof .....................  375
+    remove_spec proof .....................  425
+    ------------------------------------------------
+    Total (this file) ..................... 1705
+    Clients (ArrayCopyClient.lean) ........  162   (seq + concurrent, verified)
+================================================================================
+-/
+
+
 structure Arr where
   cells : List (Nat × Int)
   counter : Nat
