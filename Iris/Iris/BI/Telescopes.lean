@@ -79,6 +79,25 @@ theorem biTexist_exist [BI PROP] {TT : Tele} (Ψ : TT → PROP) :
             exact ((exists_intro xs).trans (ih x (λ xs => Ψ ⟨x, xs⟩)).2).trans
               (exists_intro (Ψ := λ x => biTexist (λ xs => Ψ ⟨x, xs⟩)) x)
 
+/-! Definitional peeling lemmas for telescopic quantifiers over *concrete*
+telescopes — the Lean analogue of Rocq's `Arguments bi_texist/bi_tforall {_ !_} _ /`.
+Over a `Tele.cons` they peel one ordinary head binder; over `Tele.nil` they collapse
+to the body with the packed unit substituted. Used (via `simp only`) to normalise
+`∃..`/`∀..` into plain `∃`/`∀` so no `Sigma`/`PUnit` telescope witness leaks into the
+proof state. All hold by `rfl`. -/
+
+theorem biTexist_nil [BI PROP] (Ψ : Tele.nil → PROP) :
+    biTexist Ψ = Ψ PUnit.unit := rfl
+
+theorem biTexist_cons [BI PROP] {X : Type u} {b : X → Tele} (Ψ : Tele.cons b → PROP) :
+    biTexist Ψ = iprop(∃ x, biTexist (fun xs => Ψ ⟨x, xs⟩)) := rfl
+
+theorem biTforall_nil [BI PROP] (Ψ : Tele.nil → PROP) :
+    biTforall Ψ = Ψ PUnit.unit := rfl
+
+theorem biTforall_cons [BI PROP] {X : Type u} {b : X → Tele} (Ψ : Tele.cons b → PROP) :
+    biTforall Ψ = iprop(∀ x, biTforall (fun xs => Ψ ⟨x, xs⟩)) := rfl
+
 @[rocq_alias bi_tforall_ne]
 instance biTforall_ne [BI PROP] {TT : Tele} :
     NonExpansive (biTforall (PROP := PROP) (TT := TT)) where

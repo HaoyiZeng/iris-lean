@@ -26,24 +26,6 @@ example :
       (λ a => match a with | ⟨x, _⟩ => P x) ↔ ∃ x, P x := by
   rfl
 
-/-- info: Tele.nil : Tele -/
-#guard_msgs in #check ([tele] : Tele)
-
-/-- info: Tele.cons fun x => Tele.nil : Tele -/
-#guard_msgs in #check ([tele x] : Tele)
-
-/-- info: Tele.cons fun x => Tele.cons fun y => Tele.nil : Tele -/
-#guard_msgs in #check ([tele x y] : Tele)
-
-/-- info: PUnit.unit : PUnit -/
-#guard_msgs in #check ([tele_arg] : [tele])
-
-/-- info: ⟨1, PUnit.unit⟩ : (x : Nat) × ((fun x => Tele.nil) x).Arg -/
-#guard_msgs in #check ([tele_arg (1 : Nat)] : [tele x])
-
-/-- info: ⟨1, ⟨true, PUnit.unit⟩⟩ : (x : Nat) × ((fun x => Tele.cons fun y => Tele.nil) x).Arg -/
-#guard_msgs in #check ([tele_arg (1 : Nat), true] : [tele x y])
-
 /--
 info: Tele.tforall fun a =>
   match a with

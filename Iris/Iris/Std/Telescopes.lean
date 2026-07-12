@@ -1,7 +1,5 @@
 module
 
-public meta import Lean.PrettyPrinter
-
 @[expose] public section
 
 namespace Iris
@@ -24,7 +22,7 @@ instance : CoeSort Tele (Type u) where
   coe := Arg
 
 /-- Curried functions over a telescope. -/
-def Fun : Tele.{u} → Type v → Type (max u v)
+abbrev Fun : Tele.{u} → Type v → Type (max u v)
   | nil, U => ULift U
   | cons b, U => ∀ x, Fun (b x) U
 
@@ -104,79 +102,6 @@ theorem funComp_eq {TT1 TT2 TT3 : Tele}
       cases x with
       | mk x xs =>
           exact ih x (g x) xs
-
-syntax "[tele]" : term
-syntax "[tele " ident+ "]" : term
-
-macro_rules
-  | `([tele]) => `(Tele.nil)
-  | `([tele $x:ident]) => `(Tele.cons (fun $x => Tele.nil))
-  | `([tele $x:ident $y:ident $ys:ident*]) =>
-      `(Tele.cons (fun $x => [tele $y $ys*]))
-
-syntax "[tele_arg]" : term
-syntax "[tele_arg " term,* "]" : term
-
-macro_rules
-  | `([tele_arg]) => `(PUnit.unit)
-  | `([tele_arg $x]) => `(⟨$x, PUnit.unit⟩)
-  | `([tele_arg $x, $xs,*]) => `(⟨$x, [tele_arg $xs,*]⟩)
-
-syntax "λ.. " ident+ ", " term : term
-
-macro_rules
-  | `(λ.. $x:ident, $e:term) =>
-      `(Tele.app (Tele.bind (λ $x => $e)))
-  | `(λ.. $x:ident $y:ident $ys:ident*, $e:term) =>
-      `(Tele.app (Tele.bind (λ $x => λ.. $y $ys*, $e)))
-
-namespace Delab
-
-open Lean
-
-private meta def appHeadName? : Syntax → Option Name
-  | .node _ `Lean.Parser.Term.app #[.ident _ _ n _, _] => some n
-  | .ident _ _ n _ => some n
-  | _ => none
-
-private meta def appArgs? : Syntax → Option (Array Syntax)
-  | .node _ `Lean.Parser.Term.app #[_, .node _ `null args] => some args
-  | _ => none
-
-private meta def bindFun? (stx : Syntax) : Option ((TSyntax `ident) × Syntax) := do
-  guard (appHeadName? stx == some `Tele.bind)
-  let some #[funStx] := appArgs? stx | none
-  let .node _ `Lean.Parser.Term.fun #[_, .node _ `Lean.Parser.Term.basicFun #[binders, _, _, body]] := funStx | none
-  let .node _ `null #[x] := binders | none
-  if x.isIdent then
-    some (⟨x⟩, body)
-  else
-    none
-
-meta partial def lambdaDot? (stx : Syntax) : Option (Array (TSyntax `ident) × TSyntax `term) := do
-  guard (appHeadName? stx == some `Tele.app)
-  let some #[bindStx] := appArgs? stx | none
-  let (x, body) ← bindFun? bindStx
-  match lambdaDot? body with
-  | some (xs, body) => some (#[x] ++ xs, body)
-  | none => some (#[x], ⟨body⟩)
-
-end Delab
-
-@[app_unexpander Tele.app]
-meta def unexpandTeleApp : Lean.PrettyPrinter.Unexpander
-  | stx => do
-      let some (xs, body) := Delab.lambdaDot? stx | throw ()
-      match body with
-      | `(λ.. $y:ident $ys:ident*, $body:term) =>
-          let xs := xs ++ #[y] ++ ys
-          let some x := xs[0]? | throw ()
-          let ys := xs.extract 1 xs.size
-          `(λ.. $x:ident $ys:ident*, $body:term)
-      | _ =>
-          let some x := xs[0]? | throw ()
-          let ys := xs.extract 1 xs.size
-          `(λ.. $x:ident $ys:ident*, $body:term)
 
 /-- Telescope universal quantification over `Prop`. -/
 def tforall {TT : Tele} (Ψ : TT → Prop) : Prop :=

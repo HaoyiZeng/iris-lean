@@ -131,13 +131,13 @@ def atomicUpdate : PROP := bi_greatest_fixpoint (atomicUpdatePre Eo Ei α β Φ)
 end Definitions
 
 declare_syntax_cat auPre
-syntax " ⟪ " ("∃ " ident ", ")? term " ⟫ " : auPre
+syntax "⟪ " ("∃ " ident ", ")? term " ⟫" : auPre
 
 declare_syntax_cat auPost
-syntax " ⟪ " ("∀ " ident ", ")? term (", " "COMM " term)? " ⟫ " : auPost
+syntax "⟪ " ("∀ " ident ", ")? term (", " "COMM " term)? " ⟫" : auPost
 
 syntax (name := atomicUpdateNotation)
-  "AU " auPre " @ " term ", " term  auPost : term
+  "AU " ppRealFill(auPre ppSpace "@ " term ", " term ppSpace auPost) : term
 
 macro_rules
   | `(AU ⟪ ∃ $x:ident, $α:term ⟫ @ $Eo:term, $Ei:term
@@ -145,73 +145,33 @@ macro_rules
       `(atomicUpdate (TA := Tele.cons (λ _ : _ => Tele.nil))
           (TB := Tele.cons (λ _ : _ => Tele.nil))
           $Eo $Ei
-          (λ a => match a with | ⟨$x, _⟩ => iprop($α))
-          (λ a b => match a, b with | ⟨$x, _⟩, ⟨$y, _⟩ => iprop($β))
-          (λ a b => match a, b with | ⟨$x, _⟩, ⟨$y, _⟩ => iprop($Φ)))
-
-namespace AtomicDelab
-
-open Lean PrettyPrinter
-
-meta def appArgs? : Syntax → Option (Array Syntax)
-  | .node _ `Lean.Parser.Term.app #[_, .node _ `null args] => some args
-  | _ => none
-
-meta def funBody? : Syntax → Option Syntax
-  | .node _ `Lean.Parser.Term.fun
-      #[_, .node _ `Lean.Parser.Term.basicFun #[_, _, _, body]] => some body
-  | _ => none
-
-meta def anonCtorHead? : Syntax → Option (TSyntax `ident)
-  | .node _ `Lean.Parser.Term.anonymousCtor #[_, .node _ `null args, _] =>
-      match args[0]? with
-      | some h => if h.isIdent then some ⟨h⟩ else none
-      | none => none
-  | _ => none
-
-meta partial def collectAnonCtorHeads (stx : Syntax) : Array (TSyntax `ident) :=
-  match anonCtorHead? stx with
-  | some x => #[x]
-  | none => stx.getArgs.foldl (init := #[]) fun acc child => acc ++ collectAnonCtorHeads child
-
-meta def matchAlt? : Syntax → Option (Array (TSyntax `ident) × TSyntax `term) := fun body => do
-  let .node _ k xs := body | none
-  if k != `Lean.Parser.Term.match then none else
-  let some altsStx := xs[5]? | none
-  let .node _ altsK alts := altsStx | none
-  if altsK != `Lean.Parser.Term.matchAlts then none else
-  let some altStx := alts[0]? | none
-  let .node _ nullK altWrap := altStx | none
-  if nullK != `null then none else
-  let some matchAltStx := altWrap[0]? | none
-  let .node _ matchAltK alt := matchAltStx | none
-  if matchAltK != `Lean.Parser.Term.matchAlt then none else
-  let some pat := alt[1]? | none
-  let some rhs := alt[3]? | none
-  some (collectAnonCtorHeads pat, ⟨rhs⟩)
-
-meta def packedFun? (arity : Nat) (stx : Syntax) : Option (Array (TSyntax `ident) × TSyntax `term) := do
-  let body ← funBody? stx
-  let (xs, rhs) ← matchAlt? body
-  if xs.size == arity then
-    some (xs, rhs)
-  else
-    none
-
-end AtomicDelab
-
-@[app_unexpander atomicUpdate]
-meta def unexpandAtomicUpdate : Lean.PrettyPrinter.Unexpander
-  | stx => do
-      let some #[Eo, Ei, αArg, βArg, ΦArg] := AtomicDelab.appArgs? stx | throw ()
-      let some (xs, α) := AtomicDelab.packedFun? 1 αArg | throw ()
-      let some (ys, β) := AtomicDelab.packedFun? 2 βArg | throw ()
-      let some (_, Φ) := AtomicDelab.packedFun? 2 ΦArg | throw ()
-      let some x := xs[0]? | throw ()
-      let some y := ys[1]? | throw ()
-      `(AU ⟪ ∃ $x:ident, $α:term ⟫ @ $(⟨Eo⟩), $(⟨Ei⟩)
-        ⟪ ∀ $y:ident, $β:term, COMM $Φ:term ⟫)
-
+          (Tele.app <| λ $x => ULift.up iprop($α))
+          (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up iprop($β))
+          (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up iprop($Φ)))
+  | `(AU ⟪ ∃ $x:ident, $α:term ⟫ @ $Eo:term, $Ei:term
+        ⟪ $β:term, COMM $Φ:term ⟫) =>
+      `(atomicUpdate (TA := Tele.cons (λ _ : _ => Tele.nil))
+          (TB := Tele.nil)
+          $Eo $Ei
+          (Tele.app <| λ $x => ULift.up iprop($α))
+          (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up iprop($β)))
+          (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up iprop($Φ))))
+  | `(AU ⟪ $α:term ⟫ @ $Eo:term, $Ei:term
+        ⟪ ∀ $y:ident, $β:term, COMM $Φ:term ⟫) =>
+      `(atomicUpdate (TA := Tele.nil)
+          (TB := Tele.cons (λ _ : _ => Tele.nil))
+          $Eo $Ei
+          (Tele.app (ULift.up iprop($α)))
+          (Tele.app <| ULift.up <| Tele.app <| λ $y => ULift.up iprop($β))
+          (Tele.app <| ULift.up <| Tele.app <| λ $y => ULift.up iprop($Φ)))
+  | `(AU ⟪ $α:term ⟫ @ $Eo:term, $Ei:term
+        ⟪ $β:term, COMM $Φ:term ⟫) =>
+      `(atomicUpdate (TA := Tele.nil)
+          (TB := Tele.nil)
+          $Eo $Ei
+          (Tele.app (ULift.up iprop($α)))
+          (Tele.app (ULift.up <| Tele.app (ULift.up iprop($β))))
+          (Tele.app (ULift.up <| Tele.app (ULift.up iprop($Φ)))))
 
 section Lemmas
 variable {PROP : Type _} [BI PROP] [BIFUpdate PROP]
@@ -312,41 +272,24 @@ theorem aupd_acc Eo Ei E :
   unfold atomicAcc
   iexact HAC2
 
-set_option synthInstance.checkSynthOrder false in
 @[rocq_alias elim_mod_aupd]
-instance elimModAupd φ Eo Ei E Q Q'
-    [h : ∀ R, ProofMode.ElimModal φ false false iprop(|={E,Ei}=> R) R Q Q'] :
-    ProofMode.ElimModal (φ ∧ Eo ⊆ E) false false
+instance elimModAupd (Eo Ei E E3 : CoPset) (Q0 : PROP) :
+    ProofMode.ElimModal (Eo ⊆ E) false false
       (atomicUpdate Eo Ei α β Φ)
       iprop(∃.. x, α x ∗
         ((α x ={Ei,E}=∗ atomicUpdate Eo Ei α β Φ) ∧
         (∀.. y, β x y ={Ei,E}=∗ Φ x y)))
-      Q Q' where
+      iprop(|={E,E3}=> Q0)
+      iprop(|={Ei,E3}=> Q0) where
   elim_modal := by
-    intro hc
+    intro hEo
     iintro ⟨HAU, Hcont⟩
-    ihave HAC : atomicAcc Eo Ei α (atomicUpdate Eo Ei α β Φ) β Φ $$ [HAU]
-    · iapply aupd_aacc $$ HAU
-    ihave HAC2 : atomicAcc E Ei α (atomicUpdate Eo Ei α β Φ) β Φ $$ [HAC]
-    ·
-      iapply atomicAcc_maskWeaken Eo E Ei α (atomicUpdate Eo Ei α β Φ) β Φ hc.2 $$ HAC
     ihave Hfupd : |={E,Ei}=> ∃.. x, α x ∗
         ((α x ={Ei,E}=∗ atomicUpdate Eo Ei α β Φ) ∧
-        (∀.. y, β x y ={Ei,E}=∗ Φ x y)) $$ [HAC2]
-    · unfold atomicAcc
-      iexact HAC2
-    iapply ProofMode.ElimModal.elim_modal
-      (φ := φ) (p := false) (p' := false)
-      (P := iprop(|={E,Ei}=> ∃.. x, α x ∗
-        ((α x ={Ei,E}=∗ atomicUpdate Eo Ei α β Φ) ∧
-        (∀.. y, β x y ={Ei,E}=∗ Φ x y))))
-      (P' := iprop(∃.. x, α x ∗
-        ((α x ={Ei,E}=∗ atomicUpdate Eo Ei α β Φ) ∧
-        (∀.. y, β x y ={Ei,E}=∗ Φ x y))))
-      (Q := Q) (Q' := Q') hc.1
-    isplitl [Hfupd]
-    · iexact Hfupd
-    · iexact Hcont
+        (∀.. y, β x y ={Ei,E}=∗ Φ x y)) $$ [HAU]
+    · iapply aupd_acc α β Φ Eo Ei E hEo $$ HAU
+    imod Hfupd with Hacc
+    iapply Hcont $$ Hacc
 
 @[rocq_alias aupd_intro]
 theorem aupd_intro (Q : PROP) Eo Ei :
@@ -560,19 +503,19 @@ theorem tacAaccIntro {Δ Δ' : PROP} (P : PROP) Eo Ei x :
 
 open Lean Elab Tactic Meta Qq Std ProofMode
 
-elab "iAuIntro" : tactic => do
+elab "iauintro" : tactic => do
   ProofModeM.runTactic λ mvar g => do
     let { prop, bi, hyps, goal, .. } := g
     let goal ← instantiateMVars goal
     let_expr atomicUpdate _ _ instFUpd TA TB Eo Ei α β Φ := goal |
-      throwError "iAuIntro: goal is not an atomic update"
+      throwError "iauintro: goal is not an atomic update"
     let uTA := (← inferType TA).getAppFn.constLevels![0]!
     let uTB := (← inferType TB).getAppFn.constLevels![0]!
     let Δctx : Q($prop) := hyps.tm
     let accGoalExpr := mkAppN (mkConst ``atomicAcc [g.u, uTA, uTB])
       #[prop, bi, instFUpd, TA, TB, Eo, Ei, α, Δctx, β, Φ]
     let some accGoal ← checkTypeQ accGoalExpr prop |
-      throwError "iAuIntro: internal error, malformed atomic accessor goal"
+      throwError "iauintro: internal error, malformed atomic accessor goal"
     let Hacc : Q($Δctx ⊢ $accGoal) ←
       mkFreshExprSyntheticOpaqueMVar (IrisGoal.toExpr { g with goal := accGoal })
     modify fun s => { s with goals := s.goals.push Hacc.mvarId! }
@@ -584,34 +527,34 @@ elab "iAuIntro" : tactic => do
         if h : 2 < args.size then
           pure args[2]
         else
-          throwError "iAuIntro: internal error, malformed entailment"
+          throwError "iauintro: internal error, malformed entailment"
       else
-        throwError "iAuIntro: internal error, accessor subgoal is not an entailment"
+        throwError "iauintro: internal error, accessor subgoal is not an entailment"
     let pf ← mkAppM ``tacAupdIntroExplicit #[α, β, Φ, Δactual, Eo, Ei, Hacc]
     mvar.assign pf
 
-elab "iAaccIntro" " with " h:ident : tactic => do
+elab "iaaccintro" " with " h:ident : tactic => do
   let pmt ← liftMacroM <| PMTerm.parse (← `(pmTerm| $h:ident))
   ProofModeM.runTactic λ mvar g => do
     let { prop, hyps, goal, .. } := g
     let goal ← instantiateMVars goal
     let_expr atomicAcc _ _ _ _ TB Eo Ei α P β Φ := goal |
-      throwError "iAaccIntro: goal is not an atomic accessor"
+      throwError "iaaccintro: goal is not an atomic accessor"
     let uTB := (← inferType TB).getAppFn.constLevels![0]!
     let ⟨_, hyps', p, out, Hsel⟩ ← iHave hyps pmt false
     unless p.isConstOf ``false do
-      throwError "iAaccIntro: selected hypothesis must be spatial"
+      throwError "iaaccintro: selected hypothesis must be spatial"
     let outFn := out.getAppFn
     let outArgs := out.getAppArgs
     unless outArgs.size == 1 do
-      throwError "iAaccIntro: selected hypothesis does not match the atomic precondition"
+      throwError "iaaccintro: selected hypothesis does not match the atomic precondition"
     unless ← isDefEq outFn α do
-      throwError "iAaccIntro: selected hypothesis does not match the atomic precondition"
+      throwError "iaaccintro: selected hypothesis does not match the atomic precondition"
     let x := outArgs[0]!
     let some Eiq ← checkTypeQ Ei q(CoPset) |
-      throwError "iAaccIntro: malformed atomic accessor inner mask"
+      throwError "iaaccintro: malformed atomic accessor inner mask"
     let some Eoq ← checkTypeQ Eo q(CoPset) |
-      throwError "iAaccIntro: malformed atomic accessor outer mask"
+      throwError "iaaccintro: malformed atomic accessor outer mask"
     let Hsub : Q($Eiq ⊆ $Eoq) ← mkFreshExprSyntheticOpaqueMVar q($Eiq ⊆ $Eoq)
     let sideGoals ← evalTacticAt
       (← `(tactic| first | exact LawfulSet.empty_subset | assumption | trivial))
@@ -630,13 +573,208 @@ elab "iAaccIntro" " with " h:ident : tactic => do
       let lam ← mkLambdaFVars #[y] body
       mkAppM ``biTforall #[lam]
     let some abortGoal ← checkTypeQ abortGoal prop |
-      throwError "iAaccIntro: internal error, malformed abort subgoal"
+      throwError "iaaccintro: internal error, malformed abort subgoal"
     let some commitGoal ← checkTypeQ commitGoal prop |
-      throwError "iAaccIntro: internal error, malformed commit subgoal"
+      throwError "iaaccintro: internal error, malformed commit subgoal"
     let Habort ← addBIGoal hyps' abortGoal
     let Hcommit ← addBIGoal hyps' commitGoal
     let pf ← mkAppM ``tacAaccIntro #[α, β, Φ, P, Eo, Ei, x, Hsub, Hsel, Habort, Hcommit]
     mvar.assign pf
 end ProofMode
+
+section Delab
+public meta section
+open Lean PrettyPrinter Delaborator SubExpr
+
+/-- Reduce `Tele.app`-applications that can make progress, faithfully to Rocq's
+`Arguments tele_app … !_ /`. This fires when either the telescope argument is a
+*constructor* (`⟨_, _⟩` / `PUnit.unit`), **or** the telescope itself is `Tele.nil`
+— because `Tele.app` over `nil` ignores its argument (`nil => λ f _ => f.down`),
+so `Tele.app { down := X } s` reduces to `X` even when `s` is a bare variable
+(e.g. a spuriously-introduced `Tele.nil.Arg` witness). Unapplied components
+(`Tele.app (fun x => ..)` over a `cons`) and variable `cons`-arguments are left
+untouched — so notations still print and, once a telescope binder is destructed
+(`⟨n, _⟩`), applications like `α ⟨n, _⟩` reduce straight to their body. Reduction
+stops at the first user-level head (via `whnfHeadPred`), so predicates like `↦`
+are not unfolded; residual `⟨n, _⟩.fst` / `.snd` projections (produced by the
+matcher) are reduced too. -/
+public partial def reduceTeleApps (e : Expr) : MetaM Expr :=
+  Meta.transform e (post := fun n => do
+    if n.isAppOf ``Tele.app && n.getAppNumArgs ≥ 4 &&
+        (let a := n.getAppArgs[3]!
+         let tt := n.getAppArgs[0]!
+         tt.isConstOf ``Tele.nil || a.isAppOf ``Sigma.mk || a.isConstOf ``PUnit.unit) then
+      return .visit <| ← Meta.whnfHeadPred n fun h => do
+        match h.getAppFn with
+        | .const c _ => return c == ``Tele.app || c == ``ULift.up || c == ``ULift.down
+        | _ => return true
+    else if n.isProj then
+      -- reduce residual `⟨_, _⟩.fst` structure projections
+      return .visit (← Meta.whnfCore n)
+    else if n.isAppOf ``ULift.down && n.getAppNumArgs ≥ 1 && n.appArg!.isAppOf ``ULift.up then
+      -- `ULift.down (ULift.up x)` ↦ `x`
+      return .visit n.appArg!.appArg!
+    else if (n.isAppOf ``Sigma.fst || n.isAppOf ``Sigma.snd) && n.isApp &&
+        n.appArg!.isAppOf ``Sigma.mk && n.appArg!.getAppNumArgs == 4 then
+      return .done n.appArg!.getAppArgs[if n.isAppOf ``Sigma.fst then 2 else 3]!
+    else if n.getAppFn.constName? == some `Iris.wandM && n.getAppNumArgs == 4 &&
+        n.getAppArgs[2]!.isAppOf ``Option.none then
+      -- `none -∗? Q` (the Lean analogue of Rocq's `maybe_wand None`, reduced by
+      -- `cbn [maybe_wand]`) reduces to `Q`.
+      return .visit n.getAppArgs[3]!
+    else
+      return .continue)
+
+/-- Extract the ordinary binder names of a telescope-function component from its
+*original* (un-reduced) structure, one per `Tele.cons` level of `Ts` (nil levels
+contribute none). Used to keep binder names stable and consistent across
+`α`/`β`/`Φ`, unaffected by later reduction/α-renaming. -/
+public partial def teleNames : Expr → List Expr → List Name
+  | _, [] => []
+  | comp, T :: Ts =>
+    let g := if comp.isAppOf ``Tele.app then comp.getAppArgs[2]! else comp
+    match g with
+    | .lam nm _ body _ =>
+      let body := if body.isAppOf ``ULift.up then body.appArg! else body
+      if T.isConstOf ``Tele.nil then teleNames body Ts else nm :: teleNames body Ts
+    | _ =>
+      let inner := if g.isAppOf ``ULift.up then g.appArg! else g
+      teleNames inner Ts
+
+-- A single proof-mode reduction tactic (Lean analogue of Rocq's `pm_prettify`):
+-- reduce the constructor-applied telescope functions in the goal so tactics like
+-- `iapply` can use them, while keeping unapplied components (so `AU`/`atomicWP`
+-- notations still print). This changes the goal to a definitionally-equal form.
+open Lean.Elab.Tactic in
+elab "itele_reduce_apps" : tactic =>
+  liftMetaTactic1 fun mvar => do
+    return some (← mvar.change (← reduceTeleApps (← mvar.getType)))
+
+/-- Proof-mode normalisation tactic, the Lean analogue of Rocq's `pm_prettify`
+(`cbn [tele_app bi_texist bi_tforall …]`). It (a) peels telescopic quantifiers
+`∃..`/`∀..` over *concrete* telescopes into plain `∃`/`∀` with the packed `PUnit`
+tail substituted (via `biTexist_cons/nil`, `biTforall_cons/nil`), so no
+`Sigma`/`PUnit` witness leaks into `icases`/`ispecialize`; and (b) reduces the
+constructor-applied telescope functions in the goal so tactics like `iapply` can
+use them, while keeping unapplied components (so `AU`/`atomicWP` notations still
+print). Both steps preserve definitional equality; the peeling `simp only` is
+wrapped in `try` so the tactic is a no-op when nothing matches. -/
+macro "itele_reduce" : tactic =>
+  `(tactic|
+    (try simp only [biTexist_cons, biTexist_nil, biTforall_cons, biTforall_nil]
+     itele_reduce_apps))
+
+/-- `iauopen h with pat` opens a client *atomic update* `h`: it eliminates the
+update's outer fupd (`imod`) and destructs the result with `pat`, then immediately
+normalizes the telescope-encoded `α` (`itele_reduce`) so the exposed `α x` carries
+no `Tele.app`. This mirrors Rocq's `iMod "AU" as (x) "[Hα Hclose]"`, whose
+telescope smart-intro yields a clean `∃ x, α x ∗ (abort ∧ commit)`.
+
+Opening an atomic update is the *only* place a proof needs `itele_reduce`, so this
+is the idiomatic way to do it; use plain `imod` for ordinary modalities. -/
+macro "iauopen" colGt pmt:pmTerm " with " colGt pat:icasesPat : tactic =>
+  `(tactic| (imod $pmt with $pat; itele_reduce))
+
+macro "iauopen" colGt pmt:pmTerm : tactic =>
+  `(tactic| (imod $pmt; itele_reduce))
+
+/-- Peel a telescope-function component (`α`, `β`, `Φ`, ...) along the telescope
+list `Ts`, by *applying* it to constructor arguments built from fresh ordinary
+binders (Rocq's `λ..`: packed binder → ordinary binder). The result is reduced,
+so an inlined `POST x y z` / `f x y z` collapses to its clean body with ordinary
+binder names — no `Tele.app`/`{down}` leaks. `Tele.nil` levels contribute no
+binder. Handles both the notation form `Tele.app (fun x => ULift.up _)` and the
+plain `fun x => _` form (from `atomicWP`). Only single-level telescopes
+(`Tele.cons (fun _ => Tele.nil)`) are handled, which is all the atomic notations
+produce. -/
+public partial def peelComp {α : Type} (comp : Expr) (Ts : List Expr) (names : List Name)
+    (k : Array Name → Expr → MetaM α) : MetaM α := do
+  let comp ← reduceTeleApps comp
+  match Ts with
+  | [] => k #[] comp
+  | T :: Ts =>
+    let dom ← Meta.whnf (← Meta.inferType comp)
+    let argTy ← Meta.whnf dom.bindingDomain!
+    if (← Meta.whnf T).isConstOf ``Tele.nil then
+      -- `argTy` is `PUnit.{v}`; apply `comp` to `PUnit.unit` (nil consumes no binder name)
+      peelComp (comp.beta #[mkConst ``PUnit.unit argTy.constLevels!]) Ts names k
+    else
+      -- `argTy` is `@Sigma X β`; introduce the head binder and pass `⟨fv, ()⟩`
+      let X := argTy.getAppArgs[0]!
+      let β := argTy.getAppArgs[1]!
+      -- derive the binder name from the telescope function (or use the override)
+      let f := if comp.isAppOf ``Tele.app then comp.getAppArgs[2]! else comp
+      let nm := names.head?.getD <| match f with | .lam n .. => n | _ => `x
+      Meta.withLocalDeclD nm X fun fv => do
+        let tailTy ← Meta.whnf (β.beta #[fv])
+        let arg ← Meta.mkAppOptM ``Sigma.mk
+          #[X, β, fv, mkConst ``PUnit.unit tailTy.constLevels!]
+        peelComp (comp.beta #[arg]) Ts names.tail fun nms body => do
+          k (#[← fv.fvarId!.getUserName] ++ nms) body
+
+/-- Peel a component and delaborate its reduced body, returning the ordinary
+binder names and the body syntax. `names` overrides the derived binder names at
+`cons` levels (used to keep binder names consistent across `α`/`β`/`Φ`). -/
+public def peelDelab (comp : Expr) (Ts : List Expr) (names : List Name := []) :
+    MetaM (Array Name × Term) :=
+  peelComp comp Ts names fun nms body => do
+    return (nms, ← unpackIprop (← Lean.PrettyPrinter.delab body))
+/-- Shared peeling for `delabAtomicUpdate`/`delabAtomicAcc`. From the argument
+array of an `atomicUpdate`/`atomicAcc` application, peel the telescope-encoded
+`α`/`β`/`Φ` at the given indices and build the display fragments `∃ x, α` / `∀ y, β`
+(or bare `α`/`β` for `nil` telescopes), returning `(Eo, Ei, pre, comm, Φ)`. Fails
+(→ default printer) on abstract telescopes, where `peelDelab` cannot peel. -/
+def peelAtomicParts (args : Array Expr) (αIdx βIdx ΦIdx : Nat) :
+    DelabM (Term × Term × Term × Term × Term) := do
+  let TA := args[3]!
+  let TB := args[4]!
+  unless (TA.isConstOf ``Tele.nil || TA.isAppOf ``Tele.cons) &&
+         (TB.isConstOf ``Tele.nil || TB.isAppOf ``Tele.cons) do failure
+  let Eo ← withNaryArg 5 delab
+  let Ei ← withNaryArg 6 delab
+  let αNames := teleNames args[αIdx]! [TA]
+  -- reuse the pre binder names for the COMM component (`Φ`), which comes from the
+  -- `atomicWP` definition and would otherwise use its own binder names.
+  let βNames := teleNames args[βIdx]! [TA, TB]
+  let (αn, α) ← peelDelab args[αIdx]! [TA] αNames
+  let (βn, β) ← peelDelab args[βIdx]! [TA, TB] βNames
+  let (_, Φ) ← peelDelab args[ΦIdx]! [TA, TB] βNames
+  let taCons := !(TA.isConstOf ``Tele.nil)
+  let tbCons := !(TB.isConstOf ``Tele.nil)
+  let pre ← if taCons then (do let x := mkIdent (αn[0]?.getD `x); `(∃ $x:ident, $α)) else pure α
+  let comm ← if tbCons then
+      (do let y := mkIdent (βn[if taCons then 1 else 0]?.getD `y); `(∀ $y:ident, $β)) else pure β
+  return (Eo, Ei, pre, comm, Φ)
+
+@[delab app.Iris.atomicUpdate]
+def delabAtomicUpdate : Delab := do
+  let e ← getExpr
+  unless e.getAppFn.isConstOf ``atomicUpdate do failure
+  let args := e.getAppArgs
+  unless args.size == 10 do failure
+  let (Eo, Ei, pre, comm, Φ) ← peelAtomicParts args 7 8 9
+  `(AU ⟪ $pre ⟫ @ $Eo, $Ei ⟪ $comm, COMM $Φ ⟫)
+
+/-- Display syntax for an atomic accessor (analogue of the `AU⟪…⟫` notation for
+atomic updates). Emitted only by `delabAtomicAcc` for readable proof states. -/
+syntax "AACC " "⟪ " term " ⟫" ppSpace "@ " term ", " term ppSpace "⟪ " term ", " "COMM " term ppSpace "ABORT " term " ⟫" : term
+
+/-- Pretty-print `atomicAcc Eo Ei α P β Φ` as
+`AACC⟪ α ⟫ @ Eo, Ei ⟪ β, COMM Φ ABORT P ⟫`, peeling the telescope encoding (via
+`peelAtomicParts`) and stripping the `iprop(…)` wrapper on the abort target `P`,
+so no `Tele.app` / `{down := …}` / `iprop(…)` clutter appears in accessor goals.
+Companion to `delabAtomicUpdate`; falls back to the default printer on abstract
+telescopes. -/
+@[delab app.Iris.atomicAcc]
+def delabAtomicAcc : Delab := do
+  let e ← getExpr
+  unless e.getAppFn.isConstOf ``atomicAcc do failure
+  let args := e.getAppArgs
+  unless args.size == 11 do failure
+  let P ← unpackIprop (← withNaryArg 8 delab)
+  let (Eo, Ei, pre, comm, Φ) ← peelAtomicParts args 7 9 10
+  `(AACC ⟪ $pre ⟫ @ $Eo, $Ei ⟪ $comm, COMM $Φ ABORT $P ⟫)
+end
+end Delab
 
 end Iris

@@ -10,14 +10,15 @@ namespace Iris
 
 open BI ProgramLogic Language.Notation Std
 
+-- TODO : move this
 def wandM [BI PROP] : Option PROP → PROP → PROP
   | some P, Q => iprop(P -∗ Q)
   | none, Q => Q
-
 syntax:25 term:26 " -∗? " term:25 : term
-
 macro_rules
   | `(iprop($P -∗? $Q)) => ``(wandM $P iprop($Q))
+delab_rule wandM
+  | `($_ $P $Q) => do ``(iprop($P -∗? $Q))
 
 theorem wandM_fupd_wand [BI PROP] [BIFUpdate PROP]
     (P : Option PROP) (R Q : PROP) (E : CoPset) :
@@ -55,7 +56,7 @@ variable {GF : BundledGFunctors} [ι : IrisGS_gen hlc Expr GF]
 variable {TA TB TP : Tele}
 
 @[rocq_alias atomic_wp]
-def atomicWP
+abbrev atomicWP
     (e : Expr) (E : CoPset)
     (α : TA → IProp GF)
     (β : TA → TB → IProp GF)
@@ -63,61 +64,55 @@ def atomicWP
     (f : TA → TB → TP → Val) : IProp GF :=
   iprop(∀ (Φ : Val → IProp GF),
     atomicUpdate (⊤ \ E) ∅ α β
-      (λ.. x y, ∀.. z, POST x y z -∗? Φ (f x y z)) -∗
+      (λ x y => ∀.. z, POST x y z -∗? Φ (f x y z)) -∗
     WP e {{ Φ }})
 
 
 declare_syntax_cat atomicWpPre
-syntax "⟪" "∀ " ident ", " term "⟫" : atomicWpPre
+syntax "⟪" ("∀ " ident ", ")? term "⟫" : atomicWpPre
 
 declare_syntax_cat atomicWpPost
 syntax "⟪" "∃ " ident ", " term " | " ident ", " "RET " term "; " term "⟫" : atomicWpPost
+syntax "⟪" term " | " "RET " term "⟫" : atomicWpPost
 
-syntax (name := atomicTripleNotation) atomicWpPre term:arg " @ " term:arg atomicWpPost : term
+syntax (name := atomicTripleNotation)
+  ppRealFill(atomicWpPre ppSpace term:arg " @ " term:arg ppSpace atomicWpPost) : term
 
 macro_rules
   | `(⟪ ∀ $x:ident, $α:term ⟫ $e:term @ $E:term
       ⟪ ∃ $y:ident, $β:term | $z:ident, RET $v:term; $POST:term ⟫) =>
       `(atomicWP
-        (TA := Tele.cons (λ _ : _ => Tele.nil))
-        (TB := Tele.cons (λ _ : _ => Tele.nil))
-        (TP := Tele.cons (λ _ : _ => Tele.nil))
+        (TA := Tele.cons <| λ xn => Tele.nil)
+        (TB := Tele.cons <| λ yn => Tele.nil)
+        (TP := Tele.cons <| λ zn => Tele.nil)
         $e $E
-        (λ a => match a with | ⟨$x, _⟩ => iprop($α))
-        (λ a b => match a, b with | ⟨$x, _⟩, ⟨$y, _⟩ => iprop($β))
-        (λ a b c => match a, b, c with
-          | ⟨$x, _⟩, ⟨$y, _⟩, ⟨$z, _⟩ => some iprop($POST))
-        (λ a b c => match a, b, c with
-          | ⟨$x, _⟩, ⟨$y, _⟩, ⟨$z, _⟩ => $v))
+        (Tele.app <| λ $x => ULift.up iprop($α))
+        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up iprop($β))
+        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up <| Tele.app <| λ $z => ULift.up (some iprop($POST)))
+        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up <| Tele.app <| λ $z => ULift.up $v))
+  | `(⟪ ∀ $x:ident, $α:term ⟫ $e:term @ $E:term
+      ⟪ $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.cons <| λ xn => Tele.nil)
+        (TB := Tele.nil)
+        (TP := Tele.nil)
+        $e $E
+        (Tele.app <| λ $x => ULift.up iprop($α))
+        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up iprop($β)))
+        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up none)))
+        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up $v))))
+  | `(⟪ $α:term ⟫ $e:term @ $E:term
+      ⟪ $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.nil)
+        (TB := Tele.nil)
+        (TP := Tele.nil)
+        $e $E
+        (Tele.app (ULift.up iprop($α)))
+        (Tele.app (ULift.up <| Tele.app (ULift.up iprop($β))))
+        (Tele.app (ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up none))))
+        (Tele.app (ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up $v)))))
 
-namespace AtomicWPDelab
-
-open Lean
-
-private meta def someArg? : Syntax → Option (TSyntax `term)
-  | .node _ `Lean.Parser.Term.app #[.ident _ _ n _, .node _ `null #[arg]] =>
-      if n == `some || n == `Option.some then
-        some ⟨arg⟩
-      else
-        none
-  | _ => none
-
-end AtomicWPDelab
-
-@[app_unexpander atomicWP]
-meta def unexpandAtomicWP : Lean.PrettyPrinter.Unexpander
-  | stx => do
-      let some #[e, E, αArg, βArg, POSTArg, fArg] := AtomicDelab.appArgs? stx | throw ()
-      let some (xs, α) := AtomicDelab.packedFun? 1 αArg | throw ()
-      let some (ys, β) := AtomicDelab.packedFun? 2 βArg | throw ()
-      let some (zs, POSTSome) := AtomicDelab.packedFun? 3 POSTArg | throw ()
-      let POST := (AtomicWPDelab.someArg? POSTSome).getD POSTSome
-      let some (_, v) := AtomicDelab.packedFun? 3 fArg | throw ()
-      let some x := xs[0]? | throw ()
-      let some y := ys[1]? | throw ()
-      let some z := zs[2]? | throw ()
-      `(⟪ ∀ $x:ident, $α:term ⟫ $(⟨e⟩) @ $(⟨E⟩)
-        ⟪ ∃ $y:ident, $β:term | $z:ident, RET $v:term; $POST:term ⟫)
 
 section Lemmas
 
@@ -132,10 +127,10 @@ theorem atomicWP_seq (e : Expr) (E : CoPset)
     WP e {{ Φ }} := by
   unfold atomicWP
   iintro Hwp %Φ %x Hα HΦ
-  let AUΦ : TA → TB → IProp GF := λ.. x y, iprop(∀.. z, POST x y z -∗? Φ (f x y z))
+  let AUΦ : TA → TB → IProp GF := λ x y => iprop(∀.. z, POST x y z -∗? Φ (f x y z))
   iapply Hwp $$ %Φ
-  iAuIntro
-  iAaccIntro with Hα
+  iauintro
+  iaaccintro with Hα
   · iintro Hα
     imodintro
     isplitl [Hα]
@@ -143,7 +138,7 @@ theorem atomicWP_seq (e : Expr) (E : CoPset)
     · iexact HΦ
   · iintro %y Hβ
     imodintro
-    rw [Tele.app_bind, Tele.app_bind]
+    dsimp only []
     iapply HΦ $$ %y Hβ
 
 @[rocq_alias atomic_wp_seq_step]
@@ -185,7 +180,7 @@ theorem atomicSeqWP_atomic (e : Expr) (E : CoPset)
   atomicWP e E α β POST f := by
   unfold atomicWP
   iintro Hwp %Φ HAU
-  let AUΦ : TA → TB → IProp GF := λ.. x y, iprop(∀.. z, POST x y z -∗? Φ (f x y z))
+  let AUΦ : TA → TB → IProp GF := λ x y => iprop(∀.. z, POST x y z -∗? Φ (f x y z))
   iapply wp_atomic (s := Stuckness.NotStuck) (E1 := ⊤) (E2 := ∅)
   ihave HAC0 : atomicAcc (⊤ \ E) ∅ α (atomicUpdate (⊤ \ E) ∅ α β AUΦ) β AUΦ $$ [HAU]
   · iapply aupd_aacc
@@ -208,26 +203,25 @@ theorem atomicSeqWP_atomic (e : Expr) (E : CoPset)
   imodintro
   ihave HΦ' : iprop(∀.. z, POST x y z -∗? Φ (f x y z)) $$ [HΦ]
   · dsimp only [AUΦ]
-    rw [Tele.app_bind, Tele.app_bind]
     exact .rfl
   iapply HΦ' $$ %z
 
 @[rocq_alias persistent_seq_wp_atomic]
 theorem persistentSeqWP_atomic (e : Expr) (E : CoPset)
-    (α : [tele] → IProp GF)
-    (β : [tele] → TB → IProp GF)
-    (POST : [tele] → TB → TP → Option (IProp GF))
-    (f : [tele] → TB → TP → Val)
-    [Persistent (α [tele_arg])] :
-  (∀ Φ, α [tele_arg] -∗
-    (∀.. y, β [tele_arg] y -∗
-      (∀.. z, POST [tele_arg] y z -∗? Φ (f [tele_arg] y z))) -∗
+    (α : Tele.Arg Tele.nil → IProp GF)
+    (β : Tele.Arg Tele.nil → TB → IProp GF)
+    (POST : Tele.Arg Tele.nil → TB → TP → Option (IProp GF))
+    (f : Tele.Arg Tele.nil → TB → TP → Val)
+    [Persistent (α PUnit.unit)] :
+  (∀ Φ, α PUnit.unit -∗
+    (∀.. y, β PUnit.unit y -∗
+      (∀.. z, POST PUnit.unit y z -∗? Φ (f PUnit.unit y z))) -∗
     WP e {{ Φ }}) -∗
   atomicWP e E α β POST f := by
   unfold atomicWP
   iintro Hwp %Φ HAU
-  let AUΦ : [tele] → TB → IProp GF :=
-    λ.. x y, iprop(∀.. z, POST x y z -∗? Φ (f x y z))
+  let AUΦ : Tele.Arg Tele.nil → TB → IProp GF :=
+    λ x y => iprop(∀.. z, POST x y z -∗? Φ (f x y z))
   iapply fupd_wp
   ihave Hfupd : iprop(|={⊤,∅}=> ∃.. x, α x ∗
       ((α x ={∅,⊤}=∗ atomicUpdate (⊤ \ E) ∅ α β AUΦ) ∧
@@ -242,7 +236,7 @@ theorem persistentSeqWP_atomic (e : Expr) (E : CoPset)
   iapply wp_fupd
   iapply Hwp $$ %(fun v => iprop(|={⊤}=> Φ v)) Hα
   iintro %y Hβ %z
-  iapply wandM_fupd (POST [tele_arg] y z) (Φ (f [tele_arg] y z)) ⊤ ⊤
+  iapply wandM_fupd (POST PUnit.unit y z) (Φ (f PUnit.unit y z)) ⊤ ⊤
   ihave Hfupd2 : iprop(|={⊤,∅}=> ∃.. x, α x ∗
       ((α x ={∅,⊤}=∗ atomicUpdate (⊤ \ E) ∅ α β AUΦ) ∧
       (∀.. y, β x y ={∅,⊤}=∗ AUΦ x y))) $$ [HAU']
@@ -253,9 +247,8 @@ theorem persistentSeqWP_atomic (e : Expr) (E : CoPset)
   icases Hclose' with ⟨-, Hcommit⟩
   imod Hcommit $$ %y Hβ with HΦ
   imodintro
-  ihave HΦ' : iprop(∀.. z, POST [tele_arg] y z -∗? Φ (f [tele_arg] y z)) $$ [HΦ]
+  ihave HΦ' : iprop(∀.. z, POST PUnit.unit y z -∗? Φ (f PUnit.unit y z)) $$ [HΦ]
   · dsimp only [AUΦ]
-    rw [Tele.app_bind, Tele.app_bind]
     exact sep_elim_right
   iapply HΦ' $$ %z
 
@@ -270,7 +263,7 @@ theorem atomicWP_maskWeaken (e : Expr) (E1 E2 : CoPset)
   intro HE
   unfold atomicWP
   iintro Hwp %Φ HAU
-  let AUΦ : TA → TB → IProp GF := λ.. x y, iprop(∀.. z, POST x y z -∗? Φ (f x y z))
+  let AUΦ : TA → TB → IProp GF := λ x y => iprop(∀.. z, POST x y z -∗? Φ (f x y z))
   have Hdiff : (⊤ \ E2 : CoPset) ⊆ (⊤ \ E1 : CoPset) := by
     intro x hx
     rw [LawfulSet.mem_diff] at hx ⊢
@@ -287,15 +280,15 @@ theorem atomicWP_inv (e : Expr) (E : CoPset)
     (N : Namespace) (I : IProp GF) :
   ↑N ⊆ E →
   atomicWP e (E \ ↑N)
-    (λ.. x, iprop(▷ I ∗ α x))
-    (λ.. x y, iprop(▷ I ∗ β x y)) POST f -∗
+    (λ x => iprop(▷ I ∗ α x))
+    (λ x y => iprop(▷ I ∗ β x y)) POST f -∗
   inv N I -∗ atomicWP e E α β POST f := by
   intro HN
   unfold atomicWP
   iintro Hwp #Hinv %Φ HAU
-  let αI : TA → IProp GF := λ.. x, iprop(▷ I ∗ α x)
-  let βI : TA → TB → IProp GF := λ.. x y, iprop(▷ I ∗ β x y)
-  let AUΦ : TA → TB → IProp GF := λ.. x y, iprop(∀.. z, POST x y z -∗? Φ (f x y z))
+  let αI : TA → IProp GF := λ x => iprop(▷ I ∗ α x)
+  let βI : TA → TB → IProp GF := λ x y => iprop(▷ I ∗ β x y)
+  let AUΦ : TA → TB → IProp GF := λ x y => iprop(∀.. z, POST x y z -∗? Φ (f x y z))
   have Hacc : iprop(inv N I ∧ atomicUpdate (⊤ \ E) ∅ α β AUΦ) ⊢
       atomicAcc (⊤ \ (E \ ↑N)) ∅ αI (atomicUpdate (⊤ \ E) ∅ α β AUΦ) βI AUΦ := by
     iintro ⟨#Hinv, HAU⟩
@@ -330,13 +323,11 @@ theorem atomicWP_inv (e : Expr) (E : CoPset)
     iexists x
     isplitl [HI Hα]
     · dsimp only [αI]
-      rw [Tele.app_bind]
       iframe
     isplit
     · iintro HαI
       ihave Hαpair : iprop(▷ I ∗ α x) $$ [HαI]
       · dsimp only [αI]
-        rw [Tele.app_bind]
         exact sep_elim_right
       icases Hαpair with ⟨HI', Hα'⟩
       icases HcloseAU with ⟨HabortAU, -⟩
@@ -347,7 +338,6 @@ theorem atomicWP_inv (e : Expr) (E : CoPset)
     · iintro %y HβI
       ihave Hβpair : iprop(▷ I ∗ β x y) $$ [HβI]
       · dsimp only [βI]
-        rw [Tele.app_bind, Tele.app_bind]
         exact sep_elim_right
       icases Hβpair with ⟨HI', Hβ'⟩
       icases HcloseAU with ⟨-, HcommitAU⟩
@@ -368,5 +358,51 @@ theorem atomicWP_inv (e : Expr) (E : CoPset)
     · iexact HAU
 
 end Lemmas
+
+section Delab
+public meta section
+open Lean PrettyPrinter Delaborator SubExpr
+
+@[delab app.Iris.atomicWP]
+def delabAtomicWP : Delab := do
+  let e ← getExpr
+  unless e.getAppFn.isConstOf ``atomicWP do failure
+  let args := e.getAppArgs
+  let n := args.size
+  unless n ≥ 9 do failure
+  let TA := args[n-9]!
+  let TB := args[n-8]!
+  let TP := args[n-7]!
+  let prog ← withNaryArg (n-6) delab
+  let E ← withNaryArg (n-5) delab
+  let αNames := teleNames args[n-4]! [TA]
+  let βNames := teleNames args[n-3]! [TA, TB]
+  let pNames := teleNames args[n-2]! [TA, TB, TP]
+  let (αn, α) ← peelDelab args[n-4]! [TA] αNames
+  let taCons := !(TA.isConstOf ``Tele.nil)
+  let tbCons := !(TB.isConstOf ``Tele.nil)
+  if tbCons then
+    let (βn, β) ← peelDelab args[n-3]! [TA, TB] βNames
+    let (postn, POST) ← peelComp args[n-2]! [TA, TB, TP] pNames fun nms body => do
+      let body := if body.isAppOf ``Option.some then body.appArg! else body
+      return (nms, ← unpackIprop (← Lean.PrettyPrinter.delab body))
+    let (_, v) ← peelDelab args[n-1]! [TA, TB, TP] pNames
+    let y := mkIdent (βn[if taCons then 1 else 0]?.getD `y)
+    let z := mkIdent (postn[(if taCons then 1 else 0) + 1]?.getD `z)
+    if taCons then
+      let x := mkIdent (αn[0]?.getD `x)
+      `(⟪ ∀ $x, $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+    else
+      `(⟪ $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+  else
+    let (_, β) ← peelDelab args[n-3]! [TA, TB] βNames
+    let (_, v) ← peelDelab args[n-1]! [TA, TB, TP] pNames
+    if taCons then
+      let x := mkIdent (αn[0]?.getD `x)
+      `(⟪ ∀ $x, $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+    else
+      `(⟪ $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+end
+end Delab
 
 end Iris

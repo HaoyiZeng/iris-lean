@@ -40,8 +40,8 @@ example (x : TA) :
     α x -∗ (∀ y, β x y -∗ Φ x y) -∗
     atomicUpdate E ∅ α β Φ := by
   iintro Hα HΦ
-  iAuIntro
-  iAaccIntro with Hα
+  iauintro
+  iaaccintro with Hα
   · iintro Hα
     imodintro
     isplitl [Hα]
@@ -69,12 +69,13 @@ variable (POST : Nat → Bool → Val → IProp GF)
 variable (f : Nat → Bool → Val → Val)
 
 /--
-info: ⟪∀ x, α x⟫e @ E⟪∃ y, β x y | z, RET f x y z; POST x y z⟫ : IProp GF
+info: ⟪∀ x, α x⟫ e @ E ⟪∃ y, β x y | z, RET f x y z; POST x y z⟫ : IProp GF
 -/
 #guard_msgs in
 #check (⟪ ∀ x, α x ⟫ e @ E ⟪ ∃ y, β x y | z, RET f x y z; POST x y z ⟫ : IProp GF)
 
 end AtomicWpNotation
+
 
 section CounterExample
 
@@ -91,45 +92,24 @@ def inc : Val := hl_val(
       then n
       else inc l)
 
-abbrev incTA : Tele := Tele.cons (λ _ : Int => Tele.nil)
-abbrev incTB : Tele := Tele.cons (λ _ : Bool => Tele.nil)
-abbrev incTP : Tele := Tele.cons (λ _ : Bool => Tele.nil)
-
-abbrev incPre (l : Loc) : incTA → IProp GF
-  | ⟨n, _⟩ => l ↦ some hl_val(#n)
-
-abbrev incPost (l : Loc) : incTA → incTB → IProp GF
-  | ⟨n, _⟩, ⟨b, _⟩ => iprop(l ↦ some hl_val(#(n + (1 : Int))) ∗ ⌜b = true⌝)
-
-abbrev incPriv : incTA → incTB → incTP → Option (IProp GF)
-  | _, _, ⟨b, _⟩ => some iprop(⌜b = true⌝)
-
-def incRet : incTA → incTB → incTP → Val
-  | ⟨n, _⟩, _, _ => hl_val(#n)
-
-private theorem wandM_some_elim {PROP : Type _} [BI PROP] (P Q : PROP) :
-    P -∗ wandM (some P) Q -∗ Q := by
-  simp [wandM]
-  iintro HP Hwand
-  iapply Hwand $$ HP
-
 theorem inc_spec (l : Loc) :
   ⊢ ⟪ ∀ n, l ↦ some hl_val(#(n : Int)) ⟫
       hl(&inc v(#l)) @ ∅
-    ⟪ ∃ b, l ↦ some hl_val(#(n + 1: Int)) ∗ ⌜b = true⌝
-      | z, RET hl_val(#(n : Int)); ⌜z = true⌝ ⟫ := by
-  change ⊢ atomicWP hl(&inc v(#l)) ∅ (incPre (GF := GF) l) (incPost (GF := GF) l)
-    (incPriv (GF := GF)) incRet
-  unfold atomicWP inc
-  rw [LawfulSet.diff_empty]
+    ⟪ l ↦ some hl_val(#(n + 1: Int)) | RET hl_val(#(n : Int)) ⟫ := by
+
   iintro %Φ HAU
   iloeb as IH
   wp_rec
   wp_bind !_
-  iapply wp_atomic (s := Stuckness.NotStuck) (E1 := ⊤) (E2 := ∅)
-  ihave Hacc := aupd_acc _ _ _ ⊤ ∅ ⊤ LawfulSet.subset_refl $$ HAU
-  imod Hacc with ⟨%x, Hl, Hclose⟩
-  rcases x with ⟨n, _⟩
+  -- For some reason i have to apply wp_atomic manually
+  iapply wp_atomic (E2 := ∅)
+
+  -- one-step open+destruct (peeling `IntoExists` instances give an ordinary `n`,
+  -- no packed `Sigma`/`PUnit`); then reduce the applied telescope functions so
+  -- `Hl : l ↦ some hl_val(#n)`
+  iauopen HAU with ⟨%n, Hl, Hclose⟩
+
+  -- remove the fancy upd introced by wp_atomic
   imodintro
   iapply wp_load $$ Hl
   iintro !> Hl
@@ -138,59 +118,40 @@ theorem inc_spec (l : Loc) :
   imodintro
   wp_pures
   wp_bind cmpXchg(_,_,_)
-  iapply wp_atomic (s := Stuckness.NotStuck) (E1 := ⊤) (E2 := ∅)
-  ihave Hacc := aupd_acc _ _ _ ⊤ ∅ ⊤ LawfulSet.subset_refl $$ HAU
-  imod Hacc with ⟨%x, Hl, Hclose⟩
-  rcases x with ⟨w, _⟩
+  -- again, for some reason i have to apply wp_atomic manually
+  iapply wp_atomic (E2 := ∅)
+
+  iauopen HAU with ⟨%w, Hl, Hclose⟩
+
   imodintro
-  by_cases Heq : hl_val(#n) = hl_val(#w)
-  · simp only [Val.lit.injEq, BaseLit.int.injEq] at Heq
-    subst Heq
+  by_cases Heq : (w = n)
+  · iclear IH
+    rw [Heq]
+
+    -- because wp_cmpXchg_true cosumes a later points-to
     iapply wp_wand $$ [Hl]
     · iapply wp_cmpXchg_true rfl rfl $$ Hl <;>
         simp [Val.compareSafe, Val.isUnboxed, BaseLit.isUnboxed]
-    iintro %v Hres
-    icases Hres with ⟨%Hv, Hl⟩
-    subst Hv
-    icases Hclose with ⟨-, Hcommit⟩
-    ihave Hβ : iprop(l ↦ some hl_val(#(n + (1 : Int))) ∗ ⌜true = true⌝) $$ [Hl]
-    · isplitl [Hl]
-      · iexact Hl
-      · ipureintro; rfl
-    imod Hcommit $$ %⟨true, PUnit.unit⟩ Hβ with HΦ
-    imodintro
-    wp_pures
-    imodintro
-    iclear IH
-    ihave HΦforall : biTforall (fun z : incTP =>
-        wandM (incPriv (GF := GF) ⟨n, PUnit.unit⟩ ⟨true, PUnit.unit⟩ z)
-          (Φ (incRet ⟨n, PUnit.unit⟩ ⟨true, PUnit.unit⟩ z))) $$ [HΦ]
-    · rw [Tele.app_bind, Tele.app_bind]
-      exact .rfl
-    ihave HΦ' := HΦforall $$ %⟨true, PUnit.unit⟩
-    ihave HΦ'' : wandM (PROP := IProp GF) (some iprop(⌜true = true⌝)) (Φ hl_val(#n)) $$ [HΦ']
-    · unfold incPriv incRet
-      exact .rfl
-    iapply wandM_some_elim (P := iprop(⌜true = true⌝)) (Q := Φ hl_val(#n))
-    · ipureintro; rfl
-    · iexact HΦ''
+    · iintro %v ⟨%Hv, Hl⟩
+      icases Hclose with ⟨-, Hcommit⟩
+
+      imod Hcommit $$ Hl with Hcommit
+      imodintro
+      rw [Hv]
+      wp_pures
+      imodintro
+      itrivial
   · iapply wp_wand $$ [Hl]
     · iapply wp_cmpXchg_fail rfl rfl $$ Hl
       · trivial
-      · simp
-        intro hw
-        apply Heq
-        subst hw
-        rfl
-    iintro %v Hres
-    icases Hres with ⟨%Hv, Hl⟩
-    subst Hv
-    icases Hclose with ⟨Habort, -⟩
-    imod Habort $$ Hl with HAU
-    imodintro
-    wp_pure
-    wp_pure
-    iapply IH $$ HAU
+      · simp_all
+    · iintro %v ⟨%Hv, Hl⟩
+      icases Hclose with ⟨Habort, -⟩
+      imod Habort $$ Hl with HAU
+      imodintro
+      rw [Hv]
+      wp_pures
+      iapply IH $$ HAU
 
 
 end CounterExample

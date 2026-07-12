@@ -234,6 +234,32 @@ instance intoExists_biTexist [BI PROP] {TT : Tele} (Φ : TT → PROP) :
     IntoExists (biTexist Φ) Φ where
   into_exists := (biTexist_exist Φ).1
 
+/-- Peel one ordinary head binder off a `Tele.cons` telescopic existential (Lean
+analogue of Rocq's `Arguments bi_texist {_ !_} _ /` reducing a `TeleS`): so
+`icases`/`imod … with ⟨%x, …⟩` binds `x` at its user type directly, with no packed
+`Sigma`/`PUnit` witness — for telescopes of any depth. Higher priority than
+`intoExists_biTexist` so it wins for concrete `cons` telescopes; abstract
+telescopes still fall back to the packed form. -/
+instance (priority := 10000) intoExists_biTexist_cons
+    [BI PROP] {X : Type u} {b : X → Tele} (Ψ : Tele.cons b → PROP) :
+    IntoExists (biTexist Ψ) (fun x : X => biTexist (fun xs => Ψ ⟨x, xs⟩)) where
+  into_exists := .rfl
+
+/-- Collapse a `Tele.nil` telescopic existential to its body, passing an `IntoSep`
+through: after all head binders are peeled the residual `biTexist` over `nil` is
+just the body, so its `∗` stays destructable. -/
+instance (priority := 10000) intoSep_biTexist_nil
+    [BI PROP] (Ψ : Tele.nil → PROP) (Q1 Q2 : PROP) [inst : IntoSep (Ψ PUnit.unit) Q1 Q2] :
+    IntoSep (biTexist Ψ) Q1 Q2 where
+  into_sep := inst.into_sep
+
+/-- Collapse a `Tele.nil` telescopic existential to its body, passing an `IntoAnd`
+through (for destructing the final body's `∧`). -/
+instance (priority := 10000) intoAnd_biTexist_nil
+    [BI PROP] (p) (Ψ : Tele.nil → PROP) (Q1 Q2 : PROP) [inst : IntoAnd p (Ψ PUnit.unit) Q1 Q2] :
+    IntoAnd p (biTexist Ψ) Q1 Q2 where
+  into_and := inst.into_and
+
 @[rocq_alias into_exist_pure]
 instance intoExists_pure (φ : α → Prop) [BI PROP] :
     IntoExists (PROP := PROP) iprop(⌜∃ x, φ x⌝) (fun a => iprop(⌜φ a⌝)) where

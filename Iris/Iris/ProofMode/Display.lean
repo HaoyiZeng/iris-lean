@@ -25,9 +25,12 @@ whether they are persistent or not.
 NOTE: Hypothesis are assumed to have a specific shape so they can be displayed correctly.
 In particular, hypothesis must have name annotations so they may be displayed appropiately. -/
 
-syntax irisHyp := ("□" <|> "∗") ident " : " term
+declare_syntax_cat irisLine
+syntax ident " : " term : irisLine
+syntax "────────────────────────────────────────────────────────────□" : irisLine
+syntax "────────────────────────────────────────────────────────────∗" : irisLine
 
-syntax irisGoalStx := ppDedent(ppLine irisHyp)* ppDedent(ppLine "⊢ " term)
+syntax irisGoalStx := ppDedent(ppLine irisLine)* ppDedent(ppLine term)
 
 open Lean.PrettyPrinter
 
@@ -38,29 +41,36 @@ def delabIrisGoal : Delab := do
   -- extract environment
   let some { hyps, goal, .. } := parseIrisGoal? expr | failure
 
-  -- delaborate
-  let (_, hyps) ← delabHypotheses hyps ({}, #[])
+  -- delaborate hypotheses, split into persistent / spatial contexts
+  let (_, pers, spat) ← delabHypotheses hyps ({}, #[], #[])
   let goal ← unpackIprop (← delab goal)
 
-  -- build syntax
-  return ⟨← `(irisGoalStx| $hyps.reverse* ⊢ $goal:term)⟩
+  -- persistent context, `────□` (if any), spatial context, `────∗`, goal
+  let mut lines := pers.reverse
+  if !pers.isEmpty then
+    lines := lines.push (← `(irisLine| ────────────────────────────────────────────────────────────□))
+  lines := lines ++ spat.reverse
+  lines := lines.push (← `(irisLine| ────────────────────────────────────────────────────────────∗))
+  return ⟨← `(irisGoalStx| $lines* $goal:term)⟩
 where
   delabHypotheses {u prop bi s} (hyps : @Hyps u prop bi s)
-      (acc : NameMap Nat × Array (TSyntax ``irisHyp)) :
-      DelabM (NameMap Nat × Array (TSyntax ``irisHyp)) := do
+      (acc : NameMap Nat × Array (TSyntax `irisLine) × Array (TSyntax `irisLine)) :
+      DelabM (NameMap Nat × Array (TSyntax `irisLine) × Array (TSyntax `irisLine)) := do
     match hyps with
     | .emp _ => pure acc
     | .hyp _ name _ p ty _ =>
-      let mut (map, acc) := acc
+      let mut (map, pers, spat) := acc
       let (idx, name') ← if let some idx := map.find? name then
         pure (idx + 1, name.appendAfter <| if idx == 0 then "✝" else "✝" ++ idx.toSuperscriptString)
       else
         pure (0, name)
-      let stx ← if isTrue p then
-        `(irisHyp| □$(mkIdent name') : $(← unpackIprop (← delab ty)))
+      let nm := mkIdent name'
+      let tyStx ← unpackIprop (← delab ty)
+      let stx ← `(irisLine| $nm:ident : $tyStx)
+      if isTrue p then
+        pure (map.insert name idx, pers.push stx, spat)
       else
-        `(irisHyp| ∗$(mkIdent name') : $(← unpackIprop (← delab ty)))
-      pure (map.insert name idx, acc.push stx)
+        pure (map.insert name idx, pers, spat.push stx)
     | .sep _ _ _ _ lhs rhs => delabHypotheses lhs (← delabHypotheses rhs acc)
 
 @[delab app.Iris.ProofMode.HypMarker]
