@@ -22,15 +22,15 @@ namespace Iris.Examples.HeapLang
                                                      arrRoot, arrState + lemmas)
     Lock invariant (isArrLockINV) .........   71   (pre + contractive + unfold)
     contents predicate + lemmas ...........  207   (incl. insert/removeAfter extract)
-    Core predicates .......................   60   (isArrINV, isArr, isContents,
-                                                     idRecord)
+    Core predicates .......................   65   (isArrINV incl. wellFormed,
+                                                     isArr, isContents, idRecord)
     ------------------------------------------------
-    init_spec   proof .....................   87
+    init_spec   proof .....................   86
     insert_spec proof .....................  375
-    remove_spec proof .....................  425
+    remove_spec proof .....................  422
     ------------------------------------------------
-    Total (this file) ..................... 1705
-    Clients (ArrayCopyClient.lean) ........  162   (seq + concurrent, verified)
+    Total (this file) ..................... 1729
+    Clients (ArrayCopyClient.lean) ........  157   (seq + concurrent, verified)
 ================================================================================
 -/
 
@@ -782,7 +782,8 @@ def isArrINV (γL γA γS : GName) : IProp GF := iprop%
   ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat × Bool)),
     dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
   ⌜ (∀ id, id ∈ σ.cells.map (·.1) ↔ ∃ loc x sl, get? m id = some (loc, x, sl, true))
-    ∧ (∀ id, dom m id → id < σ.counter) ⌝
+    ∧ (∀ id, dom m id → id < σ.counter)
+    ∧ Arr.wellFormed σ ⌝
 
 instance isArrINV_timeless (γL γA γS : GName) :
     Timeless (PROP := IProp GF) (isArrINV γL γA γS) := by
@@ -794,7 +795,8 @@ theorem isArrINV_unfold (γL γA γS : GName) :
       ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat × Bool)),
         dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
       ⌜ (∀ id, id ∈ σ.cells.map (·.1) ↔ ∃ loc x sl, get? m id = some (loc, x, sl, true))
-        ∧ (∀ id, dom m id → id < σ.counter) ⌝ := .rfl
+        ∧ (∀ id, dom m id → id < σ.counter)
+        ∧ Arr.wellFormed σ ⌝ := .rfl
 
 
 -- CORE PREDICATES
@@ -879,7 +881,7 @@ theorem Impl.init_spec (x : Int) :
     iexists (Arr.init x), hl_val((&lk, #c)), _
     iframe HDm Hroot HSauth
     ipureintro
-    refine ⟨?_, ?_⟩
+    refine ⟨?_, ?_, Arr.init_wellFormed x⟩
     · intro id
       simp only [Arr.init, List.map_cons, List.map_nil, List.mem_singleton,
         LawfulPartialMap.get?_insert, get?_empty]
@@ -930,7 +932,7 @@ set_option maxRecDepth 8000 in
 theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
   ⊢@{IProp GF}
     Arr.isArr γ -∗ Arr.idRecord γ node id -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝ ⟫
+      ⟪ ∀ σ, Arr.isContents γ σ ⟫
         hl(&Impl.insert &node #x) @ arrN
       ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) | ret, RET ret; Arr.idRecord γ node id ∗ Arr.idRecord γ ret nid ⟫ := by
   iintro Harr Hnode %Φ HAU
@@ -970,14 +972,14 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
-    iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-    icases Hpre with ⟨Hcont, %Hwf⟩
+    iauopen HAU with ⟨%σ, Hcont, Hclose⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
     subst γLc; subst γSc; subst vI
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
+    have Hwf := Hcoup.2.2
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
     icases (dataPointsto_agree γL id ptr ptrN x0 rval none rsucc al0 true _ _) $$ HDlock HDrec with %HagN
     obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
@@ -1004,7 +1006,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       | some val =>
         exfalso
         have hdom : PartialMap.dom m σ.counter := by simp [PartialMap.dom, h]
-        exact absurd (Hcoup.2 σ.counter hdom) (by omega)
+        exact absurd (Hcoup.2.1 σ.counter hdom) (by omega)
     imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter nptr x none true Hfresh) $$ HDm with ⟨HDm, HDnew⟩
     icases (data_split3 γL σ.counter nptr x none true) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
     imod (arrState_update γS σ (σ.insert id x)) $$ HSauth HSfrag with ⟨HSauth, HSfrag⟩
@@ -1024,7 +1026,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, none, true))
       iframe HDm HrootI HSauth
       ipureintro
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, σ.insert_wellFormed Hwf id x⟩
       · intro id'
         rw [Arr.insert_ids_mem σ id x Hmem id']
         by_cases hc : id' = σ.counter
@@ -1056,7 +1058,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
                   LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm)]
             have hd : PartialMap.dom m id' := by
               unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
-            have := Hcoup.2 id' hd; omega
+            have := Hcoup.2.1 id' hd; omega
     imod Hclinv $$ HInew
     -- build the new node's lock (isArrLockINV γL σ.counter (&nlkv,#nptr))
     ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
@@ -1146,14 +1148,14 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
-    iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-    icases Hpre with ⟨Hcont, %Hwf⟩
+    iauopen HAU with ⟨%σ, Hcont, Hclose⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
     subst γLc; subst γSc; subst vI
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
+    have Hwf := Hcoup.2.2
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
     icases (dataPointsto_agree γL id ptr ptrN x0 rval (some nid0) rsucc al0 true _ _) $$ HDlock HDrec with %HagN
     obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
@@ -1180,7 +1182,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       | some val =>
         exfalso
         have hdom : PartialMap.dom m σ.counter := by simp [PartialMap.dom, h]
-        exact absurd (Hcoup.2 σ.counter hdom) (by omega)
+        exact absurd (Hcoup.2.1 σ.counter hdom) (by omega)
     imod (dataMap_insert γL (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter nptr x (some nid0) true Hfresh) $$ HDm with ⟨HDm, HDnew⟩
     icases (data_split3 γL σ.counter nptr x (some nid0) true) $$ HDnew with ⟨HDnlock, HDncont, HDnrec⟩
     imod (arrState_update γS σ (σ.insert id x)) $$ HSauth HSfrag with ⟨HSauth, HSfrag⟩
@@ -1199,7 +1201,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, some nid0, true))
       iframe HDm HrootI HSauth
       ipureintro
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, σ.insert_wellFormed Hwf id x⟩
       · intro id'
         rw [Arr.insert_ids_mem σ id x Hmem id']
         by_cases hc : id' = σ.counter
@@ -1231,7 +1233,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
                   LawfulPartialMap.get?_insert, if_neg (fun h => hi h.symm)]
             have hd : PartialMap.dom m id' := by
               unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
-            have := Hcoup.2 id' hd; omega
+            have := Hcoup.2.1 id' hd; omega
     imod Hclinv $$ HInew
     ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
         ((dataPointsto γL σ.counter nptr x0' none al' (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
@@ -1305,9 +1307,9 @@ set_option maxRecDepth 8000 in
 theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
   ⊢@{IProp GF}
     Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.idRecord γ snode sid -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ ∧ Arr.adjacent σ id sid⌝  ⟫
+      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.adjacent σ id sid⌝  ⟫
         hl(&Impl.remove &node) @ arrN
-      ⟪ ∃ u, Arr.isContents γ (σ.remove sid) ∗ ⌜u = sid⌝ | ret, RET ret; Arr.idRecord γ node id ⟫ := by
+      ⟪ Arr.isContents γ (σ.remove sid) ∗ Arr.idRecord γ node id | RET hl_val(#()) ⟫ := by
   iintro Harr Hnode Hsnode %Φ HAU
   icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
   icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
@@ -1337,12 +1339,14 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
     iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-    icases Hpre with ⟨Hcont, %Hwfadj⟩
-    obtain ⟨Hwf, Hadj⟩ := Hwfadj
+    icases Hpre with ⟨Hcont, %Hadj⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
     subst γLc; subst γSc; subst vI
+    icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
+    subst σ0
+    have Hwf := Hcoup.2.2
     obtain ⟨pre, post, xx, sx, hcells⟩ := Hadj
     ihave Hc2 : contents γL vc (pre ++ (id, xx) :: (sid, sx) :: post) $$ [Hcontents]
     · rw [← hcells]; iexact Hcontents
@@ -1378,14 +1382,14 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iinv Hinv with ⟨HI, Hclinv⟩
       icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
       iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-      icases Hpre with ⟨Hcont, %Hwfadj⟩
-      obtain ⟨Hwf, Hadj⟩ := Hwfadj
+      icases Hpre with ⟨Hcont, %Hadj⟩
       icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
       icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
       obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
       subst γLc; subst γSc; subst vI
       icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
       subst σ0
+      have Hwf := Hcoup.2.2
       obtain ⟨pre, post, xx, sx, hcells⟩ := Hadj
       obtain ⟨hidsid, hpreS, hpostS⟩ := Arr.nodup_ne_sid id sid xx sx pre post (hcells ▸ Hwf.idUqi)
       have Hmemid : id ∈ σ.cells.map (·.1) := List.mem_map.mpr ⟨(id, xx), by rw [hcells]; simp, rfl⟩
@@ -1434,20 +1438,26 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       ihave Hcontents' : contents γL vc (pre ++ (id, xx) :: post) $$ [HDcontNode' Hwand]
       · iapply Hwand $$ HDcontNode'
       icases Hclose with ⟨-, Hcommit⟩
-      imod Hcommit $$ %sid [Hrootc HSfrag Hcontents'] with HΦ
+      imod Hcommit $$ [Hrootc HSfrag Hcontents' HDrec'] with HΦ
       · isplitl [Hrootc HSfrag Hcontents']
         · unfold Arr.isContents
           iexists vc, γL, γS
           iframe Hrootc HSfrag
           rw [hrcells]; iexact Hcontents'
-        · ipureintro; rfl
-      -- close the invariant (map: node succ→none, sid alive→false)
+        · unfold Arr.idRecord
+          iexists v, γL, γS, lk, ptr
+          iframe Hroot
+          isplit
+          · ipureintro; rfl
+          isplitl [HDrec']
+          · iexists x0, none; iframe HDrec'
+          · iexact HlockNode
       ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
       · unfold isArrINV
         iexists (σ.remove sid), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, none, true)) sid (loc0, nx, none, false))
         iframe HDm HrootI HSauth
         ipureintro
-        refine ⟨?_, ?_⟩
+        refine ⟨?_, ?_, Arr.remove_wellFormed σ Hwf sid⟩
         · intro id'
           rw [Arr.remove_ids_mem σ sid id']
           by_cases hsi : id' = sid
@@ -1479,7 +1489,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
                     LawfulPartialMap.get?_insert, if_neg (fun h => hii h.symm)]
               have hd : PartialMap.dom m id' := by
                 unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
-              exact Hcoup.2 id' hd
+              exact Hcoup.2.1 id' hd
       imod Hclinv $$ HInew
       imodintro
       -- release sid's lock (LEFT form: alive=false, succ=none)
@@ -1536,17 +1546,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iapply release_spec $$ HresN
       iintro -
       wp_pures
-      ispecialize HΦ $$ %hl_val(#())
-      iunfold wandM at HΦ
-      iapply HΦ
-      unfold Arr.idRecord
-      iexists v, γL, γS, lk, ptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDrec']
-      · iexists x0, none; iframe HDrec'
-      · iexact HlockNode
+      iexact HΦ
     · -- RIGHT-S: successor `sid` itself has a successor `snid`
       iapply wp_load $$ HptS
       iintro !> HptS
@@ -1560,14 +1560,14 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iinv Hinv with ⟨HI, Hclinv⟩
       icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
       iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-      icases Hpre with ⟨Hcont, %Hwfadj⟩
-      obtain ⟨Hwf, Hadj⟩ := Hwfadj
+      icases Hpre with ⟨Hcont, %Hadj⟩
       icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
       icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
       obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
       subst γLc; subst γSc; subst vI
       icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
       subst σ0
+      have Hwf := Hcoup.2.2
       obtain ⟨pre, post, xx, sx, hcells⟩ := Hadj
       obtain ⟨hidsid, hpreS, hpostS⟩ := Arr.nodup_ne_sid id sid xx sx pre post (hcells ▸ Hwf.idUqi)
       have Hmemid : id ∈ σ.cells.map (·.1) := List.mem_map.mpr ⟨(id, xx), by rw [hcells]; simp, rfl⟩
@@ -1612,19 +1612,26 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       ihave Hcontents' : contents γL vc (pre ++ (id, xx) :: post) $$ [HDcontNode' Hwand]
       · iapply Hwand $$ HDcontNode'
       icases Hclose with ⟨-, Hcommit⟩
-      imod Hcommit $$ %sid [Hrootc HSfrag Hcontents'] with HΦ
+      imod Hcommit $$ [Hrootc HSfrag Hcontents' HDrec'] with HΦ
       · isplitl [Hrootc HSfrag Hcontents']
         · unfold Arr.isContents
           iexists vc, γL, γS
           iframe Hrootc HSfrag
           rw [hrcells]; iexact Hcontents'
-        · ipureintro; rfl
+        · unfold Arr.idRecord
+          iexists v, γL, γS, lk, ptr
+          iframe Hroot
+          isplit
+          · ipureintro; rfl
+          isplitl [HDrec']
+          · iexists x0, (some snid); iframe HDrec'
+          · iexact HlockNode
       ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
       · unfold isArrINV
         iexists (σ.remove sid), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some snid, true)) sid (loc0, nx, some snid, false))
         iframe HDm HrootI HSauth
         ipureintro
-        refine ⟨?_, ?_⟩
+        refine ⟨?_, ?_, Arr.remove_wellFormed σ Hwf sid⟩
         · intro id'
           rw [Arr.remove_ids_mem σ sid id']
           by_cases hsi : id' = sid
@@ -1656,7 +1663,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
                     LawfulPartialMap.get?_insert, if_neg (fun h => hii h.symm)]
               have hd : PartialMap.dom m id' := by
                 unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
-              exact Hcoup.2 id' hd
+              exact Hcoup.2.1 id' hd
       imod Hclinv $$ HInew
       imodintro
       -- release sid's lock (RIGHT form: alive=false, succ=some snid)
@@ -1715,17 +1722,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iapply release_spec $$ HresN
       iintro -
       wp_pures
-      ispecialize HΦ $$ %hl_val(#())
-      iunfold wandM at HΦ
-      iapply HΦ
-      unfold Arr.idRecord
-      iexists v, γL, γS, lk, ptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDrec']
-      · iexists x0, (some snid); iframe HDrec'
-      · iexact HlockNode
+      iexact HΦ
 
 end Specs
 

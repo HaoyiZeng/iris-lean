@@ -19,20 +19,18 @@ the logically-atomic `insert_spec` collapses (via `atomicWP_seq`) to an ordinary
 after the call the abstract list is exactly `σ.insert id x`, and we recover both node records. -/
 theorem Impl.insert_hoare (γ : GName) (id : Nat) (node : Val) (x : Int) (σ : Arr) :
     ⊢@{IProp GF}
-      Arr.isArr γ -∗ Arr.idRecord γ node id -∗ ⌜Arr.wellFormed σ⌝ -∗ Arr.isContents γ σ -∗
+      Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.isContents γ σ -∗
       WP hl(&Impl.insert &node #x)
         {{ v, ∃ nid, Arr.isContents γ (σ.insert id x) ∗
                 Arr.idRecord γ node id ∗ Arr.idRecord γ v nid }} := by
-  iintro HisArr HidRec %Hwf Hcont
+  iintro HisArr HidRec Hcont
   ihave Hspec := (Impl.insert_spec γ id node x) $$ HisArr HidRec
   iapply atomicWP_seq _ _ _ _ _ _ $$ Hspec
     %(fun v => iprop(∃ nid, Arr.isContents γ (σ.insert id x) ∗
         Arr.idRecord γ node id ∗ Arr.idRecord γ v nid))
     %(⟨σ, ⟨⟩⟩) [Hcont] []
   · itele_reduce
-    isplitl [Hcont]
-    · iexact Hcont
-    · ipureintro; exact Hwf
+    iexact Hcont
   · itele_reduce
     iintro %nid Hβ %ret
     simp only [wandM]
@@ -63,13 +61,13 @@ theorem Impl.seqClient_spec :
   wp_pures
   wp_bind (&Impl.insert _ _)
   ihave Hw1 := (Impl.insert_hoare γ id r 1 (Arr.init 0)) $$
-    HisArr HidRec %(Arr.init_wellFormed 0) Hcont
+    HisArr HidRec Hcont
   iapply wp_wand $$ Hw1
   iintro %n1 ⟨%nid1, Hcont, HidRec, -⟩
   wp_pures
   wp_bind (&Impl.insert _ _)
   ihave Hw2 := (Impl.insert_hoare γ id r 2 ((Arr.init 0).insert id 1)) $$
-    HisArr HidRec %((Arr.init 0).insert_wellFormed (Arr.init_wellFormed 0) id 1) Hcont
+    HisArr HidRec Hcont
   iapply wp_wand $$ Hw2
   iintro %n2 ⟨%nid2, Hcont, -, -⟩
   wp_pures
@@ -104,7 +102,7 @@ well-formed abstract list, a thread owning a node record can insert; the logical
 theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
     ⊢@{IProp GF}
       Arr.isArr γ -∗
-      inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
+      inv clientN iprop(∃ σ, Arr.isContents γ σ) -∗
       Arr.idRecord γ node id -∗
       WP hl(&Impl.insert &node #x) {{ _v, True }} := by
   iintro #HisArr #Hinv HidRec
@@ -118,23 +116,19 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
     exact ⟨CoPset.mem_full, fun hya => hd y ⟨hy, hya⟩⟩
   iapply aacc_inv _ _ _ _ Hsub $$ Hinv
   iintro Hbody
-  icases Hbody with ⟨%σ, Hcont, %Hwf⟩
-  ihave Hα : iprop(Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) $$ [Hcont]
-  · iframe Hcont; ipureintro; exact Hwf
-  iaaccintro' with Hα
+  icases Hbody with ⟨%σ, Hcont⟩
+  iaaccintro' with Hcont
   · -- abort: peeked but did not linearize; restore the invariant body unchanged
-    iintro Hα
-    icases Hα with ⟨Hcont, %Hwf'⟩
+    iintro Hcont
     imodintro
     isplitl [Hcont]
-    · iexists σ; iframe Hcont; ipureintro; exact Hwf'
+    · iexists σ; iframe Hcont
     · iframe HisArr Hinv
-  · -- commit: `insert` linearized; store the updated (still well-formed) list back
+  · -- commit: `insert` linearized; store the updated list back
     iintro %nid Hcont'
     imodintro
     isplitl [Hcont']
     · iexists (σ.insert id x); iframe Hcont'
-      ipureintro; exact σ.insert_wellFormed Hwf id x
     · itele_reduce
       iintro %ret
       simp only [wandM]
@@ -143,11 +137,11 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
 
 /-- Two threads insert concurrently after two independently-owned nodes. The postcondition is
 trivial; the *interesting* guarantee is that the shared invariant — "the heap always represents
-some well-formed abstract list" — is preserved across the interleaving. -/
+some abstract list" — is preserved across the interleaving. -/
 theorem Impl.parClient_spec (γ : GName) (id1 id2 : Nat) (node1 node2 : Val) :
     ⊢@{IProp GF}
       Arr.isArr γ -∗
-      inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
+      inv clientN iprop(∃ σ, Arr.isContents γ σ) -∗
       Arr.idRecord γ node1 id1 -∗ Arr.idRecord γ node2 id2 -∗
       WP hl(&Impl.insert &node1 #1 ‖ &Impl.insert &node2 #2) {{ _v, True }} := by
   iintro #HisArr #Hinv Hrec1 Hrec2
