@@ -12,7 +12,7 @@ section Clients
 
 variable {H' : Type → Type}
 variable {GF : BundledGFunctors} [LawfulFiniteMap H' Nat]
-variable [HeapLangGS hlc GF] [SpinLockG GF] [ArrG GF H'] [SpawnG GF]
+variable [HeapLangGS hlc GF] [ArrG GF H'] [SpawnG GF]
 
 /-- **Sequential Hoare view of `insert`.** Because the caller privately owns `isContents σ`,
 the logically-atomic `insert_spec` collapses (via `atomicWP_seq`) to an ordinary Hoare triple:

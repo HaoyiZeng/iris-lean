@@ -318,7 +318,7 @@ section Specs
 open Std PartialMap
 
 abbrev ArrNameRF : COFE.OFunctorPre :=
-  constOF (Agree (LeibnizO (Val × GName × GName × GName × GName)))
+  constOF (Agree (LeibnizO (Val × GName × GName)))
 
 -- abstract-state ghost variable (ExclAuth over the whole Arr): authority in the invariant,
 -- fragment in isContents — lets the invariant learn σ (incl σ.counter) at the linearization point.
@@ -408,8 +408,8 @@ theorem data_combine3 (γ : GName) (id : Nat) (loc : Loc) (v : Int) (sl : Option
   iframe H3 H4
 
 
-def arrRoot (γ : GName) (v : Val) (γL γI γH γS : GName) : IProp GF :=
-  iOwn (E := ArrG.rootG) γ (toAgree (⟨(v, γL, γI, γH, γS)⟩ : LeibnizO _))
+def arrRoot (γ : GName) (v : Val) (γL γS : GName) : IProp GF :=
+  iOwn (E := ArrG.rootG) γ (toAgree (⟨(v, γL, γS)⟩ : LeibnizO _))
 
 def arrState     (γ : GName) (σ : Arr) : IProp GF := iOwn (E := ArrG.stateG) γ (ExclAuth.auth (⟨σ⟩ : LeibnizO Arr))
 def arrStateFrag (γ : GName) (σ : Arr) : IProp GF := iOwn (E := ArrG.stateG) γ (ExclAuth.frag (⟨σ⟩ : LeibnizO Arr))
@@ -439,22 +439,22 @@ instance (γ : GName) (σ : Arr) : Timeless (PROP := IProp GF) (arrStateFrag γ 
   unfold arrStateFrag; infer_instance
 
 -- ===== root binding (Agree, immutable ⇒ no update/insert/delete) =====
-theorem arrRoot_alloc (v : Val) (γL γI γH γS : GName) :
-    ⊢@{IProp GF} |==> ∃ γ, arrRoot γ v γL γI γH γS := by
+theorem arrRoot_alloc (v : Val) (γL γS : GName) :
+    ⊢@{IProp GF} |==> ∃ γ, arrRoot γ v γL γS := by
   unfold arrRoot; iapply (iOwn_alloc (E := ArrG.rootG) _ Agree.toAgree_valid)
-theorem arrRoot_agree (γ : GName) (v v' : Val) (γL γI γH γS γL' γI' γH' γS' : GName) :
-    ⊢@{IProp GF} arrRoot γ v γL γI γH γS -∗ arrRoot γ v' γL' γI' γH' γS' -∗
-      ⌜v = v' ∧ γL = γL' ∧ γI = γI' ∧ γH = γH' ∧ γS = γS'⌝ := by
+theorem arrRoot_agree (γ : GName) (v v' : Val) (γL γS γL' γS' : GName) :
+    ⊢@{IProp GF} arrRoot γ v γL γS -∗ arrRoot γ v' γL' γS' -∗
+      ⌜v = v' ∧ γL = γL' ∧ γS = γS'⌝ := by
   unfold arrRoot
   iintro H1 H2
   icases iOwn_cmraValid_op $$ [$H1 $H2] with %Hvalid
   ipureintro
   have h := congrArg LeibnizO.car (toAgree_op_valid_iff_eq.mp Hvalid)
-  injection h with h1 h; injection h with h2 h; injection h with h3 h; injection h with h4 h5
-  exact ⟨h1, h2, h3, h4, h5⟩
-instance (γ : GName) (v : Val) (γL γI γH γS : GName) : Persistent (PROP := IProp GF) (arrRoot γ v γL γI γH γS) := by
+  injection h with h1 h; injection h with h2 h3
+  exact ⟨h1, h2, h3⟩
+instance (γ : GName) (v : Val) (γL γS : GName) : Persistent (PROP := IProp GF) (arrRoot γ v γL γS) := by
   unfold arrRoot; infer_instance
-instance (γ : GName) (v : Val) (γL γI γH γS : GName) : Timeless (PROP := IProp GF) (arrRoot γ v γL γI γH γS) := by
+instance (γ : GName) (v : Val) (γL γS : GName) : Timeless (PROP := IProp GF) (arrRoot γ v γL γS) := by
   unfold arrRoot; infer_instance
 
 end RA
@@ -736,61 +736,61 @@ theorem contents_removeAfter_extract (γL : GName) (id sid : Nat) :
 
 end ContentsLemmas
 
-def isArrINV (γL γI γA γH γS : GName) : IProp GF := iprop%
+def isArrINV (γL γA γS : GName) : IProp GF := iprop%
   ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat)),
-    dataMap γL m ∗ arrRoot γA v γL γI γH γS ∗ arrState γS σ ∗
+    dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
   ⌜ ∀ id, dom m id ↔ id ∈ σ.cells.map (·.1) ⌝
 
-instance isArrINV_timeless (γL γI γA γH γS : GName) :
-    Timeless (PROP := IProp GF) (isArrINV γL γI γA γH γS) := by
+instance isArrINV_timeless (γL γA γS : GName) :
+    Timeless (PROP := IProp GF) (isArrINV γL γA γS) := by
   unfold isArrINV; infer_instance
 
-theorem isArrINV_unfold (γL γI γA γH γS : GName) :
-    (isArrINV γL γI γA γH γS : IProp GF) ⊣⊢
+theorem isArrINV_unfold (γL γA γS : GName) :
+    (isArrINV γL γA γS : IProp GF) ⊣⊢
       ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat)),
-        dataMap γL m ∗ arrRoot γA v γL γI γH γS ∗ arrState γS σ ∗
+        dataMap γL m ∗ arrRoot γA v γL γS ∗ arrState γS σ ∗
       ⌜ ∀ id, dom m id ↔ id ∈ σ.cells.map (·.1) ⌝ := .rfl
 
 
 -- CORE PREDICATES
 def arrN : Namespace := ndot nroot "arr"
 def Arr.isArr (γ : GName) : IProp GF := iprop%
-  ∃ (v : Val) (γL γI γH γS : GName),
-    arrRoot γ v γL γI γH γS ∗
+  ∃ (v : Val) (γL γS : GName),
+    arrRoot γ v γL γS ∗
     isArrLockINV γL 0 v ∗
-    inv arrN (isArrINV γL γI γ γH γS)
+    inv arrN (isArrINV γL γ γS)
 -- AI: Prove the persistent
 instance Arr.isArr_persistent (γ : GName) : Persistent (PROP := IProp GF) (Arr.isArr γ) := by
   unfold Arr.isArr; infer_instance
 
 
 def Arr.isContents (γ : GName) (σ : Arr) : IProp GF := iprop%
-  ∃ (v : Val) (γL γI γH γS : GName),
-    arrRoot γ v γL γI γH γS ∗ arrStateFrag γS σ ∗
+  ∃ (v : Val) (γL γS : GName),
+    arrRoot γ v γL γS ∗ arrStateFrag γS σ ∗
     contents γL v σ.cells
 
 theorem Arr.isContents_unfold (γ : GName) (σ : Arr) :
     (Arr.isContents γ σ : IProp GF) ⊣⊢
-      ∃ (v : Val) (γL γI γH γS : GName),
-        arrRoot γ v γL γI γH γS ∗ arrStateFrag γS σ ∗
+      ∃ (v : Val) (γL γS : GName),
+        arrRoot γ v γL γS ∗ arrStateFrag γS σ ∗
         contents γL v σ.cells := .rfl
 
 
 def Arr.idRecord (γ : GName) (node : Val) (id : Nat) : IProp GF := iprop%
-  ∃ (v: Val) (γL γI γH γS : GName) (lk : Val) (ptr : Loc),
-    arrRoot γ v γL γI γH γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
+  ∃ (v: Val) (γL γS : GName) (lk : Val) (ptr : Loc),
+    arrRoot γ v γL γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
     (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ (DFrac.own q4)) ∗
     isArrLockINV γL id node
 
 -- trivial (defeq) unfolding lemmas, to destruct the def-wrapped predicates on proofmode hyps
 theorem Arr.isArr_unfold (γ : GName) :
     (Arr.isArr γ : IProp GF) ⊣⊢
-      ∃ v γL γI γH γS, arrRoot γ v γL γI γH γS ∗ isArrLockINV γL 0 v ∗
-        inv arrN (isArrINV γL γI γ γH γS) := .rfl
+      ∃ v γL γS, arrRoot γ v γL γS ∗ isArrLockINV γL 0 v ∗
+        inv arrN (isArrINV γL γ γS) := .rfl
 theorem Arr.idRecord_unfold (γ : GName) (node : Val) (id : Nat) :
     (Arr.idRecord γ node id : IProp GF) ⊣⊢
-      ∃ (v: Val) (γL γI γH γS : GName) (lk : Val) (ptr : Loc),
-        arrRoot γ v γL γI γH γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
+      ∃ (v: Val) (γL γS : GName) (lk : Val) (ptr : Loc),
+        arrRoot γ v γL γS ∗ ⌜node = hl_val((&lk, #ptr))⌝ ∗
         (∃ (val : Int) (succ : Option Nat), dataPointsto γL id ptr val succ (DFrac.own q4)) ∗
         isArrLockINV γL id node := .rfl
 
@@ -814,7 +814,7 @@ theorem Impl.init_spec (x : Int) :
   imod dataMap_alloc with ⟨%γL, HDm⟩
   imod (dataMap_insert γL ∅ 0 c x none (get?_empty _)) $$ HDm with ⟨HDm, HDf⟩
   imod (arrState_alloc (Arr.init x)) with ⟨%γS, HSauth, HSfrag⟩
-  imod (arrRoot_alloc hl_val((&lk, #c)) γL γL γL γS) with ⟨%γ, #Hroot⟩
+  imod (arrRoot_alloc hl_val((&lk, #c)) γL γS) with ⟨%γ, #Hroot⟩
   icases (data_split3 γL 0 c x none) $$ HDf with ⟨HDlock, HDcont, HDrec⟩
   -- build the node's lock body (LEFT branch: last node, next = none)
   ihave Hbody : iprop(∃ (x0 : Int) (nlk : Val),
@@ -827,7 +827,7 @@ theorem Impl.init_spec (x : Int) :
     ileft; iframe HDlock Hc
   ispecialize Hlk $$ %_ %(⊤) Hbody
   imod Hlk with Hlock
-  imod (inv_alloc arrN ⊤ (isArrINV γL γL γ γL γS)) $$ [HDm Hroot HSauth] with #Hinv
+  imod (inv_alloc arrN ⊤ (isArrINV γL γ γS)) $$ [HDm Hroot HSauth] with #Hinv
   · inext
     unfold isArrINV
     iexists (Arr.init x), hl_val((&lk, #c)), _
@@ -853,11 +853,11 @@ theorem Impl.init_spec (x : Int) :
   iexists γ, 0
   isplitl []
   · unfold Arr.isArr
-    iexists hl_val((&lk, #c)), γL, γL, γL, γS
+    iexists hl_val((&lk, #c)), γL, γS
     iframe Hroot HlockINV Hinv
   isplitl [HSfrag HDcont]
   · unfold Arr.isContents
-    iexists hl_val((&lk, #c)), γL, γL, γL, γS
+    iexists hl_val((&lk, #c)), γL, γS
     iframe Hroot HSfrag
     rw [Arr.init]
     unfold contents
@@ -866,7 +866,7 @@ theorem Impl.init_spec (x : Int) :
     · ipureintro; rfl
     iframe HDcont
   · unfold Arr.idRecord
-    iexists hl_val((&lk, #c)), γL, γL, γL, γS, lk, c
+    iexists hl_val((&lk, #c)), γL, γS, lk, c
     iframe Hroot
     isplit
     · ipureintro; rfl
@@ -882,11 +882,11 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
         hl(&Impl.insert &node #x) @ arrN
       ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) | ret, RET ret; Arr.idRecord γ node id ∗ Arr.idRecord γ ret nid ⟫ := by
   iintro Harr Hnode %Φ HAU
-  icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γI, %γH, %γS, #Hroot, #HlockRoot, #Hinv⟩
-  icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γI', %γH', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
-  icases (arrRoot_agree γ v v' γL γI γH γS γL' γI' γH' γS') $$ Hroot Hroot' with %Hall
-  obtain ⟨_, HγL, HγI, HγH, HγS⟩ := Hall
-  subst HγL; subst HγI; subst HγH; subst HγS
+  icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
+  icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
+  icases (arrRoot_agree γ v v' γL γS γL' γS') $$ Hroot Hroot' with %Hall
+  obtain ⟨_, HγL, HγS⟩ := Hall
+  subst HγL; subst HγS
   icases (isArrLockINV_unfold' γL id node).mp $$ HlockNode with ⟨%lk, %γlock, %ptr, %Hnodeeq, #Hlock⟩
   rw [Hnodeeq]
   unfold Impl.insert
@@ -917,13 +917,13 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     -- LINEARIZATION POINT
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
-    icases (isArrINV_unfold γL γI γ γH γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
+    icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
     iauopen HAU with ⟨%σ, Hpre, Hclose⟩
     icases Hpre with ⟨Hcont, %Hwf⟩
-    icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γIc, %γHc, %γSc, #Hrootc, HSfrag, Hcontents⟩
-    icases (arrRoot_agree γ vI vc γL γI γH γS γLc γIc γHc γSc) $$ HrootI Hrootc with %Hall2
-    obtain ⟨HvIc, HγLc, HγIc, HγHc, HγSc⟩ := Hall2
-    subst γLc; subst γIc; subst γHc; subst γSc; subst vI
+    icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
+    icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
+    obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
+    subst γLc; subst γSc; subst vI
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
@@ -963,12 +963,12 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases Hclose with ⟨-, Hcommit⟩
     imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
     · unfold Arr.isContents
-      iexists vc, γL, γI, γH, γS
+      iexists vc, γL, γS
       iframe Hrootc HSfrag
       rw [Arr.insert_cells_eq σ id x Hmem]
       iexact Hcontents'
     -- close the shared invariant with the updated map & state
-    ihave HInew : isArrINV γL γI γ γH γS $$ [HDm HrootI HSauth]
+    ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter (nptr, x, none))
       iframe HDm HrootI HSauth
@@ -1038,7 +1038,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply HΦ
     isplitl [HDrec']
     · unfold Arr.idRecord
-      iexists v, γL, γI, γH, γS, lk, ptr
+      iexists v, γL, γS, lk, ptr
       iframe Hroot
       isplit
       · ipureintro; rfl
@@ -1046,7 +1046,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexists x0, (some σ.counter); iframe HDrec'
       · iexact HlockNode
     · unfold Arr.idRecord
-      iexists v, γL, γI, γH, γS, nlkv, nptr
+      iexists v, γL, γS, nlkv, nptr
       iframe Hroot
       isplit
       · ipureintro; rfl
@@ -1072,13 +1072,13 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     -- LINEARIZATION POINT
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
-    icases (isArrINV_unfold γL γI γ γH γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
+    icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
     iauopen HAU with ⟨%σ, Hpre, Hclose⟩
     icases Hpre with ⟨Hcont, %Hwf⟩
-    icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γIc, %γHc, %γSc, #Hrootc, HSfrag, Hcontents⟩
-    icases (arrRoot_agree γ vI vc γL γI γH γS γLc γIc γHc γSc) $$ HrootI Hrootc with %Hall2
-    obtain ⟨HvIc, HγLc, HγIc, HγHc, HγSc⟩ := Hall2
-    subst γLc; subst γIc; subst γHc; subst γSc; subst vI
+    icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
+    icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
+    obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
+    subst γLc; subst γSc; subst vI
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
@@ -1118,11 +1118,11 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases Hclose with ⟨-, Hcommit⟩
     imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
     · unfold Arr.isContents
-      iexists vc, γL, γI, γH, γS
+      iexists vc, γL, γS
       iframe Hrootc HSfrag
       rw [Arr.insert_cells_eq σ id x Hmem]
       iexact Hcontents'
-    ihave HInew : isArrINV γL γI γ γH γS $$ [HDm HrootI HSauth]
+    ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter)) σ.counter (nptr, x, some nid0))
       iframe HDm HrootI HSauth
@@ -1191,7 +1191,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply HΦ
     isplitl [HDrec']
     · unfold Arr.idRecord
-      iexists v, γL, γI, γH, γS, lk, ptr
+      iexists v, γL, γS, lk, ptr
       iframe Hroot
       isplit
       · ipureintro; rfl
@@ -1199,7 +1199,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexists x0, (some σ.counter); iframe HDrec'
       · iexact HlockNode
     · unfold Arr.idRecord
-      iexists v, γL, γI, γH, γS, nlkv, nptr
+      iexists v, γL, γS, nlkv, nptr
       iframe Hroot
       isplit
       · ipureintro; rfl
