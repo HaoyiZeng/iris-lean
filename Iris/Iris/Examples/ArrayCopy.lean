@@ -38,6 +38,15 @@ successor — logically removes the cell with id `sid`). -/
 def Arr.adjacent (σ : Arr) (id sid : Nat) : Prop :=
   ∃ (pre post : List (Nat × Int)) (x sx : Int), σ.cells = pre ++ (id, x) :: (sid, sx) :: post
 
+/-- Membership of ids in `σ.remove sid`: everything except `sid`. -/
+theorem Arr.remove_ids_mem (σ : Arr) (sid : Nat) (id' : Nat) :
+    id' ∈ (σ.remove sid).cells.map (·.1) ↔ (id' ≠ sid ∧ id' ∈ σ.cells.map (·.1)) := by
+  unfold Arr.remove
+  simp only [List.mem_map, List.mem_filter, decide_eq_true_eq]
+  constructor
+  · rintro ⟨p, ⟨hp, hps⟩, hpid⟩; exact ⟨hpid ▸ hps, p, hp, hpid⟩
+  · rintro ⟨hne, p, hp, hpid⟩; exact ⟨p, ⟨hp, hpid ▸ hne⟩, hpid⟩
+
 /-- From `Nodup`, `sid` (at its unique position) differs from every other cell id. -/
 theorem Arr.nodup_ne_sid (id sid : Nat) (x sx : Int) (pre post : List (Nat × Int))
     (hnd : ((pre ++ (id, x) :: (sid, sx) :: post).map (·.1)).Nodup) :
@@ -1316,7 +1325,203 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
     obtain ⟨_, _, hs, _⟩ := Hag
     simp at hs
   · -- RIGHT: node.next = some(&nlk, #loc0)
-    sorry
+    iapply wp_load $$ Hpt
+    iintro !> Hpt
+    wp_pures
+    wp_bind &acquire _
+    icases (isArrLockINV_unfold' γL nid0 hl_val((&nlk, #loc0))).mp $$ HlockSucc with ⟨%slk, %sγlock, %sptr0, %HseqV, #HlockS⟩
+    obtain ⟨rfl, rfl⟩ : nlk = slk ∧ loc0 = sptr0 := by
+      injection HseqV with h1 h2; injection h2 with h3; injection h3 with h4; exact ⟨h1, h4⟩
+    iapply acquire_spec $$ HlockS
+    iintro ⟨HlockedS, HRS⟩
+    icases HRS with ⟨%nx, %nnlk, %nal, HdisjS⟩
+    wp_pures
+    wp_bind !_
+    icases HdisjS with (⟨HDlockS, HptS⟩ | ⟨%snid, %sloc, #HlockSS, HptS, HDlockS⟩)
+    · -- LEFT-S: successor `sid` is the last node (its succ = none)
+      iapply wp_load $$ HptS
+      iintro !> HptS
+      wp_pures
+      wp_bind (_ ← _)
+      iapply wp_store $$ Hpt
+      iintro !> Hpt
+      wp_pures
+      -- LINEARIZATION POINT (store relinked node past sid)
+      iapply fupd_wp
+      iinv Hinv with ⟨HI, Hclinv⟩
+      icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
+      iauopen HAU with ⟨%σ, Hpre, Hclose⟩
+      icases Hpre with ⟨Hcont, %Hwfadj⟩
+      obtain ⟨Hwf, Hadj⟩ := Hwfadj
+      icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
+      icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
+      obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
+      subst γLc; subst γSc; subst vI
+      icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
+      subst σ0
+      obtain ⟨pre, post, xx, sx, hcells⟩ := Hadj
+      obtain ⟨hidsid, hpreS, hpostS⟩ := Arr.nodup_ne_sid id sid xx sx pre post (hcells ▸ Hwf.idUqi)
+      have Hmemid : id ∈ σ.cells.map (·.1) := List.mem_map.mpr ⟨(id, xx), by rw [hcells]; simp, rfl⟩
+      have Hmemsid : sid ∈ σ.cells.map (·.1) := List.mem_map.mpr ⟨(sid, sx), by rw [hcells]; simp, rfl⟩
+      have hidlt : id < σ.counter := by
+        obtain ⟨p, hp, hpid⟩ := List.mem_map.mp Hmemid; rw [← hpid]; exact Hwf.counterFresh p hp
+      have hsidlt : sid < σ.counter := by
+        obtain ⟨p, hp, hpid⟩ := List.mem_map.mp Hmemsid; rw [← hpid]; exact Hwf.counterFresh p hp
+      have hrcells : (σ.remove sid).cells = pre ++ (id, xx) :: post := by
+        show σ.cells.filter (·.1 ≠ sid) = _
+        rw [hcells]; exact Arr.filter_removeAfter id sid xx sx pre post hidsid hpreS hpostS
+      ihave Hc2 : contents γL vc (pre ++ (id, xx) :: (sid, sx) :: post) $$ [Hcontents]
+      · rw [← hcells]; iexact Hcontents
+      icases (contents_removeAfter_extract γL id sid pre post xx sx vc (hcells ▸ Hwf.idUqi)) $$ Hc2
+        with ⟨%ptrc, %sptrc, %x0c, %ssucc, HDcontNode, HDcontS, Hwand⟩
+      -- node lock ↔ node contents: learn nid0 = sid, al0 = true, ptr/x0 unify
+      icases (dataPointsto_agree γL id ptr ptrc x0 x0c (some nid0) (some sid) al0 true _ _) $$ HDlock HDcontNode with %Hag
+      obtain ⟨hpc, hxc, hnid, hal⟩ := Hag
+      injection hnid with hnideq
+      subst hpc; subst hxc; subst nid0; subst hal
+      -- node lock ↔ node record
+      icases HidRec with ⟨%rval, %rsucc, HDrec⟩
+      icases (dataPointsto_agree γL id ptr ptrN x0 rval (some sid) rsucc true true _ _) $$ HDlock HDrec with %HagR
+      obtain ⟨hpN, hrv, hrs, -⟩ := HagR
+      subst hpN; subst hrv; subst hrs
+      -- sid contents ↔ sid lock: learn ssucc = none, nal = true
+      icases (dataPointsto_agree γL sid sptrc loc0 sx nx ssucc none true nal _ _) $$ HDcontS HDlockS with %HagS
+      obtain ⟨hspc, hsx, hssucc, hnal⟩ := HagS
+      subst sptrc; subst sx; subst hssucc; subst nal
+      -- snode record ↔ sid lock
+      icases HsRec with ⟨%sval, %ssucc0, HsDrec⟩
+      icases (dataPointsto_agree γL sid loc0 ptrSN nx sval none ssucc0 true true _ _) $$ HDlockS HsDrec with %HagSR
+      obtain ⟨hpSN, hsvS, hssS, -⟩ := HagSR
+      subst hpSN; subst hsvS; subst hssS
+      -- node: gather own-1, update succ (some sid → none)
+      ihave HDnodeFull : dataPointsto γL id ptr x0 (some sid) true (DFrac.own 1) $$ [HDlock HDcontNode HDrec]
+      · iapply data_combine3; iframe HDlock HDcontNode HDrec
+      imod (dataMap_update γL m id ptr x0 (some sid) none true true) $$ HDm HDnodeFull with ⟨HDm, HDnodeFull⟩
+      icases (data_split3 γL id ptr x0 none true) $$ HDnodeFull with ⟨HDlock', HDcontNode', HDrec'⟩
+      -- sid: gather own-1, flip alive true → false
+      ihave HDsidFull : dataPointsto γL sid loc0 nx none true (DFrac.own 1) $$ [HDlockS HDcontS HsDrec]
+      · iapply data_combine3; iframe HDlockS HDcontS HsDrec
+      imod (dataMap_update γL (PartialMap.insert m id (ptr, x0, none, true)) sid loc0 nx none none true false) $$ HDm HDsidFull with ⟨HDm, HDsidFull⟩
+      icases (data_split3 γL sid loc0 nx none false) $$ HDsidFull with ⟨HDlockS', HDcontS', HsDrec'⟩
+      imod (arrState_update γS σ (σ.remove sid)) $$ HSauth HSfrag with ⟨HSauth, HSfrag⟩
+      ihave Hcontents' : contents γL vc (pre ++ (id, xx) :: post) $$ [HDcontNode' Hwand]
+      · iapply Hwand $$ HDcontNode'
+      icases Hclose with ⟨-, Hcommit⟩
+      imod Hcommit $$ %sid [Hrootc HSfrag Hcontents'] with HΦ
+      · isplitl [Hrootc HSfrag Hcontents']
+        · unfold Arr.isContents
+          iexists vc, γL, γS
+          iframe Hrootc HSfrag
+          rw [hrcells]; iexact Hcontents'
+        · ipureintro; rfl
+      -- close the invariant (map: node succ→none, sid alive→false)
+      ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
+      · unfold isArrINV
+        iexists (σ.remove sid), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, none, true)) sid (loc0, nx, none, false))
+        iframe HDm HrootI HSauth
+        ipureintro
+        refine ⟨?_, ?_⟩
+        · intro id'
+          rw [Arr.remove_ids_mem σ sid id']
+          by_cases hsi : id' = sid
+          · subst hsi
+            constructor
+            · rintro ⟨h, _⟩; exact absurd rfl h
+            · rintro ⟨loc, xv, sl, hg⟩
+              rw [LawfulPartialMap.get?_insert, if_pos rfl] at hg
+              exact absurd hg (by simp)
+          · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hsi h.symm)]
+            by_cases hii : id' = id
+            · subst hii
+              constructor
+              · rintro _; exact ⟨ptr, x0, none, by rw [LawfulPartialMap.get?_insert, if_pos rfl]⟩
+              · rintro _; exact ⟨hidsid, Hmemid⟩
+            · rw [LawfulPartialMap.get?_insert, if_neg (fun h => hii h.symm), ← Hcoup.1 id']
+              constructor
+              · rintro ⟨_, h⟩; exact h
+              · intro h; exact ⟨hsi, h⟩
+        · intro id'
+          intro hdom'
+          show id' < (σ.remove sid).counter
+          by_cases hsi : id' = sid
+          · subst hsi; exact hsidlt
+          · by_cases hii : id' = id
+            · subst hii; exact hidlt
+            · have heq : get? (PartialMap.insert (PartialMap.insert m id (ptr, x0, none, true)) sid (loc0, nx, none, false)) id' = get? m id' := by
+                rw [LawfulPartialMap.get?_insert, if_neg (fun h => hsi h.symm),
+                    LawfulPartialMap.get?_insert, if_neg (fun h => hii h.symm)]
+              have hd : PartialMap.dom m id' := by
+                unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
+              exact Hcoup.2 id' hd
+      imod Hclinv $$ HInew
+      imodintro
+      -- release sid's lock (LEFT form: alive=false, succ=none)
+      ihave HRSbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
+            ∨
+           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+             loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+             dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) $$ [HDlockS' HptS]
+      · iexists nx, nnlk, false
+        ileft; iframe HDlockS' HptS
+      ihave HresS : iprop(SpinLock.isLock sγlock nlk
+          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
+              ∨
+             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) ∗
+          (SpinLock.locked sγlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
+              ∨
+             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2))))) $$ [HlockS HlockedS HRSbody]
+      · iframe HlockS HlockedS HRSbody
+      wp_bind &release _
+      iapply release_spec $$ HresS
+      iintro -
+      wp_pures
+      -- release node's lock (LEFT form: alive=true, succ=none)
+      ihave HRNbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+            ∨
+           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDlock' Hpt]
+      · iexists x0, nlk, true
+        ileft; iframe HDlock' Hpt
+      ihave HresN : iprop(SpinLock.isLock γlock lk
+          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+              ∨
+             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
+          (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
+            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
+              ∨
+             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
+               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
+               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRNbody]
+      · iframe Hlock Hlocked HRNbody
+      wp_bind &release _
+      iapply release_spec $$ HresN
+      iintro -
+      wp_pures
+      ispecialize HΦ $$ %hl_val(#())
+      iunfold wandM at HΦ
+      iapply HΦ
+      unfold Arr.idRecord
+      iexists v, γL, γS, lk, ptr
+      iframe Hroot
+      isplit
+      · ipureintro; rfl
+      isplitl [HDrec']
+      · iexists x0, none; iframe HDrec'
+      · iexact HlockNode
+    · -- RIGHT-S: successor `sid` itself has a successor `snid`
+      sorry
 
 end Specs
 
