@@ -38,6 +38,48 @@ successor — logically removes the cell with id `sid`). -/
 def Arr.adjacent (σ : Arr) (id sid : Nat) : Prop :=
   ∃ (pre post : List (Nat × Int)) (x sx : Int), σ.cells = pre ++ (id, x) :: (sid, sx) :: post
 
+/-- From `Nodup`, `sid` (at its unique position) differs from every other cell id. -/
+theorem Arr.nodup_ne_sid (id sid : Nat) (x sx : Int) (pre post : List (Nat × Int))
+    (hnd : ((pre ++ (id, x) :: (sid, sx) :: post).map (·.1)).Nodup) :
+    id ≠ sid ∧ (∀ a ∈ pre, a.1 ≠ sid) ∧ (∀ a ∈ post, a.1 ≠ sid) := by
+  rw [List.map_append, List.map_cons, List.map_cons, List.nodup_append] at hnd
+  obtain ⟨hpre, hrest, hdisj⟩ := hnd
+  rw [List.nodup_cons, List.nodup_cons] at hrest
+  obtain ⟨hid, hsid, _⟩ := hrest
+  refine ⟨?_, ?_, ?_⟩
+  · intro heq; exact hid (by rw [heq]; exact List.mem_cons_self)
+  · intro a ha heq
+    have hmem2 : a.1 ∈ (id :: sid :: post.map (·.1)) := by
+      simp only [List.mem_cons]; right; left; exact heq
+    exact hdisj a.1 (List.mem_map.mpr ⟨a, ha, rfl⟩) a.1 hmem2 rfl
+  · intro a ha heq
+    exact hsid (by rw [← heq]; exact List.mem_map.mpr ⟨a, ha, rfl⟩)
+
+/-- Removing `sid` (which sits right after `id`) from the list. -/
+theorem Arr.filter_removeAfter (id sid : Nat) (x sx : Int) :
+    ∀ (pre post : List (Nat × Int)),
+      id ≠ sid → (∀ a ∈ pre, a.1 ≠ sid) → (∀ a ∈ post, a.1 ≠ sid) →
+      (pre ++ (id, x) :: (sid, sx) :: post).filter (·.1 ≠ sid) = pre ++ (id, x) :: post := by
+  intro pre
+  induction pre with
+  | nil =>
+    intro post hid hpre hpost
+    simp only [List.nil_append]
+    rw [List.filter_cons_of_pos (by simpa using hid),
+        List.filter_cons_of_neg (by simp),
+        List.filter_eq_self.mpr (fun a ha => by simpa using hpost a ha)]
+  | cons c pre' ih =>
+    intro post hid hpre hpost
+    simp only [List.cons_append]
+    rw [List.filter_cons_of_pos (by simpa using hpre c List.mem_cons_self),
+        ih post hid (fun a ha => hpre a (List.mem_cons_of_mem _ ha)) hpost]
+
+/-- Removing an element strictly after the head keeps the same head. -/
+theorem Arr.append_cons_head {α : Type _} : ∀ (pre : List α) (a : α) (r1 r2 : List α),
+    ∃ (h : α) (t1 t2 : List α), pre ++ a :: r1 = h :: t1 ∧ pre ++ a :: r2 = h :: t2
+  | [], a, r1, r2 => ⟨a, r1, r2, rfl, rfl⟩
+  | c :: cs, a, r1, r2 => ⟨c, cs ++ a :: r1, cs ++ a :: r2, rfl, rfl⟩
+
 def Arr.insertBody (id counter : Nat) (val : Int) : (Nat × Int) → List (Nat × Int) :=
   fun c => if c.1 = id then [c, (counter, val)] else [c]
 
@@ -522,6 +564,22 @@ theorem contents_cons_ne (γL : GName) (v : Val) (id : Nat) (x : Int)
         contents γL hl_val((&nlk, #next)) (c :: cs)) := by
   obtain ⟨cid, cx⟩ := c; rfl
 
+/-- Entailment form of `contents_eq_single`, usable on proofmode hypotheses via `$$`. -/
+theorem contents_single_elim (γL : GName) (v : Val) (id : Nat) (x : Int) :
+    (contents γL v [(id, x)] : IProp GF) ⊢ iprop(
+      ∃ (lk : Val) (ptr : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
+        dataPointsto γL id ptr x none (DFrac.own q4)) := by
+  rw [contents_eq_single]; iintro h; iexact h
+
+/-- Entailment form of `contents_cons_ne`, usable on proofmode hypotheses via `$$`. -/
+theorem contents_cons_elim (γL : GName) (v : Val) (id : Nat) (x : Int)
+    (c : Nat × Int) (cs : List (Nat × Int)) :
+    (contents γL v ((id, x) :: c :: cs) : IProp GF) ⊢ iprop(
+      ∃ (lk : Val) (ptr : Loc) (nlk : Val) (next : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
+        dataPointsto γL id ptr x (some c.1) (DFrac.own q4) ∗
+        contents γL hl_val((&nlk, #next)) (c :: cs)) := by
+  rw [contents_cons_ne]; iintro h; iexact h
+
 /-- Locate the node with logical id `id` inside the from-root `contents` chain, hand back its
 contents-share (`dataPointsto … q4`, successor-id = `succ`), and return a reinsertion wand that —
 given the node's *updated* share (successor now `some counter`) plus the fresh node's own share
@@ -605,6 +663,76 @@ theorem contents_insertAfter_extract (γL : GName) (id counter : Nat) (xnew : In
         iframe Hd
         rw [← hds]
         iapply Hwand $$ %nlkv %nptr Hpieces
+
+/-- Locate node `id` and its immediate successor `sid` (from `adjacent`) inside the from-root
+`contents` chain; hand back `id`'s contents-share (successor-id `sid`) and `sid`'s contents-share
+(successor-id `ssucc`), plus a relink wand that — given `id`'s updated share (successor now
+`ssucc`) — rebuilds `contents` for the list with `sid` removed. -/
+theorem contents_removeAfter_extract (γL : GName) (id sid : Nat) :
+    ∀ (pre post : List (Nat × Int)) (x sx : Int) (v : Val),
+      ((pre ++ (id, x) :: (sid, sx) :: post).map (·.1)).Nodup →
+      contents γL v (pre ++ (id, x) :: (sid, sx) :: post) ⊢@{IProp GF}
+        ∃ (ptr sptr : Loc) (x0 : Int) (ssucc : Option Nat),
+          dataPointsto γL id ptr x0 (some sid) (DFrac.own q4) ∗
+          dataPointsto γL sid sptr sx ssucc (DFrac.own q4) ∗
+          (dataPointsto γL id ptr x0 ssucc (DFrac.own q4) -∗
+            contents γL v (pre ++ (id, x) :: post)) := by
+  intro pre
+  induction pre with
+  | nil =>
+    intro post x sx v hnd
+    simp only [List.nil_append]
+    cases post with
+    | nil =>
+      rw [contents_cons_ne _ _ _ _ (sid, sx) []]
+      iintro ⟨%lk, %ptr, %nlk, %next, %Hv, Hd, Hrest⟩
+      icases (contents_single_elim γL hl_val((&nlk, #next)) sid sx) $$ Hrest
+        with ⟨%slk, %sptr, %Hsv, Hsd⟩
+      iexists ptr, sptr, x, none
+      iframe Hd Hsd
+      iintro Hd'
+      rw [contents_eq_single]
+      iexists lk, ptr
+      isplit
+      · ipureintro; exact Hv
+      iframe Hd'
+    | cons t post' =>
+      rw [contents_cons_ne _ _ _ _ (sid, sx) (t :: post')]
+      iintro ⟨%lk, %ptr, %nlk, %next, %Hv, Hd, Hrest⟩
+      icases (contents_cons_elim γL hl_val((&nlk, #next)) sid sx t post') $$ Hrest
+        with ⟨%slk, %sptr, %snlk, %snext, %Hsv, Hsd, Hsrest⟩
+      iexists ptr, sptr, x, (some t.1)
+      iframe Hd Hsd
+      iintro Hd'
+      rw [contents_cons_ne _ _ _ _ t post']
+      iexists lk, ptr, snlk, snext
+      isplit
+      · ipureintro; exact Hv
+      iframe Hd' Hsrest
+  | cons c pre' ih =>
+    intro post x sx v hnd
+    obtain ⟨cid, cx⟩ := c
+    have hndtl : ((pre' ++ (id, x) :: (sid, sx) :: post).map (·.1)).Nodup := by
+      rw [List.cons_append, List.map_cons, List.nodup_cons] at hnd
+      exact hnd.2
+    obtain ⟨d, ds1, ds2, hR1, hR2⟩ :=
+      Arr.append_cons_head pre' (id, x) ((sid, sx) :: post) post
+    rw [List.cons_append, hR1, contents_cons_ne _ _ _ _ d ds1]
+    iintro ⟨%lk, %ptr, %nlk, %next, %Hv, Hd, Hrest⟩
+    ihave Hrest2 : contents γL hl_val((&nlk, #next)) (pre' ++ (id, x) :: (sid, sx) :: post) $$ [Hrest]
+    · rw [hR1]; iexact Hrest
+    icases (ih post x sx hl_val((&nlk, #next)) hndtl) $$ Hrest2
+      with ⟨%ptr2, %sptr, %x0, %ssucc, Hd2, Hsd, Hwand⟩
+    iexists ptr2, sptr, x0, ssucc
+    iframe Hd2 Hsd
+    iintro Hd'
+    rw [List.cons_append, hR2, contents_cons_ne _ _ _ _ d ds2]
+    iexists lk, ptr, nlk, next
+    isplit
+    · ipureintro; exact Hv
+    iframe Hd
+    rw [← hR2]
+    iapply Hwand $$ Hd'
 
 end ContentsLemmas
 
