@@ -52,7 +52,7 @@ def Impl.seqClient : Val := hl_val%
 theorem Impl.seqClient_spec :
     ⊢@{IProp GF}
       WP hl(&Impl.seqClient #())
-        {{ v, ∃ (γ : GName) (σ : Arr), Arr.isContents γ σ }} := by
+        {{ _v, ∃ (γ : GName) (σ : Arr), Arr.isContents γ σ }} := by
   unfold Impl.seqClient
   wp_pures
   wp_bind (&Impl.init _)
@@ -79,6 +79,7 @@ theorem Impl.seqClient_spec :
 /-- Namespace for the shared "some abstract list exists" invariant of the concurrent client. -/
 def clientN : Namespace := ndot nroot "arrconc"
 
+omit [SpawnG GF] in
 /-- `contents` is timeless (built from timeless `dataPointsto` shares and pure facts). -/
 theorem contents_timeless_thm (γL : GName) : ∀ (ar : List (Nat × Int)) (v : Val),
     Timeless (PROP := IProp GF) (contents γL v ar)
@@ -105,7 +106,7 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
       Arr.isArr γ -∗
       inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
       Arr.idRecord γ node id -∗
-      WP hl(&Impl.insert &node #x) {{ v, True }} := by
+      WP hl(&Impl.insert &node #x) {{ _v, True }} := by
   iintro #HisArr #Hinv HidRec
   iapply (Impl.insert_spec γ id node x) $$ HisArr HidRec
   iauintro
@@ -148,7 +149,7 @@ theorem Impl.parClient_spec (γ : GName) (id1 id2 : Nat) (node1 node2 : Val) :
       Arr.isArr γ -∗
       inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
       Arr.idRecord γ node1 id1 -∗ Arr.idRecord γ node2 id2 -∗
-      WP hl(&Impl.insert &node1 #1 ‖ &Impl.insert &node2 #2) {{ v, True }} := by
+      WP hl(&Impl.insert &node1 #1 ‖ &Impl.insert &node2 #2) {{ _v, True }} := by
   iintro #HisArr #Hinv Hrec1 Hrec2
   iapply (Par.wp_par (fun _ => iprop(True)) (fun _ => iprop(True)) _ _) $$
     [Hrec1] [Hrec2] []

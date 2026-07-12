@@ -632,7 +632,7 @@ theorem contents_insertAfter_extract (γL : GName) (id counter : Nat) (xnew : In
       contents γL v cells ⊢@{IProp GF}
         ∃ (ptr : Loc) (x0 : Int) (succ : Option Nat),
           dataPointsto γL id ptr x0 succ true (DFrac.own q4) ∗
-          (∀ (nlkv : Val) (nptr : Loc),
+          (∀ (_nlkv : Val) (nptr : Loc),
               (dataPointsto γL id ptr x0 (some counter) true (DFrac.own q4) ∗
                dataPointsto γL counter nptr xnew succ true (DFrac.own q4))
             -∗ contents γL v (cells.flatMap (Arr.insertBody id counter xnew))) := by
@@ -788,6 +788,7 @@ instance isArrINV_timeless (γL γA γS : GName) :
     Timeless (PROP := IProp GF) (isArrINV γL γA γS) := by
   unfold isArrINV; infer_instance
 
+omit [SpinLockG GF] in
 theorem isArrINV_unfold (γL γA γS : GName) :
     (isArrINV γL γA γS : IProp GF) ⊣⊢
       ∃ (σ : Arr) (v : Val) (m : H' (Loc × Int × Option Nat × Bool)),
@@ -813,6 +814,7 @@ def Arr.isContents (γ : GName) (σ : Arr) : IProp GF := iprop%
     arrRoot γ v γL γS ∗ arrStateFrag γS σ ∗
     contents γL v σ.cells
 
+omit [SpinLockG GF] in
 theorem Arr.isContents_unfold (γ : GName) (σ : Arr) :
     (Arr.isContents γ σ : IProp GF) ⊣⊢
       ∃ (v : Val) (γL γS : GName),
