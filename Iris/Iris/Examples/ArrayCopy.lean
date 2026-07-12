@@ -1265,13 +1265,58 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexists x, (some nid0); iframe HDnrec
       · iexact HnlockINV
 
+set_option maxRecDepth 8000 in
 theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
   ⊢@{IProp GF}
     Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.idRecord γ snode sid -∗
       ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ ∧ Arr.adjacent σ id sid⌝  ⟫
         hl(&Impl.remove &node) @ arrN
       ⟪ ∃ u, Arr.isContents γ (σ.remove sid) ∗ ⌜u = sid⌝ | ret, RET ret; Arr.idRecord γ node id ⟫ := by
-  sorry
+  iintro Harr Hnode Hsnode %Φ HAU
+  icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
+  icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
+  icases (arrRoot_agree γ v v' γL γS γL' γS') $$ Hroot Hroot' with %Hall
+  obtain ⟨_, HγL, HγS⟩ := Hall
+  subst HγL; subst HγS
+  icases (Arr.idRecord_unfold γ snode sid).mp $$ Hsnode with ⟨%vs, %γLs, %γSs, %lkS, %ptrSN, #Hroots, %HsnodeEq, HsRec, #HlockSnode⟩
+  icases (arrRoot_agree γ v vs γL γS γLs γSs) $$ Hroot Hroots with %Halls
+  obtain ⟨_, HγLs, HγSs⟩ := Halls
+  subst HγLs; subst HγSs
+  icases (isArrLockINV_unfold' γL id node).mp $$ HlockNode with ⟨%lk, %γlock, %ptr, %Hnodeeq, #Hlock⟩
+  rw [Hnodeeq]
+  unfold Impl.remove
+  wp_pures
+  wp_bind &acquire _
+  iapply acquire_spec $$ Hlock
+  iintro ⟨Hlocked, HR⟩
+  icases HR with ⟨%x0, %nlk, %al0, Hdisj⟩
+  wp_pures
+  wp_bind !_
+  icases Hdisj with (⟨HDlock, Hpt⟩ | ⟨%nid0, %loc0, #HlockSucc, Hpt, HDlock⟩)
+  · -- LEFT: node.next = none — impossible under `adjacent σ id sid`
+    iapply wp_load $$ Hpt
+    iintro !> Hpt
+    wp_pures
+    iapply fupd_wp
+    iinv Hinv with ⟨HI, Hclinv⟩
+    icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
+    iauopen HAU with ⟨%σ, Hpre, Hclose⟩
+    icases Hpre with ⟨Hcont, %Hwfadj⟩
+    obtain ⟨Hwf, Hadj⟩ := Hwfadj
+    icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
+    icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
+    obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
+    subst γLc; subst γSc; subst vI
+    obtain ⟨pre, post, xx, sx, hcells⟩ := Hadj
+    ihave Hc2 : contents γL vc (pre ++ (id, xx) :: (sid, sx) :: post) $$ [Hcontents]
+    · rw [← hcells]; iexact Hcontents
+    icases (contents_removeAfter_extract γL id sid pre post xx sx vc (hcells ▸ Hwf.idUqi)) $$ Hc2
+      with ⟨%ptrc, %sptrc, %x0c, %ssucc, HDcontNode, HDcontS, Hwand⟩
+    icases (dataPointsto_agree γL id ptr ptrc x0 x0c none (some sid) al0 true _ _) $$ HDlock HDcontNode with %Hag
+    obtain ⟨_, _, hs, _⟩ := Hag
+    simp at hs
+  · -- RIGHT: node.next = some(&nlk, #loc0)
+    sorry
 
 end Specs
 
