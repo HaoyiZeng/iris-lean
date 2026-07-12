@@ -76,6 +76,87 @@ theorem Impl.seqClient_spec :
   iexists γ, (((Arr.init 0).insert id 1).insert id 2)
   iexact Hcont
 
+/-- Namespace for the shared "some abstract list exists" invariant of the concurrent client. -/
+def clientN : Namespace := ndot nroot "arrconc"
+
+/-- `contents` is timeless (built from timeless `dataPointsto` shares and pure facts). -/
+theorem contents_timeless_thm (γL : GName) : ∀ (ar : List (Nat × Int)) (v : Val),
+    Timeless (PROP := IProp GF) (contents γL v ar)
+  | [], v => by unfold contents; infer_instance
+  | [(_, _)], v => by unfold contents; infer_instance
+  | (id, x) :: (sid, sx) :: cs, v => by
+    haveI := contents_timeless_thm γL ((sid, sx) :: cs)
+    rw [contents_cons_ne _ _ _ _ (sid, sx) cs]
+    infer_instance
+
+instance isContents_timeless (γ : GName) (σ : Arr) :
+    Timeless (PROP := IProp GF) (Arr.isContents γ σ) := by
+  rw [Arr.isContents]
+  haveI : ∀ (γL : GName) (v : Val), Timeless (PROP := IProp GF) (contents γL v σ.cells) :=
+    fun γL v => contents_timeless_thm γL σ.cells v
+  infer_instance
+
+set_option maxRecDepth 10000 in
+/-- **Per-thread concurrent insert.** With a shared invariant that always holds *some*
+well-formed abstract list, a thread owning a node record can insert; the logically-atomic
+`insert_spec` linearizes against the invariant (opened only at the single commit point). -/
+theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
+    ⊢@{IProp GF}
+      Arr.isArr γ -∗
+      inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
+      Arr.idRecord γ node id -∗
+      WP hl(&Impl.insert &node #x) {{ v, True }} := by
+  iintro #HisArr #Hinv HidRec
+  iapply (Impl.insert_spec γ id node x) $$ HisArr HidRec
+  iauintro
+  have Hsub : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ ↑arrN) := by
+    have hd : (↑clientN : CoPset) ## ↑arrN :=
+      ndot_ne_disjoint nroot (by decide : "arrconc" ≠ "arr")
+    intro y hy
+    rw [CoPset.in_diff]
+    exact ⟨CoPset.mem_full, fun hya => hd y ⟨hy, hya⟩⟩
+  iapply aacc_inv _ _ _ _ Hsub $$ Hinv
+  iintro Hbody
+  icases Hbody with ⟨%σ, Hcont, %Hwf⟩
+  ihave Hα : iprop(Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) $$ [Hcont]
+  · iframe Hcont; ipureintro; exact Hwf
+  iaaccintro' with Hα
+  · -- abort: peeked but did not linearize; restore the invariant body unchanged
+    iintro Hα
+    icases Hα with ⟨Hcont, %Hwf'⟩
+    imodintro
+    isplitl [Hcont]
+    · iexists σ; iframe Hcont; ipureintro; exact Hwf'
+    · iframe HisArr Hinv
+  · -- commit: `insert` linearized; store the updated (still well-formed) list back
+    iintro %nid Hcont'
+    imodintro
+    isplitl [Hcont']
+    · iexists (σ.insert id x); iframe Hcont'
+      ipureintro; exact σ.insert_wellFormed Hwf id x
+    · itele_reduce
+      iintro %ret
+      simp only [wandM]
+      iintro -
+      itrivial
+
+/-- Two threads insert concurrently after two independently-owned nodes. The postcondition is
+trivial; the *interesting* guarantee is that the shared invariant — "the heap always represents
+some well-formed abstract list" — is preserved across the interleaving. -/
+theorem Impl.parClient_spec (γ : GName) (id1 id2 : Nat) (node1 node2 : Val) :
+    ⊢@{IProp GF}
+      Arr.isArr γ -∗
+      inv clientN iprop(∃ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝) -∗
+      Arr.idRecord γ node1 id1 -∗ Arr.idRecord γ node2 id2 -∗
+      WP hl(&Impl.insert &node1 #1 ‖ &Impl.insert &node2 #2) {{ v, True }} := by
+  iintro #HisArr #Hinv Hrec1 Hrec2
+  iapply (Par.wp_par (fun _ => iprop(True)) (fun _ => iprop(True)) _ _) $$
+    [Hrec1] [Hrec2] []
+  · iapply (Impl.insert_conc γ id1 node1 1) $$ HisArr Hinv Hrec1
+  · iapply (Impl.insert_conc γ id2 node2 2) $$ HisArr Hinv Hrec2
+  · iintro %v1 %v2 -
+    inext; itrivial
+
 end Clients
 
 end Iris.Examples.HeapLang
