@@ -20,16 +20,17 @@ namespace Iris.Examples.HeapLang
     HeapLang implementations ..............   41   (Impl.init/insert/remove)
     RA layer (ghost state) ................  145   (dataMap, dataPointsto,
                                                      arrRoot, arrState + lemmas)
-    Lock invariant (isArrLockINV) .........   71   (pre + contractive + unfold)
+    Lock invariant (isArrLockINV) .........   77   (pre + contractive + unfold
+                                                     + shared lockBody def)
     contents predicate + lemmas ...........  207   (incl. insert/removeAfter extract)
     Core predicates .......................   65   (isArrINV incl. wellFormed,
                                                      isArr, isContents, idRecord)
     ------------------------------------------------
-    init_spec   proof .....................   86
-    insert_spec proof .....................  375
-    remove_spec proof .....................  422
+    init_spec   proof .....................   81
+    insert_spec proof .....................  335
+    remove_spec proof .....................  354
     ------------------------------------------------
-    Total (this file) ..................... 1729
+    Total (this file) ..................... 1622
     Clients (ArrayCopyClient.lean) ........  157   (seq + concurrent, verified)
 ================================================================================
 -/
@@ -552,17 +553,23 @@ theorem isArrLockINV_unfold (γL : GName) (id : Nat) (v : Val) :
   exact equiv_iff.mp (fixpoint_unfold
     (f := Function.toContractiveHom (isArrLockINV_pre (GF := GF) (H' := H'))) γL id v)
 
+/-- The body of a node's spin-lock, `defeq` to the `isArrLockINV_pre` body with `Ψ := isArrLockINV`.
+A node holds its own ½ share plus its physical cell, either as a last node (`succ = none`) or linked
+to a successor (whose lock we also know). `alive` is existential so the lock stays releasable after
+the node is logically deleted (`alive := false`). Reusable in the specs to avoid re-spelling it. -/
+abbrev lockBody (γL : GName) (id : Nat) (ptr : Loc) : IProp GF := iprop%
+  ∃ (x : Int) (nlk : Val) (al : Bool),
+    ((dataPointsto γL id ptr x none al (DFrac.own q2)) ∗ ptr ↦ hl_val((#x, none()))
+      ∨
+     (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk, #loc)) ∗
+       ptr ↦ hl_val((#x, some((&nlk, #loc)))) ∗
+       dataPointsto γL id ptr x (some nid) al (DFrac.own q2)))
+
 -- fully-spelled-out unfold (defeq to the pre), for destructuring on proofmode hyps
 theorem isArrLockINV_unfold' (γL : GName) (id : Nat) (v : Val) :
     (isArrLockINV γL id v : IProp GF) ⊣⊢
       ∃ (lk : Val) (γlock : GName) (ptr : Loc), ⌜v = hl_val((&lk, #ptr))⌝ ∗
-        SpinLock.isLock γlock lk iprop(
-          ∃ (x : Int) (nlk : Val) (al : Bool),
-            ((dataPointsto γL id ptr x none al (DFrac.own q2)) ∗ ptr ↦ hl_val((#x, none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk, #loc)) ∗
-               ptr ↦ hl_val((#x, some((&nlk, #loc)))) ∗
-               dataPointsto γL id ptr x (some nid) al (DFrac.own q2)))) :=
+        SpinLock.isLock γlock lk (lockBody γL id ptr) :=
   isArrLockINV_unfold γL id v
 
 instance isArrLockINV.persistent (γL : GName) (id : Nat) (v : Val) : Persistent (PROP := IProp GF) (isArrLockINV γL id v) := by
@@ -865,12 +872,7 @@ theorem Impl.init_spec (x : Int) :
   imod (arrRoot_alloc hl_val((&lk, #c)) γL γS) with ⟨%γ, #Hroot⟩
   icases (data_split3 γL 0 c x none true) $$ HDf with ⟨HDlock, HDcont, HDrec⟩
   -- build the node's lock body (LEFT branch: last node, next = none)
-  ihave Hbody : iprop(∃ (x0 : Int) (nlk : Val) (al : Bool),
-      ((dataPointsto γL 0 c x0 none al (DFrac.own q2)) ∗ c ↦ hl_val((#x0, none()))
-        ∨
-       (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk, #loc)) ∗
-         c ↦ hl_val((#x0, some((&nlk, #loc)))) ∗
-         dataPointsto γL 0 c x0 (some nid) al (DFrac.own q2)))) $$ [HDlock Hc]
+  ihave Hbody : lockBody γL 0 c $$ [HDlock Hc]
   · iexists x, lk, true
     ileft; iframe HDlock Hc
   ispecialize Hlk $$ %_ %(⊤) Hbody
@@ -1061,12 +1063,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
             have := Hcoup.2.1 id' hd; omega
     imod Hclinv $$ HInew
     -- build the new node's lock (isArrLockINV γL σ.counter (&nlkv,#nptr))
-    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-        ((dataPointsto γL σ.counter nptr x0' none al' (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
-          ∨
-         (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-           nptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL σ.counter nptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDnlock Hnptr]
+    ihave Hnbody : lockBody γL σ.counter nptr $$ [HDnlock Hnptr]
     · iexists x, lk, true
       ileft; iframe HDnlock Hnptr
     ispecialize Hnlk $$ %_ %(⊤) Hnbody
@@ -1080,28 +1077,11 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexact Hnlock
     imodintro
     -- rebuild old node's lock body (RIGHT form: succ = some nptr) and release
-    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-        ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-          ∨
-         (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-           ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
+    ihave HRnew : lockBody γL id ptr $$ [Hpt HDlock' HnlockINV]
     · iexists x0, nlkv, true
       iright; iexists σ.counter, nptr
       iframe HnlockINV Hpt HDlock'
-    ihave Hres : iprop(SpinLock.isLock γlock lk
-        iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
-        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
+    ihave Hres : iprop(SpinLock.isLock γlock lk (lockBody γL id ptr) ∗ (SpinLock.locked γlock ∗ lockBody γL id ptr)) $$ [Hlock Hlocked HRnew]
     · iframe Hlock Hlocked HRnew
     wp_bind &release _
     iapply release_spec $$ Hres
@@ -1235,12 +1215,7 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
               unfold PartialMap.dom at hdom' ⊢; rw [← heq]; exact hdom'
             have := Hcoup.2.1 id' hd; omega
     imod Hclinv $$ HInew
-    ihave Hnbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-        ((dataPointsto γL σ.counter nptr x0' none al' (DFrac.own q2)) ∗ nptr ↦ hl_val((#x0', none()))
-          ∨
-         (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-           nptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL σ.counter nptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDnlock Hnptr HlockSucc]
+    ihave Hnbody : lockBody γL σ.counter nptr $$ [HDnlock Hnptr HlockSucc]
     · iexists x, nlk, true
       iright; iexists nid0, loc0
       iframe HlockSucc Hnptr HDnlock
@@ -1254,28 +1229,11 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · ipureintro; rfl
       · iexact Hnlock
     imodintro
-    ihave HRnew : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-        ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-          ∨
-         (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-           ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-           dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [Hpt HDlock' HnlockINV]
+    ihave HRnew : lockBody γL id ptr $$ [Hpt HDlock' HnlockINV]
     · iexists x0, nlkv, true
       iright; iexists σ.counter, nptr
       iframe HnlockINV Hpt HDlock'
-    ihave Hres : iprop(SpinLock.isLock γlock lk
-        iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
-        (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRnew]
+    ihave Hres : iprop(SpinLock.isLock γlock lk (lockBody γL id ptr) ∗ (SpinLock.locked γlock ∗ lockBody γL id ptr)) $$ [Hlock Hlocked HRnew]
     · iframe Hlock Hlocked HRnew
     wp_bind &release _
     iapply release_spec $$ Hres
@@ -1304,6 +1262,10 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       · iexact HnlockINV
 
 set_option maxRecDepth 8000 in
+/-- Remove-after: `Impl.remove node` physically unlinks `node`'s successor. `node`'s record
+(`id`) is returned; `snode`'s record (`sid`) is consumed — logically deleting `sid`. Note `snode`
+is a purely logical parameter: only its record token matters (its physical `Val` is forced equal
+to `node`'s successor by the ghost agreements), so the caller effectively just supplies `sid`. -/
 theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
   ⊢@{IProp GF}
     Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.idRecord γ snode sid -∗
@@ -1493,54 +1455,20 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       imod Hclinv $$ HInew
       imodintro
       -- release sid's lock (LEFT form: alive=false, succ=none)
-      ihave HRSbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) $$ [HDlockS' HptS]
+      ihave HRSbody : lockBody γL sid loc0 $$ [HDlockS' HptS]
       · iexists nx, nnlk, false
         ileft; iframe HDlockS' HptS
-      ihave HresS : iprop(SpinLock.isLock sγlock nlk
-          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) ∗
-          (SpinLock.locked sγlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2))))) $$ [HlockS HlockedS HRSbody]
+      ihave HresS : iprop(SpinLock.isLock sγlock nlk (lockBody γL sid loc0) ∗ (SpinLock.locked sγlock ∗ lockBody γL sid loc0)) $$ [HlockS HlockedS HRSbody]
       · iframe HlockS HlockedS HRSbody
       wp_bind &release _
       iapply release_spec $$ HresS
       iintro -
       wp_pures
       -- release node's lock (LEFT form: alive=true, succ=none)
-      ihave HRNbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDlock' Hpt]
+      ihave HRNbody : lockBody γL id ptr $$ [HDlock' Hpt]
       · iexists x0, nlk, true
         ileft; iframe HDlock' Hpt
-      ihave HresN : iprop(SpinLock.isLock γlock lk
-          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
-          (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRNbody]
+      ihave HresN : iprop(SpinLock.isLock γlock lk (lockBody γL id ptr) ∗ (SpinLock.locked γlock ∗ lockBody γL id ptr)) $$ [Hlock Hlocked HRNbody]
       · iframe Hlock Hlocked HRNbody
       wp_bind &release _
       iapply release_spec $$ HresN
@@ -1667,56 +1595,22 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       imod Hclinv $$ HInew
       imodintro
       -- release sid's lock (RIGHT form: alive=false, succ=some snid)
-      ihave HRSbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) $$ [HDlockS' HptS HlockSS]
+      ihave HRSbody : lockBody γL sid loc0 $$ [HDlockS' HptS HlockSS]
       · iexists nx, nnlk, false
         iright; iexists snid, sloc
         iframe HlockSS HptS HDlockS'
-      ihave HresS : iprop(SpinLock.isLock sγlock nlk
-          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2)))) ∗
-          (SpinLock.locked sγlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL sid loc0 x0' none al' (DFrac.own q2)) ∗ loc0 ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               loc0 ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL sid loc0 x0' (some nid) al' (DFrac.own q2))))) $$ [HlockS HlockedS HRSbody]
+      ihave HresS : iprop(SpinLock.isLock sγlock nlk (lockBody γL sid loc0) ∗ (SpinLock.locked sγlock ∗ lockBody γL sid loc0)) $$ [HlockS HlockedS HRSbody]
       · iframe HlockS HlockedS HRSbody
       wp_bind &release _
       iapply release_spec $$ HresS
       iintro -
       wp_pures
       -- release node's lock (RIGHT form: alive=true, succ=some snid)
-      ihave HRNbody : iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-          ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-            ∨
-           (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-             ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-             dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) $$ [HDlock' Hpt HlockSS]
+      ihave HRNbody : lockBody γL id ptr $$ [HDlock' Hpt HlockSS]
       · iexists x0, nnlk, true
         iright; iexists snid, sloc
         iframe HlockSS Hpt HDlock'
-      ihave HresN : iprop(SpinLock.isLock γlock lk
-          iprop(∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2)))) ∗
-          (SpinLock.locked γlock ∗ ∃ (x0' : Int) (nlk' : Val) (al' : Bool),
-            ((dataPointsto γL id ptr x0' none al' (DFrac.own q2)) ∗ ptr ↦ hl_val((#x0', none()))
-              ∨
-             (∃ (nid : Nat) (loc : Loc), isArrLockINV γL nid hl_val((&nlk', #loc)) ∗
-               ptr ↦ hl_val((#x0', some((&nlk', #loc)))) ∗
-               dataPointsto γL id ptr x0' (some nid) al' (DFrac.own q2))))) $$ [Hlock Hlocked HRNbody]
+      ihave HresN : iprop(SpinLock.isLock γlock lk (lockBody γL id ptr) ∗ (SpinLock.locked γlock ∗ lockBody γL id ptr)) $$ [Hlock Hlocked HRNbody]
       · iframe Hlock Hlocked HRNbody
       wp_bind &release _
       iapply release_spec $$ HresN
