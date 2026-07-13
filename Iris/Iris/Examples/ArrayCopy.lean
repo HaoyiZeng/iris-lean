@@ -30,8 +30,69 @@ namespace Iris.Examples.HeapLang
     insert_spec proof .....................  335
     remove_spec proof .....................  354
     ------------------------------------------------
-    Total (this file) ..................... 1622
+    Total (this file) ..................... 1684
     Clients (ArrayCopyClient.lean) ........  157   (seq + concurrent, verified)
+================================================================================
+-/
+
+/-
+================================================================================
+  RESULTS — the proven specifications (the specs are the point; proofs are boring)
+================================================================================
+
+  Abstract state.  `σ : Arr` is the ordered association list `cells : List (Nat × Int)`
+  (logical id ↦ value) plus a monotone `counter` for fresh ids.
+    · `Arr.init x`        = the one-element list `[(0, x)]`.
+    · `σ.insert id x`     = insert value `x` right after the node with id `id`
+                            (fresh id `= σ.counter`).
+    · `σ.remove sid`      = delete the node with id `sid`.
+    · `Arr.adjacent σ id sid` ⟺ `sid` immediately follows `id` in `σ.cells`.
+
+  Client-facing predicates.
+    · `Arr.isArr γ`            : persistent handle to the whole structure (γ).
+    · `Arr.isContents γ σ`     : the structure currently represents abstract list `σ`
+                                 (exclusive; this is what the atomic specs mutate).
+    · `Arr.idRecord γ node id` : a durable, transferable capability for the node `node`
+                                 with logical id `id` (holds its "alive" ¼-token + lock).
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ init_spec  (ordinary Hoare triple)                                         │
+  └──────────────────────────────────────────────────────────────────────────┘
+    ⦃ True ⦄
+      &Impl.init #x
+    ⦃ v, RET v; ∃ γ id, isArr γ ∗ isContents γ (Arr.init x) ∗ idRecord γ v id ⦄
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ insert_spec  (logically atomic; inserts after node `id`)                   │
+  └──────────────────────────────────────────────────────────────────────────┘
+    isArr γ  -∗  idRecord γ node id  -∗
+      ⟪ ∀ σ, isContents γ σ ⟫
+        &Impl.insert &node #x @ arrN
+      ⟪ ∃ nid, isContents γ (σ.insert id x)
+        | ret, RET ret; idRecord γ node id ∗ idRecord γ ret nid ⟫
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ remove_spec  (logically atomic; remove-AFTER: unlinks node's successor)    │
+  └──────────────────────────────────────────────────────────────────────────┘
+    isArr γ  -∗  idRecord γ node id  -∗  idRecord γ snode sid  -∗
+      ⟪ ∀ σ, isContents γ σ ∗ ⌜adjacent σ id sid⌝ ⟫
+        &Impl.remove &node @ arrN
+      ⟪ isContents γ (σ.remove sid) ∗ idRecord γ node id | RET #() ⟫
+
+  Notes.
+    · Well-formedness (`Nodup` ids, fresh counter) is maintained *inside* the shared
+      invariant, so callers never supply or track it.
+    · `remove` consumes `snode`'s record (logically deleting `sid`) and returns
+      `node`'s record; `snode` is a logical-only parameter (its `Val` is irrelevant).
+
+  Clients (in ArrayCopyClient.lean, all verified).
+    · Impl.insert_hoare   : collapses insert_spec to a sequential Hoare triple
+                            (atomicWP_seq) for privately-owned `isContents`.
+    · Impl.seqClient_spec : init then two inserts ⊢ ∃ γ σ, isContents γ σ.
+    · Impl.insert_conc    : one thread inserts against a shared invariant
+                            `inv (∃ σ, isContents γ σ)` (LP opened at the commit).
+    · Impl.parClient_spec : two threads insert concurrently (via `par`); the shared
+                            invariant is preserved across every interleaving.
 ================================================================================
 -/
 
