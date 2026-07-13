@@ -26,12 +26,12 @@ namespace Iris.Examples.HeapLang
     Core predicates .......................   65   (isArrINV incl. wellFormed,
                                                      isArr, isContents, idRecord)
     ------------------------------------------------
-    init_spec   proof .....................   81
-    insert_spec proof .....................  335
-    remove_spec proof .....................  354
+    init_spec   proof .....................   79
+    insert_spec proof .....................  366   (incl. AU double-open PEEK)
+    remove_spec proof .....................  386   (incl. AU double-open PEEK)
     ------------------------------------------------
-    Total (this file) ..................... 1684
-    Clients (ArrayCopyClient.lean) ........  157   (seq + concurrent, verified)
+    Total (this file) ..................... 1758
+    Clients (ArrayCopyClient.lean) ........  165   (seq + concurrent, verified)
 ================================================================================
 -/
 
@@ -65,21 +65,25 @@ namespace Iris.Examples.HeapLang
   ┌──────────────────────────────────────────────────────────────────────────┐
   │ insert_spec  (logically atomic; inserts after node `id`)                   │
   └──────────────────────────────────────────────────────────────────────────┘
-    isArr γ  -∗  idRecord γ node id  -∗
-      ⟪ ∀ σ, isContents γ σ ⟫
+    isArr γ  -∗
+      ⟪ ∀ σ, isContents γ σ ∗ idRecord γ node id ⟫
         &Impl.insert &node #x @ arrN
-      ⟪ ∃ nid, isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝
-        | ret, RET ret; idRecord γ node id ∗ idRecord γ ret nid ⟫
+      ⟪ ∃ nid, isContents γ (σ.insert id x) ∗ idRecord γ node id ∗ ⌜nid = σ.counter⌝
+        | ret, RET ret; idRecord γ ret nid ⟫
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   │ remove_spec  (logically atomic; remove-AFTER: unlinks node's successor)    │
   └──────────────────────────────────────────────────────────────────────────┘
-    isArr γ  -∗  idRecord γ node id  -∗  idRecord γ snode sid  -∗
-      ⟪ ∀ σ, isContents γ σ ∗ ⌜adjacent σ id sid⌝ ⟫
+    isArr γ  -∗
+      ⟪ ∀ σ, isContents γ σ ∗ idRecord γ node id ∗ idRecord γ snode sid ∗ ⌜adjacent σ id sid⌝ ⟫
         &Impl.remove &node @ arrN
       ⟪ isContents γ (σ.remove sid) ∗ idRecord γ node id | RET #() ⟫
 
   Notes.
+    · The node record(s) live *inside* the atomic precondition, so these are fully
+      general logically-atomic specs: a client may keep `idRecord` in shared state
+      and only produce it at the linearization point (the proof double-opens the AU
+      to grab the node's *persistent* lock before the LP; see the PEEK in each proof).
     · Well-formedness (`Nodup` ids, fresh counter) is maintained *inside* the shared
       invariant, so callers never supply or track it.
     · Returned ids are *concrete*: `init` names the root `0` and `insert` pins the new
@@ -89,10 +93,11 @@ namespace Iris.Examples.HeapLang
 
   Clients (in ArrayCopyClient.lean, all verified).
     · Impl.insert_hoare   : collapses insert_spec to a sequential Hoare triple
-                            (atomicWP_seq) for privately-owned `isContents`.
+                            (atomicWP_seq), supplying `isContents ∗ idRecord` privately.
     · Impl.seqClient_spec : init then two inserts ⊢ ∃ γ σ, isContents γ σ.
     · Impl.insert_conc    : one thread inserts against a shared invariant
-                            `inv (∃ σ, isContents γ σ)` (LP opened at the commit).
+                            `inv (∃ σ, isContents γ σ)`, threading its own `idRecord`
+                            through the AU's coinductive frame (LP at the commit).
     · Impl.parClient_spec : two threads insert concurrently (via `par`); the shared
                             invariant is preserved across every interleaving.
 ================================================================================
@@ -995,17 +1000,38 @@ theorem Impl.init_spec (x : Int) :
 set_option maxRecDepth 8000 in
 theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
   ⊢@{IProp GF}
-    Arr.isArr γ -∗ Arr.idRecord γ node id -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ⟫
+    Arr.isArr γ -∗
+      ⟪ ∀ σ, Arr.isContents γ σ ∗ Arr.idRecord γ node id ⟫
         hl(&Impl.insert &node #x) @ arrN
-      ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝
-        | ret, RET ret; Arr.idRecord γ node id ∗ Arr.idRecord γ ret nid ⟫ := by
-  iintro Harr Hnode %Φ HAU
+      ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) ∗ Arr.idRecord γ node id ∗ ⌜nid = σ.counter⌝
+        | ret, RET ret; Arr.idRecord γ ret nid ⟫ := by
+  iintro Harr %Φ HAU
   icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
-  icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
-  icases (arrRoot_agree γ v v' γL γS γL' γS') $$ Hroot Hroot' with %Hall
-  obtain ⟨_, HγL, HγS⟩ := Hall
-  subst HγL; subst HγS
+  -- PEEK: `idRecord` now lives *inside* the atomic precondition, but we must acquire
+  -- `node`'s lock *before* the linearization point.  So open the AU once and abort it,
+  -- keeping only the *persistent* `isArrLockINV` (the lock's `SpinLock.isLock`).
+  iapply fupd_wp
+  imod (fupd_mask_subseteq (E1 := ⊤) (E2 := ⊤ \ (↑arrN : CoPset)) (by intro x _; exact CoPset.mem_full)) with Hmclose
+  iauopen HAU with ⟨%σp, Hαp, Hclosep⟩
+  icases Hαp with ⟨Hcontp, Hnodep⟩
+  icases (Arr.idRecord_unfold γ node id).mp $$ Hnodep with ⟨%vp, %γLp, %γSp, %lkNp, %ptrNp, #Hrootp, %HnodeEqNp, HidRecp, #HlockNode⟩
+  icases (arrRoot_agree γ v vp γL γS γLp γSp) $$ Hroot Hrootp with %Hallp
+  obtain ⟨_, HγLp, HγSp⟩ := Hallp
+  subst HγLp; subst HγSp
+  ihave Hnodep' : Arr.idRecord γ node id $$ [HidRecp]
+  · unfold Arr.idRecord
+    iexists vp, γL, γS, lkNp, ptrNp
+    iframe Hrootp
+    isplit
+    · ipureintro; exact HnodeEqNp
+    isplitl [HidRecp]
+    · iexact HidRecp
+    · iexact HlockNode
+  icases Hclosep with ⟨Habort, -⟩
+  imod Habort $$ [Hcontp Hnodep'] with HAU
+  · iframe Hcontp Hnodep'
+  imod Hmclose
+  imodintro
   icases (isArrLockINV_unfold' γL id node).mp $$ HlockNode with ⟨%lk, %γlock, %ptr, %Hnodeeq, #Hlock⟩
   rw [Hnodeeq]
   unfold Impl.insert
@@ -1037,7 +1063,8 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
-    iauopen HAU with ⟨%σ, Hcont, Hclose⟩
+    iauopen HAU with ⟨%σ, Hα, Hclose⟩
+    icases Hα with ⟨Hcont, Hnode⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
@@ -1045,6 +1072,10 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     have Hwf := Hcoup.2.2
+    icases (Arr.idRecord_unfold γ hl_val((&lk, #ptr)) id).mp $$ Hnode with ⟨%vN, %γLN, %γSN, %lkN, %ptrN, #HrootN, %HnodeEqN, HidRec, #HlockNodeL⟩
+    icases (arrRoot_agree γ v vN γL γS γLN γSN) $$ Hroot HrootN with %HallN
+    obtain ⟨_, HγLN, HγSN⟩ := HallN
+    subst HγLN; subst HγSN
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
     icases (dataPointsto_agree γL id ptr ptrN x0 rval none rsucc al0 true _ _) $$ HDlock HDrec with %HagN
     obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
@@ -1079,14 +1110,23 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     · iapply Hwand $$ %nlkv %nptr
       iframe HDcont' HDncont
     icases Hclose with ⟨-, Hcommit⟩
-    imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
+    imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents' HDrec'] with HΦ
     · isplitl [Hrootc HSfrag Hcontents']
       · unfold Arr.isContents
         iexists vc, γL, γS
         iframe Hrootc HSfrag
         rw [Arr.insert_cells_eq σ id x Hmem]
         iexact Hcontents'
-      · ipureintro; rfl
+      · isplitl [HDrec']
+        · unfold Arr.idRecord
+          iexists vN, γL, γS, lkN, ptr
+          iframe HrootN
+          isplit
+          · ipureintro; exact HnodeEqN
+          isplitl [HDrec']
+          · iexists x0, (some σ.counter); iframe HDrec'
+          · iexact HlockNodeL
+        · ipureintro; rfl
     -- close the shared invariant with the updated map & state
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
@@ -1156,23 +1196,14 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     ispecialize HΦ $$ %hl_val((&nlkv, #nptr))
     iunfold wandM at HΦ
     iapply HΦ
-    isplitl [HDrec']
-    · unfold Arr.idRecord
-      iexists v, γL, γS, lk, ptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDrec']
-      · iexists x0, (some σ.counter); iframe HDrec'
-      · iexact HlockNode
-    · unfold Arr.idRecord
-      iexists v, γL, γS, nlkv, nptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDnrec]
-      · iexists x, none; iframe HDnrec
-      · iexact HnlockINV
+    unfold Arr.idRecord
+    iexists v, γL, γS, nlkv, nptr
+    iframe Hroot
+    isplit
+    · ipureintro; rfl
+    isplitl [HDnrec]
+    · iexists x, none; iframe HDnrec
+    · iexact HnlockINV
   · -- RIGHT: node already has a successor at `loc0` (value `(&nlk, #loc0)`)
     iapply wp_load $$ Hpt
     iintro !> Hpt
@@ -1193,7 +1224,8 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     iapply fupd_wp
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
-    iauopen HAU with ⟨%σ, Hcont, Hclose⟩
+    iauopen HAU with ⟨%σ, Hα, Hclose⟩
+    icases Hα with ⟨Hcont, Hnode⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
@@ -1201,6 +1233,10 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     icases (arrState_agree γS σ0 σ) $$ HSauth HSfrag with %Hσeq
     subst σ0
     have Hwf := Hcoup.2.2
+    icases (Arr.idRecord_unfold γ hl_val((&lk, #ptr)) id).mp $$ Hnode with ⟨%vN, %γLN, %γSN, %lkN, %ptrN, #HrootN, %HnodeEqN, HidRec, #HlockNodeL⟩
+    icases (arrRoot_agree γ v vN γL γS γLN γSN) $$ Hroot HrootN with %HallN
+    obtain ⟨_, HγLN, HγSN⟩ := HallN
+    subst HγLN; subst HγSN
     icases HidRec with ⟨%rval, %rsucc, HDrec⟩
     icases (dataPointsto_agree γL id ptr ptrN x0 rval (some nid0) rsucc al0 true _ _) $$ HDlock HDrec with %HagN
     obtain ⟨hpN, hrv, hrs, hal⟩ := HagN
@@ -1235,14 +1271,23 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     · iapply Hwand $$ %nlkv %nptr
       iframe HDcont' HDncont
     icases Hclose with ⟨-, Hcommit⟩
-    imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
+    imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents' HDrec'] with HΦ
     · isplitl [Hrootc HSfrag Hcontents']
       · unfold Arr.isContents
         iexists vc, γL, γS
         iframe Hrootc HSfrag
         rw [Arr.insert_cells_eq σ id x Hmem]
         iexact Hcontents'
-      · ipureintro; rfl
+      · isplitl [HDrec']
+        · unfold Arr.idRecord
+          iexists vN, γL, γS, lkN, ptr
+          iframe HrootN
+          isplit
+          · ipureintro; exact HnodeEqN
+          isplitl [HDrec']
+          · iexists x0, (some σ.counter); iframe HDrec'
+          · iexact HlockNodeL
+        · ipureintro; rfl
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, some nid0, true))
@@ -1310,23 +1355,14 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     ispecialize HΦ $$ %hl_val((&nlkv, #nptr))
     iunfold wandM at HΦ
     iapply HΦ
-    isplitl [HDrec']
-    · unfold Arr.idRecord
-      iexists v, γL, γS, lk, ptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDrec']
-      · iexists x0, (some σ.counter); iframe HDrec'
-      · iexact HlockNode
-    · unfold Arr.idRecord
-      iexists v, γL, γS, nlkv, nptr
-      iframe Hroot
-      isplit
-      · ipureintro; rfl
-      isplitl [HDnrec]
-      · iexists x, (some nid0); iframe HDnrec
-      · iexact HnlockINV
+    unfold Arr.idRecord
+    iexists v, γL, γS, nlkv, nptr
+    iframe Hroot
+    isplit
+    · ipureintro; rfl
+    isplitl [HDnrec]
+    · iexists x, (some nid0); iframe HDnrec
+    · iexact HnlockINV
 
 set_option maxRecDepth 8000 in
 /-- Remove-after: `Impl.remove node` physically unlinks `node`'s successor. `node`'s record
@@ -1335,20 +1371,36 @@ is a purely logical parameter: only its record token matters (its physical `Val`
 to `node`'s successor by the ghost agreements), so the caller effectively just supplies `sid`. -/
 theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
   ⊢@{IProp GF}
-    Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.idRecord γ snode sid -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.adjacent σ id sid⌝  ⟫
+    Arr.isArr γ -∗
+      ⟪ ∀ σ, Arr.isContents γ σ ∗ Arr.idRecord γ node id ∗ Arr.idRecord γ snode sid ∗ ⌜Arr.adjacent σ id sid⌝  ⟫
         hl(&Impl.remove &node) @ arrN
       ⟪ Arr.isContents γ (σ.remove sid) ∗ Arr.idRecord γ node id | RET hl_val(#()) ⟫ := by
-  iintro Harr Hnode Hsnode %Φ HAU
+  iintro Harr %Φ HAU
   icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
-  icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
-  icases (arrRoot_agree γ v v' γL γS γL' γS') $$ Hroot Hroot' with %Hall
-  obtain ⟨_, HγL, HγS⟩ := Hall
-  subst HγL; subst HγS
-  icases (Arr.idRecord_unfold γ snode sid).mp $$ Hsnode with ⟨%vs, %γLs, %γSs, %lkS, %ptrSN, #Hroots, %HsnodeEq, HsRec, #HlockSnode⟩
-  icases (arrRoot_agree γ v vs γL γS γLs γSs) $$ Hroot Hroots with %Halls
-  obtain ⟨_, HγLs, HγSs⟩ := Halls
-  subst HγLs; subst HγSs
+  -- PEEK (see insert_spec): grab node's persistent lock before the LP.
+  iapply fupd_wp
+  imod (fupd_mask_subseteq (E1 := ⊤) (E2 := ⊤ \ (↑arrN : CoPset)) (by intro x _; exact CoPset.mem_full)) with Hmclose
+  iauopen HAU with ⟨%σp, Hαp, Hclosep⟩
+  icases Hαp with ⟨Hcontp, Hnodep, Hsnodep, %Hadjp⟩
+  icases (Arr.idRecord_unfold γ node id).mp $$ Hnodep with ⟨%vp, %γLp, %γSp, %lkNp, %ptrNp, #Hrootp, %HnodeEqNp, HidRecp, #HlockNode⟩
+  icases (arrRoot_agree γ v vp γL γS γLp γSp) $$ Hroot Hrootp with %Hallp
+  obtain ⟨_, HγLp, HγSp⟩ := Hallp
+  subst HγLp; subst HγSp
+  ihave Hnodep' : Arr.idRecord γ node id $$ [HidRecp]
+  · unfold Arr.idRecord
+    iexists vp, γL, γS, lkNp, ptrNp
+    iframe Hrootp
+    isplit
+    · ipureintro; exact HnodeEqNp
+    isplitl [HidRecp]
+    · iexact HidRecp
+    · iexact HlockNode
+  icases Hclosep with ⟨Habort, -⟩
+  imod Habort $$ [Hcontp Hnodep' Hsnodep] with HAU
+  · iframe Hcontp Hnodep' Hsnodep
+    ipureintro; exact Hadjp
+  imod Hmclose
+  imodintro
   icases (isArrLockINV_unfold' γL id node).mp $$ HlockNode with ⟨%lk, %γlock, %ptr, %Hnodeeq, #Hlock⟩
   rw [Hnodeeq]
   unfold Impl.remove
@@ -1368,7 +1420,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
     iinv Hinv with ⟨HI, Hclinv⟩
     icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
     iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-    icases Hpre with ⟨Hcont, %Hadj⟩
+    icases Hpre with ⟨Hcont, Hnode, Hsnode, %Hadj⟩
     icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
     icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
     obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
@@ -1411,7 +1463,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iinv Hinv with ⟨HI, Hclinv⟩
       icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
       iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-      icases Hpre with ⟨Hcont, %Hadj⟩
+      icases Hpre with ⟨Hcont, Hnode, Hsnode, %Hadj⟩
       icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
       icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
       obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
@@ -1440,6 +1492,14 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       injection hnid with hnideq
       subst hpc; subst hxc; subst nid0; subst hal
       -- node lock ↔ node record
+      icases (Arr.idRecord_unfold γ hl_val((&lk, #ptr)) id).mp $$ Hnode with ⟨%vN, %γLN, %γSN, %_lkNr, %ptrN, #HrootN, %_HnodeEqNr, HidRec, -⟩
+      icases (arrRoot_agree γ v vN γL γS γLN γSN) $$ Hroot HrootN with %HallN
+      obtain ⟨_, HγLN, HγSN⟩ := HallN
+      subst HγLN; subst HγSN
+      icases (Arr.idRecord_unfold γ snode sid).mp $$ Hsnode with ⟨%vsN, %γLsN, %γSsN, %_lkSr, %ptrSN, #HrootsN, %_HsnodeEqNr, HsRec, -⟩
+      icases (arrRoot_agree γ v vsN γL γS γLsN γSsN) $$ Hroot HrootsN with %HallsN
+      obtain ⟨_, HγLsN, HγSsN⟩ := HallsN
+      subst HγLsN; subst HγSsN
       icases HidRec with ⟨%rval, %rsucc, HDrec⟩
       icases (dataPointsto_agree γL id ptr ptrN x0 rval (some sid) rsucc true true _ _) $$ HDlock HDrec with %HagR
       obtain ⟨hpN, hrv, hrs, -⟩ := HagR
@@ -1555,7 +1615,7 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       iinv Hinv with ⟨HI, Hclinv⟩
       icases (isArrINV_unfold γL γ γS).mp $$ HI with ⟨%σ0, %vI, %m, HDm, #HrootI, HSauth, %Hcoup⟩
       iauopen HAU with ⟨%σ, Hpre, Hclose⟩
-      icases Hpre with ⟨Hcont, %Hadj⟩
+      icases Hpre with ⟨Hcont, Hnode, Hsnode, %Hadj⟩
       icases (Arr.isContents_unfold γ σ).mp $$ Hcont with ⟨%vc, %γLc, %γSc, #Hrootc, HSfrag, Hcontents⟩
       icases (arrRoot_agree γ vI vc γL γS γLc γSc) $$ HrootI Hrootc with %Hall2
       obtain ⟨HvIc, HγLc, HγSc⟩ := Hall2
@@ -1582,6 +1642,14 @@ theorem Impl.remove_spec (γ : GName) (id sid : Nat) (node snode : Val) :
       obtain ⟨hpc, hxc, hnid, hal⟩ := Hag
       injection hnid with hnideq
       subst hpc; subst hxc; subst nid0; subst hal
+      icases (Arr.idRecord_unfold γ hl_val((&lk, #ptr)) id).mp $$ Hnode with ⟨%vN, %γLN, %γSN, %_lkNr, %ptrN, #HrootN, %_HnodeEqNr, HidRec, -⟩
+      icases (arrRoot_agree γ v vN γL γS γLN γSN) $$ Hroot HrootN with %HallN
+      obtain ⟨_, HγLN, HγSN⟩ := HallN
+      subst HγLN; subst HγSN
+      icases (Arr.idRecord_unfold γ snode sid).mp $$ Hsnode with ⟨%vsN, %γLsN, %γSsN, %_lkSr, %ptrSN, #HrootsN, %_HsnodeEqNr, HsRec, -⟩
+      icases (arrRoot_agree γ v vsN γL γS γLsN γSsN) $$ Hroot HrootsN with %HallsN
+      obtain ⟨_, HγLsN, HγSsN⟩ := HallsN
+      subst HγLsN; subst HγSsN
       icases HidRec with ⟨%rval, %rsucc, HDrec⟩
       icases (dataPointsto_agree γL id ptr ptrN x0 rval (some sid) rsucc true true _ _) $$ HDlock HDrec with %HagR
       obtain ⟨hpN, hrv, hrs, -⟩ := HagR

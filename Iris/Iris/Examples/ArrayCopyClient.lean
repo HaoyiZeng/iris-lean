@@ -24,19 +24,19 @@ theorem Impl.insert_hoare (γ : GName) (id : Nat) (node : Val) (x : Int) (σ : A
         {{ v, ∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝ ∗
                 Arr.idRecord γ node id ∗ Arr.idRecord γ v nid }} := by
   iintro HisArr HidRec Hcont
-  ihave Hspec := (Impl.insert_spec γ id node x) $$ HisArr HidRec
+  ihave Hspec := (Impl.insert_spec γ id node x) $$ HisArr
   iapply atomicWP_seq _ _ _ _ _ _ $$ Hspec
     %(fun v => iprop(∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝ ∗
         Arr.idRecord γ node id ∗ Arr.idRecord γ v nid))
-    %(⟨σ, ⟨⟩⟩) [Hcont] []
+    %(⟨σ, ⟨⟩⟩) [Hcont HidRec] []
   · itele_reduce
-    iexact Hcont
+    iframe Hcont HidRec
   · itele_reduce
     iintro %nid Hβ %ret
     simp only [wandM]
-    iintro ⟨Hrec1, Hrec2⟩
+    iintro Hrec2
     iexists nid
-    icases Hβ with ⟨Hcont, %Hnideq⟩
+    icases Hβ with ⟨Hcont, Hrec1, %Hnideq⟩
     iframe Hcont Hrec1 Hrec2
     ipureintro; exact Hnideq
 
@@ -108,7 +108,7 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
       Arr.idRecord γ node id -∗
       WP hl(&Impl.insert &node #x) {{ _v, True }} := by
   iintro #HisArr #Hinv HidRec
-  iapply (Impl.insert_spec γ id node x) $$ HisArr HidRec
+  iapply (Impl.insert_spec γ id node x) $$ HisArr
   iauintro
   have Hsub : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ ↑arrN) := by
     have hd : (↑clientN : CoPset) ## ↑arrN :=
@@ -119,17 +119,22 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
   iapply aacc_inv _ _ _ _ Hsub $$ Hinv
   iintro Hbody
   icases Hbody with ⟨%σ, Hcont⟩
-  iaaccintro' with Hcont
-  · -- abort: peeked but did not linearize; restore the invariant body unchanged
-    iintro Hcont
+  -- assemble the atomic precondition `isContents ∗ idRecord`: `isContents` comes from the
+  -- shared invariant, `idRecord` is our own (threaded through the AU's coinductive frame).
+  ihave Hα : Arr.isContents γ σ ∗ Arr.idRecord γ node id $$ [Hcont HidRec]
+  · iframe Hcont HidRec
+  iaaccintro' with Hα
+  · -- abort: peeked but did not linearize; restore invariant body + give our record back
+    iintro Hα
+    icases Hα with ⟨Hcont, HidRec⟩
     imodintro
     isplitl [Hcont]
     · iexists σ; iframe Hcont
-    · iframe HisArr Hinv
-  · -- commit: `insert` linearized; store the updated list back
-    iintro %nid Hcont'
+    · iframe HisArr Hinv HidRec
+  · -- commit: `insert` linearized; store the updated list back (drop `node`'s returned record)
+    iintro %nid Hβ
     imodintro
-    icases Hcont' with ⟨Hcont', -⟩
+    icases Hβ with ⟨Hcont', -, -⟩
     isplitl [Hcont']
     · iexists (σ.insert id x); iframe Hcont'
     · itele_reduce
