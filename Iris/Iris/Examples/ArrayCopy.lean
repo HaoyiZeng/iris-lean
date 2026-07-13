@@ -96,7 +96,6 @@ namespace Iris.Examples.HeapLang
 ================================================================================
 -/
 
-
 structure Arr where
   cells : List (Nat × Int)
   counter : Nat
