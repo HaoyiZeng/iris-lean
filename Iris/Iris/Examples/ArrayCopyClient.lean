@@ -21,12 +21,12 @@ theorem Impl.insert_hoare (γ : GName) (id : Nat) (node : Val) (x : Int) (σ : A
     ⊢@{IProp GF}
       Arr.isArr γ -∗ Arr.idRecord γ node id -∗ Arr.isContents γ σ -∗
       WP hl(&Impl.insert &node #x)
-        {{ v, ∃ nid, Arr.isContents γ (σ.insert id x) ∗
+        {{ v, ∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝ ∗
                 Arr.idRecord γ node id ∗ Arr.idRecord γ v nid }} := by
   iintro HisArr HidRec Hcont
   ihave Hspec := (Impl.insert_spec γ id node x) $$ HisArr HidRec
   iapply atomicWP_seq _ _ _ _ _ _ $$ Hspec
-    %(fun v => iprop(∃ nid, Arr.isContents γ (σ.insert id x) ∗
+    %(fun v => iprop(∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝ ∗
         Arr.idRecord γ node id ∗ Arr.idRecord γ v nid))
     %(⟨σ, ⟨⟩⟩) [Hcont] []
   · itele_reduce
@@ -36,7 +36,9 @@ theorem Impl.insert_hoare (γ : GName) (id : Nat) (node : Val) (x : Int) (σ : A
     simp only [wandM]
     iintro ⟨Hrec1, Hrec2⟩
     iexists nid
-    iframe Hβ Hrec1 Hrec2
+    icases Hβ with ⟨Hcont, %Hnideq⟩
+    iframe Hcont Hrec1 Hrec2
+    ipureintro; exact Hnideq
 
 /-- A fully sequential client: create a one-element list, then insert twice after the root.
 The postcondition witnesses that the final heap represents *some* concrete abstract list. -/
@@ -57,21 +59,21 @@ theorem Impl.seqClient_spec :
   iapply Impl.init_spec
   · itrivial
   inext
-  iintro %r ⟨%γ, %id, #HisArr, Hcont, HidRec⟩
+  iintro %r ⟨%γ, #HisArr, Hcont, HidRec⟩
   wp_pures
   wp_bind (&Impl.insert _ _)
-  ihave Hw1 := (Impl.insert_hoare γ id r 1 (Arr.init 0)) $$
+  ihave Hw1 := (Impl.insert_hoare γ 0 r 1 (Arr.init 0)) $$
     HisArr HidRec Hcont
   iapply wp_wand $$ Hw1
-  iintro %n1 ⟨%nid1, Hcont, HidRec, -⟩
+  iintro %n1 ⟨%nid1, Hcont, -, HidRec, -⟩
   wp_pures
   wp_bind (&Impl.insert _ _)
-  ihave Hw2 := (Impl.insert_hoare γ id r 2 ((Arr.init 0).insert id 1)) $$
+  ihave Hw2 := (Impl.insert_hoare γ 0 r 2 ((Arr.init 0).insert 0 1)) $$
     HisArr HidRec Hcont
   iapply wp_wand $$ Hw2
-  iintro %n2 ⟨%nid2, Hcont, -, -⟩
+  iintro %n2 ⟨%nid2, Hcont, -, -, -⟩
   wp_pures
-  iexists γ, (((Arr.init 0).insert id 1).insert id 2)
+  iexists γ, (((Arr.init 0).insert 0 1).insert 0 2)
   iexact Hcont
 
 /-- Namespace for the shared "some abstract list exists" invariant of the concurrent client. -/
@@ -127,6 +129,7 @@ theorem Impl.insert_conc (γ : GName) (id : Nat) (node : Val) (x : Int) :
   · -- commit: `insert` linearized; store the updated list back
     iintro %nid Hcont'
     imodintro
+    icases Hcont' with ⟨Hcont', -⟩
     isplitl [Hcont']
     · iexists (σ.insert id x); iframe Hcont'
     · itele_reduce

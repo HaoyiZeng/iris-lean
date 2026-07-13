@@ -60,7 +60,7 @@ namespace Iris.Examples.HeapLang
   └──────────────────────────────────────────────────────────────────────────┘
     ⦃ True ⦄
       &Impl.init #x
-    ⦃ v, RET v; ∃ γ id, isArr γ ∗ isContents γ (Arr.init x) ∗ idRecord γ v id ⦄
+    ⦃ v, RET v; ∃ γ, isArr γ ∗ isContents γ (Arr.init x) ∗ idRecord γ v 0 ⦄
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   │ insert_spec  (logically atomic; inserts after node `id`)                   │
@@ -68,7 +68,7 @@ namespace Iris.Examples.HeapLang
     isArr γ  -∗  idRecord γ node id  -∗
       ⟪ ∀ σ, isContents γ σ ⟫
         &Impl.insert &node #x @ arrN
-      ⟪ ∃ nid, isContents γ (σ.insert id x)
+      ⟪ ∃ nid, isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝
         | ret, RET ret; idRecord γ node id ∗ idRecord γ ret nid ⟫
 
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -82,6 +82,8 @@ namespace Iris.Examples.HeapLang
   Notes.
     · Well-formedness (`Nodup` ids, fresh counter) is maintained *inside* the shared
       invariant, so callers never supply or track it.
+    · Returned ids are *concrete*: `init` names the root `0` and `insert` pins the new
+      node to `σ.counter`, so a client can later `remove` a node it inserted.
     · `remove` consumes `snode`'s record (logically deleting `sid`) and returns
       `node`'s record; `snode` is a logical-only parameter (its `Val` is irrelevant).
 
@@ -914,7 +916,7 @@ theorem Impl.init_spec (x : Int) :
   ⊢@{IProp GF}
     ⦃ True ⦄
       hl(&Impl.init #x)
-    ⦃ v, RET v; ∃ γ id, Arr.isArr γ ∗ Arr.isContents γ (Arr.init x) ∗ Arr.idRecord γ v id ⦄ := by
+    ⦃ v, RET v; ∃ γ, Arr.isArr γ ∗ Arr.isContents γ (Arr.init x) ∗ Arr.idRecord γ v 0 ⦄ := by
   iintro %Φ - Hcont
   unfold Impl.init
   wp_pures
@@ -966,7 +968,7 @@ theorem Impl.init_spec (x : Int) :
   wp_pures
   imodintro
   iapply Hcont
-  iexists γ, 0
+  iexists γ
   isplitl []
   · unfold Arr.isArr
     iexists hl_val((&lk, #c)), γL, γS
@@ -996,7 +998,8 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
     Arr.isArr γ -∗ Arr.idRecord γ node id -∗
       ⟪ ∀ σ, Arr.isContents γ σ ⟫
         hl(&Impl.insert &node #x) @ arrN
-      ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) | ret, RET ret; Arr.idRecord γ node id ∗ Arr.idRecord γ ret nid ⟫ := by
+      ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) ∗ ⌜nid = σ.counter⌝
+        | ret, RET ret; Arr.idRecord γ node id ∗ Arr.idRecord γ ret nid ⟫ := by
   iintro Harr Hnode %Φ HAU
   icases (Arr.isArr_unfold γ).mp $$ Harr with ⟨%v, %γL, %γS, #Hroot, #HlockRoot, #Hinv⟩
   icases (Arr.idRecord_unfold γ node id).mp $$ Hnode with ⟨%v', %γL', %γS', %lkN, %ptrN, #Hroot', %HnodeEqN, HidRec, #HlockNode⟩
@@ -1077,11 +1080,13 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       iframe HDcont' HDncont
     icases Hclose with ⟨-, Hcommit⟩
     imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
-    · unfold Arr.isContents
-      iexists vc, γL, γS
-      iframe Hrootc HSfrag
-      rw [Arr.insert_cells_eq σ id x Hmem]
-      iexact Hcontents'
+    · isplitl [Hrootc HSfrag Hcontents']
+      · unfold Arr.isContents
+        iexists vc, γL, γS
+        iframe Hrootc HSfrag
+        rw [Arr.insert_cells_eq σ id x Hmem]
+        iexact Hcontents'
+      · ipureintro; rfl
     -- close the shared invariant with the updated map & state
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
@@ -1231,11 +1236,13 @@ theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
       iframe HDcont' HDncont
     icases Hclose with ⟨-, Hcommit⟩
     imod Hcommit $$ %(σ.counter) [Hrootc HSfrag Hcontents'] with HΦ
-    · unfold Arr.isContents
-      iexists vc, γL, γS
-      iframe Hrootc HSfrag
-      rw [Arr.insert_cells_eq σ id x Hmem]
-      iexact Hcontents'
+    · isplitl [Hrootc HSfrag Hcontents']
+      · unfold Arr.isContents
+        iexists vc, γL, γS
+        iframe Hrootc HSfrag
+        rw [Arr.insert_cells_eq σ id x Hmem]
+        iexact Hcontents'
+      · ipureintro; rfl
     ihave HInew : isArrINV γL γ γS $$ [HDm HrootI HSauth]
     · unfold isArrINV
       iexists (σ.insert id x), vc, (PartialMap.insert (PartialMap.insert m id (ptr, x0, some σ.counter, true)) σ.counter (nptr, x, some nid0, true))
