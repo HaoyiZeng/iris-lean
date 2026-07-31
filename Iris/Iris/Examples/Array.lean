@@ -1352,25 +1352,112 @@ theorem cellDead_not_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d 
   · ipureintro
     exact hin
 
-theorem sharedViewWriteAcquireSpec
-    (γ : Arrγ) (γp : GName) (d : Data) (id : Nat) (node : Val) :
+theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
+    isPlatform ρ s platform ∗ rwGuard ρ .write ⊢@{IProp GF} ⌜s = .write⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuard_valid
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  cases Hvalid
+  ipureintro
+  rfl
+
+
+theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) (q : Qp) :
+    isPlatform ρ s platform ∗ rwGuardFrac ρ .read q ⊢@{IProp GF}
+      ⌜∃ n, s = .read (n + 1)⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .read⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuardFrac_valid _ _ _ _ _ q
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  ipureintro
+  cases Hvalid with
+  | read n => exact ⟨n, rfl⟩
+
+
+
+
+omit [LawfulFiniteMap H Nat] [ArcG GF] [ArrG GF H] in
+theorem rwGuard_toFrac (γ : GName) :
+    ⊢@{IProp GF} rwGuard γ .read -∗ rwGuardFrac γ .read 1 := by
+  iintro H
+  rw [← rwGuard_eq γ RwLock.Mode.read]
+  iexact H
+
+/-- Reassembling the invariant body while the platform lock is read-held. -/
+theorem arrInvBody_read (γ : Arrγ) (γp : GName) (platform : Val) (n : Nat)
+    (M : H Data) (σ : Arr) (hwf : σ.wellFormed)
+    (hdom : ∀ id, dom M id ↔ id < σ.counter) :
     ⊢@{IProp GF}
-      rwGuard γp .read -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
-      ⟪ ∀ σ, ∀ M, metaMap γ.l M ∗ sharedView γ.l γp M σ ⟫
-        hl(&RwLock.write_acquire &d.mux) @ ∅
-      ⟪ sharedView γ.l γp M σ ∗ rwGuard d.rw .write ∗ isArc d.arc node d.mux ∗
-          rwGuardFrac γp .read q1_2 ∗
-          ((∃ nxt, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d)
-        | RET hl_val(#d.ptr) ⟫ := by
-  iintro H #Hg HArc %Φ HAU
+      isPlatform γp (.read (n + 1)) platform -∗ metaMap γ.l M -∗
+      isGhost (nodeSlotShared γp) γ.l σ.cells -∗
+      retiredNodes (nodeSlotShared γp) M σ.cells -∗
+      stateVar γ.s q3_4 σ M -∗ arrInvBody γ γp platform := by
+  iintro Hplat HM Hghost Hretired Hstate
+  unfold arrInvBody
+  iexists (RwLock.State.read (n + 1)), M, σ
+  simp only [isPhysical]
+  iframe Hplat
+  unfold arrShared sharedView
+  isplitl [HM Hghost Hretired]
+  · iframe HM
+    isplit
+    · ipureintro; exact hwf
+    isplit
+    · ipureintro; exact hdom
+    iframe
+  · iframe
+
+/-- Taking a node's write lock.  A plain Hoare triple: the abstract state `σ` does
+    not move, so there is nothing to linearise and no atomic update in sight — the
+    node slot is simply borrowed out of the array invariant and back.
+
+    The read permit is what makes this possible at all: it rules out the platform
+    lock being write-held, which is the only state in which the invariant holds no
+    node slots.  Half of it is left behind in the slot as a deposit. -/
+theorem nodeWriteAcquireSpec (N : Namespace)
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (d : Data) :
+    ⊢@{IProp GF}
+      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      rwGuard γp .read -∗
+      WP hl(&RwLock.write_acquire &d.mux)
+        {{ v, ⌜v = hl_val(#d.ptr)⌝ ∗
+              isArc d.arc node d.mux ∗ rwGuard d.rw .write ∗
+              rwGuardFrac γp .read q1_2 ∗
+              ((∃ nxt, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d) }} := by
+  iintro #Hinv #Hg HArc H
+  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  · iunfold isArrInv at Hinv
+    iexact Hinv
+  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
   iauintro
-  iapply aacc_aupd_commit $$ HAU
-  simp
-  itele_reduce
-  iintro %σ %M ⟨HM, Hslot⟩
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨%sp, %M, %σ, Hplat, Hphys⟩
+  ihave #hread : ⌜∃ n, sp = RwLock.State.read (n + 1)⌝ $$ [Hplat H]
+  · iapply isPlatform_read_guard_valid γp sp platform 1
+    isplitl [Hplat]
+    · iexact Hplat
+    · iapply rwGuard_toFrac γp $$ H
+  icases hread with ⟨%np, %hsp⟩
+  subst hsp
+  simp only [isPhysical]
+  icases Hphys with ⟨Hsh, HstateVar⟩
+  iunfold arrShared at Hsh
+  icases Hsh with ⟨HM, %hwf, %hdom, Hview⟩
   unfold sharedView
-  icases Hslot with ⟨Hghost, Hretired⟩
+  icases Hview with ⟨Hghost, Hretired⟩
   ihave %Hl := metaMap_lookup $$ HM Hg -- HM should not be consummed
   by_cases hin : id ∈ σ.cells.map (·.1)
   · ihave Hacc := isGhostAccIn γ.l d (nodeSlotShared γp) id σ.cells hin $$ Hg Hghost
@@ -1390,18 +1477,20 @@ theorem sharedViewWriteAcquireSpec
         iexists s
         iframe Hlock Hstate
       ihave Hghost := Hback $$ Hslot
-      iframe HM Hghost Hretired
-      iintro Hau
-      imodintro
-      iframe Hau HArc H Hg
+      ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
+      iframe
+      isplitl []
+      · isplitl []
+        · imodintro; iexact Hinv
+        · imodintro; iexact Hg
+      · imodintro; iexact Hinvraw
     · -- COMMIT: the CAS succeeded, so `s = .free` and the payload is ours
       iintro %_ ⟨Hlock, Hguard, %hs⟩
       subst hs
       imodintro
       dsimp
       itele_reduce
-      iexists _
-      trivial
       iunfold nodeSlotSharedBody at Hstate
       icases Hstate with ⟨HP, HC⟩
       -- 1/4 stays behind in the invariant, 3/4 goes out with the caller
@@ -1417,15 +1506,16 @@ theorem sharedViewWriteAcquireSpec
         dsimp only [nodeSlotSharedBody]
         iframe Hlock Hdep HC14
       ihave Hghost := Hback $$ Hslot
-      iframe Hghost Hretired Hguard HArc Hkeep
-      isplitl [HC34 HP]
-      · ileft
-        iexists nxt
-        unfold alivePayload
-        iframe HC34 HP
-      · iintro Hau
-        imodintro
-        itrivial
+      ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
+      iframe HIb
+      isplit
+      · ipureintro; rfl
+      iframe HArc Hguard Hkeep
+      ileft
+      iexists nxt
+      unfold alivePayload
+      iframe HC34 HP
   · ihave ⟨Hslot, Hother⟩ := retiredNodesAccNotIn Hl hin $$ Hretired
     iunfold retiredSlot at Hslot
     icases Hslot with ⟨#Hcd, Hlive | Hdead⟩
@@ -1435,34 +1525,35 @@ theorem sharedViewWriteAcquireSpec
     iaaccintro' with Hlock
     · iintro Hlock
       imodintro
+      ihave Hretired : retiredNodes (nodeSlotShared γp) M σ.cells
+        $$ [Hother Harc Hstate Hlock Hcd]
+      · iapply Hother
+        unfold retiredSlot
+        iframe Hcd
+        ileft
+        unfold nodeSlotShared
+        iframe
+        iexists s
+        iframe
+      ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
       iframe
-      isplitl [Hother Harc Hstate Hlock]
-      iapply Hother
-      unfold retiredSlot
-      iframe Hcd
-      ileft
-      unfold nodeSlotShared
-      iframe
-      iexists s
-      iframe
-      iintro Hau
-      imodintro
-      iframe
-      iintuitionistic Hg
-      iexact Hg
+      isplitl []
+      · isplitl []
+        · imodintro; iexact Hinv
+        · imodintro; iexact Hg
+      · imodintro; iexact Hinvraw
     · iintro %_  ⟨Hlock, Hguard, %hs⟩
       subst hs
       imodintro
       dsimp
       itele_reduce
-      iexists _
-      trivial
       icases rwGuardHalve γp $$ H with ⟨Hdep, Hkeep⟩
-      iframe Hkeep
-      iframe
-      isplitl
-      · isplitl [Hother Harc Hlock Hdep]
-        iapply Hother
+      iunfold nodeSlotSharedBody at Hstate
+      icases Hstate with ⟨HP, HC⟩
+      ihave Hretired : retiredNodes (nodeSlotShared γp) M σ.cells
+        $$ [Hother Harc Hlock Hdep Hcd]
+      · iapply Hother
         unfold retiredSlot
         iframe Hcd
         ileft
@@ -1471,13 +1562,14 @@ theorem sharedViewWriteAcquireSpec
         iexists .write
         dsimp only [nodeSlotSharedBody]
         iframe
-        iright
-        iunfold nodeSlotSharedBody at Hstate
-        icases Hstate with ⟨HP, HC⟩
-        iframe
-      · iintro H
-        imodintro
-        itrivial
+      ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
+      iframe HIb
+      isplit
+      · ipureintro; rfl
+      iframe HArc Hguard Hkeep
+      iright
+      iframe HP
     ihave Hfalso := arcNoStrong_isArc_False $$ [Hdead HArc]
     iframe
     iexfalso; itrivial
@@ -1493,24 +1585,35 @@ theorem sharedViewWriteAcquireSpec
     *which resource you hold*, via `cellAlive_mem` / `cellDead_not_mem`.  That is
     strictly stronger than a pure snapshot, since those lemmas speak about the `σ`
     at *this* linearisation point, not the one where the lock was taken. -/
-theorem sharedViewWriteReleaseSpec
-    (γ : Arrγ) (γp : GName) (d : Data) (id : Nat) (node : Val) :
+theorem nodeWriteReleaseSpec (N : Namespace)
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (d : Data) :
     ⊢@{IProp GF}
-      metaAt γ.l id d -∗ isArc d.arc node d.mux -∗ rwGuard d.rw .write -∗
-      rwGuardFrac γp .read q1_2 -∗
+      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      rwGuard d.rw .write -∗ rwGuardFrac γp .read q1_2 -∗
       ((∃ nxt : Option Nat, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d) -∗
-      ⟪ ∀ σ, ∀ M, metaMap γ.l M ∗ sharedView γ.l γp M σ ⟫
-        hl(&RwLock.write_release &d.mux) @ ∅
-      ⟪ metaMap γ.l M ∗ sharedView γ.l γp M σ ∗
-          isArc d.arc node d.mux ∗ rwGuard γp .read
-        | RET hl_val(#()) ⟫ := by
-  iintro #Hg HArc Hguard Hkeep Hpay %Φ HAU
+      WP hl(&RwLock.write_release &d.mux)
+        {{ v, ⌜v = hl_val(#())⌝ ∗ isArc d.arc node d.mux ∗ rwGuard γp .read }} := by
+  iintro #Hinv #Hg HArc Hguard Hkeep Hpay
+  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  · iunfold isArrInv at Hinv
+    iexact Hinv
+  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
   iauintro
-  iapply aacc_aupd_commit $$ HAU
-  simp
-  itele_reduce
-  iintro %σ %M ⟨HM, Hview⟩
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨%sp, %M, %σ, Hplat, Hphys⟩
+  ihave #hread : ⌜∃ n, sp = RwLock.State.read (n + 1)⌝ $$ [Hplat Hkeep]
+  · iapply isPlatform_read_guard_valid γp sp platform q1_2
+    isplitl [Hplat] <;> iassumption
+  icases hread with ⟨%np, %hsp⟩
+  subst hsp
+  simp only [isPhysical]
+  icases Hphys with ⟨Hsh, HstateVar⟩
+  iunfold arrShared at Hsh
+  icases Hsh with ⟨HM, %hwf, %hdom, Hview⟩
   ihave #Hl : ⌜get? M id = some d⌝ $$ [HM Hg]
   · iapply metaMap_lookup γ.l M id d $$ HM Hg
   icases Hl with %Hl
@@ -1558,18 +1661,18 @@ theorem sharedViewWriteReleaseSpec
           dsimp only [nodeSlotSharedBody]
           iframe Hlock Hdep Hcell14
         ihave Hghost := Hback $$ Hslot
-        iframe HM Hghost Hretired Hpay
-        iintro Hau
-        imodintro
+        ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+          $$ Hplat HM Hghost Hretired HstateVar
         iframe
-        iintuitionistic Hg
-        iexact Hg
+        isplitl []
+        · isplitl []
+          · imodintro; iexact Hinv
+          · imodintro; iexact Hg
+        · imodintro; iexact Hinvraw
       · -- COMMIT: the lock is free again, so the full cell and payload go back in
         iintro %_ Hlock
         imodintro
         itele_reduce
-        iexists _
-        trivial
         ihave Hfull := (cellAlive_split d.cell nxt).mpr $$ [Hcell14 Hcell]
         · isplitl [Hcell14] <;> iassumption
         ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d nxt $$ [Harc Hlock Hfull HP]
@@ -1580,10 +1683,12 @@ theorem sharedViewWriteReleaseSpec
           iframe Hlock HP Hfull
         ihave Hghost := Hback $$ Hslot
         ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
-        iframe Hghost Hretired HM HArc Hfullguard
-        iintro Hau
-        imodintro
-        itrivial
+        ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+          $$ Hplat HM Hghost Hretired HstateVar
+        iframe HIb
+        isplit
+        · itrivial
+        iframe HArc Hfullguard
   · -- the node has been revoked: its slot lives in `retiredNodes`
     iunfold revokedPayload at Hrev
     icases Hrev with ⟨#Hcd, Hptr⟩
@@ -1623,17 +1728,17 @@ theorem sharedViewWriteReleaseSpec
           · iright
             unfold revokedPayload
             iframe Hcd Hptr
-          iframe HM Hghost Hretired Hpay
-          iintro Hau
-          imodintro
+          ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+            $$ Hplat HM Hghost Hretired HstateVar
           iframe
-          iintuitionistic Hg
-          iexact Hg
+          isplitl []
+          · isplitl []
+            · imodintro; iexact Hinv
+            · imodintro; iexact Hg
+          · imodintro; iexact Hinvraw
         · iintro %_ Hlock
           imodintro
           itele_reduce
-          iexists _
-          trivial
           ihave Hslot : retiredSlot (nodeSlotShared γp) d $$ [Harc Hlock Hptr Hcd]
           · unfold retiredSlot nodeSlotShared revokedPayload
             iframe Hcd
@@ -1644,10 +1749,12 @@ theorem sharedViewWriteReleaseSpec
             iframe Hlock Hptr Hcd
           ihave Hretired := Hback $$ Hslot
           ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
-          iframe Hghost Hretired HM HArc Hfullguard
-          iintro Hau
-          imodintro
-          itrivial
+          ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+            $$ Hplat HM Hghost Hretired HstateVar
+          iframe HIb
+          isplit
+          · itrivial
+          iframe HArc Hfullguard
     · iexfalso
       iapply arcNoStrong_isArc_False d.arc node d.mux
       isplitl [Hdead] <;> iassumption
@@ -1827,41 +1934,6 @@ theorem isPhysical_write_pinned (γ : Arrγ) (γp : GName) (M M' : H Data)
     exact absurd h q3_4_add_q3_4_invalid
   · ipureintro; trivial
 
-theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
-    isPlatform ρ s platform ∗ rwGuard ρ .write ⊢@{IProp GF} ⌜s = .write⌝ := by
-  unfold isPlatform
-  iintro H
-  icases H with ⟨Hplatform, Hguard⟩
-  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
-  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
-  · iapply RwLock.rwGuard_valid
-    isplitl [Hlock] <;> iassumption
-  icases Hcompat with %Hvalid
-  cases Hvalid
-  ipureintro
-  rfl
-
-
-theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
-    isPlatform ρ s platform ∗ rwGuard ρ .read ⊢@{IProp GF}
-      ∃ n, ⌜s = .read (n + 1)⌝ := by
-  unfold isPlatform
-  iintro H
-  icases H with ⟨Hplatform, Hguard⟩
-  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
-  ihave #Hcompat : ⌜RwLock.GuardCompatible s .read⌝ $$ [Hlock Hguard]
-  · iapply RwLock.rwGuard_valid
-    isplitl [Hlock] <;> iassumption
-  icases Hcompat with %Hvalid
-  cases Hvalid with
-  | read n =>
-      iexists n
-      ipureintro
-      rfl
-
-
-
-
 omit [RwLockG GF] in
 theorem Arr.isId_lookup (γ : Arrγ) (M : H Data) (node : Val) (id : Nat) :
     metaMap γ.l M ∗ Arr.isId γ node id ⊢@{IProp GF}
@@ -1950,22 +2022,6 @@ axiom Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
         isArc d.arc node d.mux ∗
         isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
         livePayload γ d nxt ⦄
-
-
-axiom Impl.dropLink_some_spec (γ : GName) (v : Val) (i : Nat) (d : Data) :
-  ⊢@{IProp GF}
-    metaAt γ i d -∗
-    succRef γ v i -∗
-    ⟪ ∀ n, ∀ m, arcAuth d.arc n m ∗ ⌜n > 1⌝ ⟫
-      hl(&Impl.dropLink (some(&v))) @ ∅
-    ⟪ arcAuth d.arc (n - 1) m | RET hl_val(#()) ⟫
-
-axiom Impl.dropLink_none_spec :
-  ⊢@{IProp GF}
-    ⦃ True ⦄
-      hl(&Impl.dropLink (none()))
-    ⦃ r, RET r; ⌜r = hl_val(#())⌝ ⦄
-
 
 /-- Running `f` under the platform **read** lock.  `f` never sees the platform: it
     gets the persistent handle and a read permit, and its atomic update carries only
