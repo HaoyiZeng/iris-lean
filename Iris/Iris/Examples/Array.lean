@@ -1968,10 +1968,14 @@ axiom Impl.dropLink_none_spec :
 
 
 /-- Running `f` under the platform **read** lock.  `f` never sees the platform: it
-    gets a persistent handle plus a read permit, and its atomic update carries only
-    the abstract state.  `execute` itself never opens the atomic update — it just
-    passes it through, so the linearisation point is wherever `f` puts it. -/
-axiom Impl.execute_shared_spec (N : Namespace)
+    gets the persistent handle and a read permit, and its atomic update carries only
+    the abstract state.  `execute` never opens the atomic update at all — it hands it
+    straight to `f`, so the linearisation point is wherever `f` puts it.
+
+    That the platform read lock can still be released *after* `f` has already
+    committed is exactly what `isArrInv` being persistent buys: the invariant can be
+    reopened, an atomic update cannot. -/
+theorem Impl.execute_shared_spec (N : Namespace)
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
     isArrInv N γ γP platform -∗
@@ -1981,8 +1985,205 @@ axiom Impl.execute_shared_spec (N : Namespace)
        ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&Impl.execute &platform #false &f) @ ↑N
-    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫
-
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
+  iintro #Hinv Hf %Φ HAU
+  ihave #Hinvraw : inv N (arrInvBody γ γP platform) $$ [Hinv]
+  · iunfold isArrInv at Hinv
+    iexact Hinv
+  have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+  -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.
+  iapply fupd_wp
+  imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
+  iunfold arrInvBody at HI
+  icases HI with ⟨%s0, %M0, %σ0, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α, %gate, %cell, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hshape : ⌜∃ ps pw p c : Loc, platform = hl_val(((#ps, #pw), (#p, #c)))⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α platform gate $$ Harc with ⟨⟨%ps, %pw, %hp⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate hl_val(#cell) s0 $$ Hlock with ⟨⟨%p, %hg⟩, -⟩
+    ipureintro
+    exact ⟨ps, pw, p, cell, by rw [hp, hg]⟩
+  ihave HI : arrInvBody γ γP platform $$ [Hphys Hstrong Harc Hlock Hcell]
+  · unfold arrInvBody isPlatform
+    iexists s0, M0, σ0
+    isplitl [Hstrong Harc Hlock Hcell]
+    · iexists α, gate, cell
+      iframe
+    · iframe
+  imod Hcl $$ HI with -
+  imodintro
+  icases hshape with ⟨%ps, %pw, %p, %c, %hplat⟩
+  subst hplat
+  unfold Impl.execute Arc.get
+  wp_pures
+  -- `read_acquire`: invariant only, σ untouched.
+  wp_bind &RwLock.read_acquire _
+  iapply RwLock.read_acquire_spec γP hl_val((#p, #c)) hl_val(#c)
+  iauintro
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨%s1, %M1, %σ1, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α1, %gate1, %cell1, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hg1 : ⌜gate1 = hl_val((#p, #c)) ∧ cell1 = c⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc
+      with ⟨⟨%u1, %u2, %hu⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%u3, %hv⟩, -⟩
+    ipureintro
+    simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
+    grind
+  icases hg1 with ⟨%hg1a, %hg1b⟩
+  subst hg1a
+  subst cell1
+  ihave Hα : isRwLock γP hl_val((#p, #c)) s1 hl_val(#c) $$ [Hlock]
+  · iframe
+  iaaccintro' with Hα
+  · -- abort
+    iintro Hlock
+    imodintro
+    isplitl [Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody isPlatform
+      iexists s1, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · iframe
+      isplitl []
+      · imodintro; iexact Hinv
+      · imodintro; iexact Hinvraw
+  · -- commit: whichever way the lock was free or already read-held, we end up one
+    -- reader deeper and the view degrades to the shared one.
+    itele_reduce
+    iintro Hpost
+    icases Hpost with ⟨Hguard, Hcases⟩
+    ihave Hres : ∃ m : Nat,
+        isRwLock γP hl_val((#p, #c)) (.read (m + 1)) hl_val(#c) ∗
+        isPhysical γ γP M1 σ1 (.read (m + 1)) $$ [Hcases Hphys]
+    · icases Hcases with (⟨Hlock, %hs⟩ | ⟨%n, Hlock, %hs⟩)
+      · subst hs
+        iexists 0
+        iframe Hlock
+        iapply isPhysical_read_acquire_first γ γP M1 σ1
+        iexact Hphys
+      · subst hs
+        iexists n
+        iframe Hlock
+        iapply isPhysical_read_acquire_more γ γP M1 σ1 n
+        iexact Hphys
+    icases Hres with ⟨%m, Hlock, Hphys⟩
+    imodintro
+    isplitl [Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody isPlatform
+      iexists (RwLock.State.read (m + 1)), M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · itele_reduce
+      wp_pures
+      -- `f` runs with the read permit; its atomic update is ours, passed straight on.
+      wp_bind &f _
+      iapply Hf $$ Hinv Hguard
+      iauintro
+      simp only [atomicAcc]
+      iauopen HAU with ⟨%σc, Hfrag, Hclose⟩
+      imodintro
+      iexists σc
+      isplitl [Hfrag]
+      · iexact Hfrag
+      · isplit
+        · -- `f` aborted: hand the fragment back and keep the update
+          iintro Hfrag
+          icases Hclose with ⟨Habort, -⟩
+          imod Habort $$ Hfrag with HAU
+          imodintro
+          iframe
+          isplitl []
+          · imodintro; iexact Hinv
+          · imodintro; iexact Hinvraw
+        · -- `f` linearised: commit ours at the same instant, keep the read permit
+          itele_reduce
+          iintro %r Hbeta
+          icases Hbeta with ⟨%σ', Hfrag', HQ, Hguard⟩
+          icases Hclose with ⟨-, Hcommit⟩
+          ihave Hbeta : ∃ σ'', arrFrag γ σ'' ∗ Q σc σ'' r $$ [Hfrag' HQ]
+          · iexists σ'
+            iframe
+          imod Hcommit $$ Hbeta with HΦ
+          imodintro
+          wp_pures
+          -- The update is gone, but `isArrInv` is persistent: reopen and release.
+          wp_bind &RwLock.read_release _
+          iapply RwLock.read_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
+          iauintro
+          iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+          iintro HI
+          iunfold arrInvBody at HI
+          icases HI with ⟨%s2, %M2, %σ2, Hplat, Hphys⟩
+          iunfold isPlatform at Hplat
+          icases Hplat with ⟨%α2, %gate2, %cell2, Hstrong, Harc, Hlock, Hcell⟩
+          ihave #hg2 : ⌜gate2 = hl_val((#p, #c)) ∧ cell2 = c⌝ $$ [Harc Hlock]
+          · icases Arc.isArc_copyRuntime α2 hl_val(((#ps, #pw), (#p, #c))) gate2 $$ Harc
+              with ⟨⟨%w1, %w2, %hw1⟩, -⟩
+            icases RwLock.isRwLock_copyRuntime γP gate2 hl_val(#cell2) s2 $$ Hlock
+              with ⟨⟨%w3, %hw2⟩, -⟩
+            ipureintro
+            simp only [Val.pair.injEq, Val.lit.injEq] at hw1 hw2
+            grind
+          icases hg2 with ⟨%hg2a, %hg2b⟩
+          subst hg2a
+          subst cell2
+          ihave Hα : isRwLock γP hl_val((#p, #c)) s2 hl_val(#c) $$ [Hlock]
+          · iframe
+          iaaccintro' with Hα
+          · -- abort
+            iintro Hlock
+            imodintro
+            isplitl [Hstrong Harc Hlock Hcell Hphys]
+            · unfold arrInvBody isPlatform
+              iexists s2, M2, σ2
+              isplitl [Hstrong Harc Hlock Hcell]
+              · iexists α2, hl_val((#p, #c)), c
+                iframe
+              · iframe
+            · iframe
+              isplitl []
+              · imodintro; iexact Hinv
+              · imodintro; iexact Hinvraw
+          · -- commit: last reader restores the exclusive view, otherwise nothing moves
+            itele_reduce
+            iintro %k Hpost
+            icases Hpost with ⟨%hs2, Hcases⟩
+            subst hs2
+            ihave Hres : ∃ s' : RwLock.State,
+                isRwLock γP hl_val((#p, #c)) s' hl_val(#c) ∗
+                isPhysical γ γP M2 σ2 s' $$ [Hcases Hphys]
+            · icases Hcases with (⟨Hlock, %hk⟩ | ⟨Hlock, %hk⟩)
+              · subst hk
+                iexists RwLock.State.free
+                ihave Hres := isPhysical_read_release_last γ γP M2 σ2 $$ Hphys Hlock
+                icases Hres with ⟨Hphys, Hlock⟩
+                iframe
+              · iexists (RwLock.State.read k)
+                iframe Hlock
+                iapply isPhysical_read_release_nonlast γ γP M2 σ2 k
+                iexact Hphys
+            icases Hres with ⟨%s', Hlock, Hphys⟩
+            imodintro
+            isplitl [Hstrong Harc Hlock Hcell Hphys]
+            · unfold arrInvBody isPlatform
+              iexists s', M2, σ2
+              isplitl [Hstrong Harc Hlock Hcell]
+              · iexists α2, hl_val((#p, #c)), c
+                iframe
+              · iframe
+            · itele_reduce
+              wp_pures
+              iexact HΦ
 
 /-- Running `f` under the platform **write** lock.  `f` gets the whole content
     sequentially — no atomic update, no lock, no ghost names — and hands back a

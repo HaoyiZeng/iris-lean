@@ -130,10 +130,11 @@ class API (GF : BundledGFunctors) [HeapLangGS hlc GF] where
   read_release_spec (γ : name) (l x : Val) :
     ⊢@{IProp GF}
       rwGuard γ .read -∗
-      ⟪ ∀ n, isRwLock γ l (.read (n + 1)) x ⟫
+      ⟪ ∀ s, isRwLock γ l s x ⟫
         hl(&read_release &l) @ ∅
-      ⟪ (isRwLock γ l .free x ∗ ⌜n = 0⌝) ∨
-          (isRwLock γ l (.read n) x ∗ ⌜n > 0⌝)
+      ⟪ ∃ n, ⌜s = .read (n + 1)⌝ ∗
+          ((isRwLock γ l .free x ∗ ⌜n = 0⌝) ∨
+           (isRwLock γ l (.read n) x ∗ ⌜n > 0⌝))
         | RET hl_val(#()) ⟫
 
 instance instAPINameInhabited [HeapLangGS hlc GF] [api : API GF] :
@@ -1449,17 +1450,27 @@ theorem read_acquire_spec (γ : GName) (l x : Val) :
         wp_pure
         iapply IH $$ HAU
 
+/-- The atomic precondition asks only for *some* lock state: the read permit the
+    caller hands over is itself the proof that the state is a read state, and a
+    client has no other way to know that — the permit is gone by the time it has to
+    produce the precondition. -/
 theorem read_release_spec (γ : GName) (l x : Val) :
   ⊢@{IProp GF}
     rwGuard γ .read -∗
-    ⟪ ∀ n, isRwLock γ l (.read (n + 1)) x ⟫
+    ⟪ ∀ s, isRwLock γ l s x ⟫
       hl(&read_release &l) @ ∅
-    ⟪ (isRwLock γ l .free x ∗ ⌜n = 0⌝) ∨
-        (isRwLock γ l (.read n) x ∗ ⌜n > 0⌝)
+    ⟪ ∃ n, ⌜s = .read (n + 1)⌝ ∗
+        ((isRwLock γ l .free x ∗ ⌜n = 0⌝) ∨
+         (isRwLock γ l (.read n) x ∗ ⌜n > 0⌝))
       | RET hl_val(#()) ⟫ := by
   iintro Hg %Φ HAU
   iapply fupd_wp
-  iauopen HAU with ⟨%n, Hs, Hclose⟩
+  iauopen HAU with ⟨%s, Hs, Hclose⟩
+  ihave #hc : ⌜GuardCompatible s .read⌝ $$ [Hs Hg]
+  · iapply rwGuard_valid γ l s x .read
+    isplitl [Hs] <;> iassumption
+  icases hc with %hc
+  rcases hc with ⟨n⟩
   icases isRwLock_copyRuntime γ l x (.read (n + 1)) $$ Hs with ⟨Hruntime, Hs⟩
   icases Hruntime with ⟨%p, %Hl⟩
   icases Hclose with ⟨Habort, -⟩
@@ -1471,7 +1482,12 @@ theorem read_release_spec (γ : GName) (l x : Val) :
   wp_pures
   wp_bind faa(_, _)
   iapply wp_atomic (E2 := ∅)
-  iauopen HAU with ⟨%n, Hs, Hclose⟩
+  iauopen HAU with ⟨%s, Hs, Hclose⟩
+  ihave #hc : ⌜GuardCompatible s .read⌝ $$ [Hs Hg]
+  · iapply rwGuard_valid γ hl_val((#p, &x)) s x .read
+    isplitl [Hs] <;> iassumption
+  icases hc with %hc
+  rcases hc with ⟨n⟩
   unfold isRwLock
   icases Hs with ⟨%p2, %Hl2, %Hvalid, Hp, Ha⟩
   have hp2 : p2 = p := (BaseLit.loc.inj (Val.lit.inj (Val.pair.inj Hl2).1)).symm
@@ -1486,7 +1502,9 @@ theorem read_release_spec (γ : GName) (l x : Val) :
   cases n with
   | zero =>
       imod Hcommit $$ [Hp Ha] with Hcommit
-      · ileft
+      · isplit
+        · ipureintro; rfl
+        ileft
         isplitl [Hp Ha]
         · iexists p
           isplit; itrivial
@@ -1505,7 +1523,9 @@ theorem read_release_spec (γ : GName) (l x : Val) :
       itrivial
   | succ n =>
       imod Hcommit $$ [Hp Ha] with Hcommit
-      · iright
+      · isplit
+        · ipureintro; rfl
+        iright
         isplitl [Hp Ha]
         · iexists p
           isplit; itrivial
