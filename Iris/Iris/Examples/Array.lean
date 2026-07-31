@@ -2590,7 +2590,118 @@ theorem Impl.insert_spec (N : Namespace)
     wp_pures
     icases Hpay with ⟨Hlive | Hrev⟩
     · -- the node is still live: link a fresh node in after it
-      sorry
+      icases Hlive with ⟨%nxt, Hcell, HP⟩
+      -- read the payload; the successor link comes out in whichever shape `nxt` says
+      -- split the payload into the raw cell and exactly `Impl.new`'s precondition
+      ihave Hsplit :
+          ∃ nv : Val, d.ptr ↦ hl_val((#false, (#d.val, &nv))) ∗
+            (match nxt with
+             | none => iprop% ⌜nv = hl_val(none())⌝
+             | some i => iprop% ∃ v : Val, ⌜nv = hl_val(some(&v))⌝ ∗ succRef γ.l v i)
+          $$ [HP]
+      · cases nxt with
+        | none =>
+            iunfold livePayload at HP
+            iexists hl_val(none())
+            iframe HP
+            itrivial
+        | some i =>
+            iunfold livePayload at HP
+            icases HP with ⟨%nv, Hp, Hsucc⟩
+            iexists hl_val(some(&nv))
+            iframe Hp
+            iexists nv
+            isplit
+            · ipureintro; rfl
+            iexact Hsucc
+      icases Hsplit with ⟨%nv, Hptr, Hnext⟩
+      wp_bind !_
+      iapply wp_load $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      -- allocate the new node; the old successor link moves into it
+      wp_bind (&Impl.new _ _)
+      iapply Impl.new_spec γ.l x nv nxt $$ Hnext
+      iintro %newNode !> ⟨%dNew, %hval, HauthN, HisArcN, HlockN, HcellN, HpayN⟩
+      wp_pures
+      -- clone the new node's reference: one copy becomes the edge stored in the
+      -- predecessor, the other is what the caller gets back
+      wp_bind &Arc.clone _
+      iapply Arc.clone_spec (γ := dNew.arc) newNode dNew.mux $$ HisArcN
+      iauintro
+      iaaccintro' with HauthN
+      · iintro HauthN
+        imodintro
+        iframe
+        isplitl []
+        · isplitl []
+          · imodintro; iexact Hinv
+          · imodintro; iexact Hinv'
+        · imodintro; iexact Hat
+      · itele_reduce
+        iintro Hpost
+        imodintro
+        icases Hpost with ⟨HauthN, HisArcN, HedgeN⟩
+        iframe
+        wp_pures
+        -- physically link the new node in
+        wp_bind (_ ← _)
+        iapply wp_store $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        -- and drop the predecessor's lock: this is the linearisation point
+        wp_bind &RwLock.write_release _
+        iapply nodeWriteReleaseInsertSpec N γ γp platform node newNode id x d dNew nxt
+          $$ Hinv' Hat HArc Hwguard Hkeep Hcell Hptr %hval HauthN HisArcN HedgeN
+             HlockN HcellN HpayN
+        -- the linearisation point: our own update is what backs the one we hand over
+        iauintro
+        simp only [atomicAcc]
+        iauopen HAU' with ⟨%σ, Hfrag, Hclose⟩
+        imodintro
+        iexists σ
+        isplitl [Hfrag]
+        · iexact Hfrag
+        · isplit
+          · -- abort
+            iintro Hfrag
+            icases Hclose with ⟨Habort, -⟩
+            imod Habort $$ Hfrag with HAU'
+            imodintro
+            iframe
+            isplitl []
+            · isplitl []
+              · imodintro; iexact Hinv
+              · imodintro; iexact Hinv'
+            · imodintro; iexact Hat
+          · -- commit
+            itele_reduce
+            iintro Hbeta
+            icases Hbeta with ⟨Hfrag', HArc, Hguard, Hnew, %hins⟩
+            icases Hclose with ⟨-, Hcommit⟩
+            ihave Hb : (∃ σ', arrFrag γ σ' ∗
+                          Impl.insertQ γ node id x σ σ' hl_val(injr(&newNode)) ∗
+                          rwGuard γp .read)
+                $$ [Hfrag' HArc Hguard Hnew]
+            · iexists (Arr.insert σ id x).1
+              iframe Hfrag' Hguard
+              unfold Impl.insertQ
+              isplit
+              · ipureintro; rfl
+              isplitl [HArc]
+              · unfold Arr.isId
+                iexists d
+                iframe HArc
+                iexact Hat
+              · rw [hins]
+                iexists newNode
+                isplit
+                · ipureintro; rfl
+                iexact Hnew
+            imod Hcommit $$ Hb with HΦ
+            imodintro
+            wp_pures
+            iexact HΦ
     · -- the node has already been revoked: read `true`, put the slot straight back
       ihave #Hcd : cellDead d.cell $$ [Hrev]
       · iunfold revokedPayload at Hrev
