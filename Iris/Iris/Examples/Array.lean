@@ -51,10 +51,6 @@ def Arr.revoke (arr : Arr) (id : Nat) : Arr × Option Unit :=
 
 section Facts
 
-/-- `sid` is the immediate successor of `id` in the abstract list (the remove-after target). -/
-def Arr.adjacent (σ : Arr) (id sid : Nat) : Prop :=
-  ∃ (pre post : List (Nat × Int)) (x sx : Int),
-    σ.cells = pre ++ (id, x) :: (sid, sx) :: post
 
 def Arr.insertBody (id counter : Nat) (val : Int) : (Nat × Int) → List (Nat × Int) :=
   fun c => if c.1 = id then [c, (counter, val)] else [c]
@@ -676,20 +672,6 @@ theorem stateVar_agree (γ : GName) (q₁ q₂ : Qp) (σ₁ σ₂ : Arr) (M₁ M
   have H := (FracAgree.Frac.op_valid_L.mp Hvalid).2
   exact ⟨congrArg ArrState.arr H, congrArg ArrState.mmap H⟩
 
-/-- Full ownership is exclusive: while the invariant holds `1` (states `.free` and
-    `.read n`) nobody can be sitting outside with a share. -/
-theorem stateVar_full_exclusive (γ : GName) (q : Qp) (σ₁ σ₂ : Arr) (M₁ M₂ : H Data) :
-    stateVar (GF := GF) γ 1 σ₁ M₁ ∗ stateVar γ q σ₂ M₂ ⊢ False := by
-  unfold stateVar
-  iintro ⟨H₁, H₂⟩
-  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
-  · isplitl [H₁] <;> iassumption
-  icases internalCmraValid_discrete $$ H with %Hvalid
-  ipureintro
-  have h := (FracAgree.Frac.op_valid_L.mp Hvalid).1
-  simp only [Qp.val_add, Qp.val_one] at h
-  have := q.2
-  grind
 
 /-- Two shares can only coexist if they fit inside one whole.  This is what makes
     the writer's `3/4` receipt incompatible with the `3/4` the invariant keeps while
@@ -723,13 +705,6 @@ theorem stateVar_full_update (γ : GName) (σ σ' : Arr) (M M' : H Data) :
   unfold stateVar FracAgree.Frac.mk
   exact iOwn_update (Update.exclusive ⟨DFrac.valid_own_one, Agree.toAgree_valid⟩)
 
-/-- Advancing the abstract state needs both halves, i.e. the writer must be inside
-    the atomic update.  This is what forces the linearisation point to be there. -/
-theorem stateVar_update (γ : GName) (σ σ' : Arr) (M M' : H Data) :
-    stateVar (GF := GF) γ q1_4 σ M ∗ stateVar γ q3_4 σ M ⊢
-      |==> (stateVar γ q1_4 σ' M' ∗ stateVar γ q3_4 σ' M') :=
-  (stateVar_split γ σ M).mpr.trans
-    ((stateVar_full_update γ σ σ' M M').trans (bupd_mono (stateVar_split γ σ' M').mp))
 
 theorem stateVar_alloc (σ : Arr) (M : H Data) :
     ⊢@{IProp GF} |==> ∃ γ, stateVar γ 1 σ M := by
@@ -774,8 +749,6 @@ def nextIdOr (cells : List (Nat × Int)) (tail : Option Nat) : Option Nat :=
   | [] => tail
   | (id, _) :: _ => some id
 
-def nextId? : List (Nat × Int) → Option Nat :=
-  λ l => nextIdOr l none
 
 def succRef (γ : GName) (node : Val) (id : Nat) : IProp GF := iprop%
   ∃ d : Data, metaAt γ id d ∗ isArc d.arc node d.mux
@@ -1352,19 +1325,6 @@ theorem cellDead_not_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d 
   · ipureintro
     exact hin
 
-theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
-    isPlatform ρ s platform ∗ rwGuard ρ .write ⊢@{IProp GF} ⌜s = .write⌝ := by
-  unfold isPlatform
-  iintro H
-  icases H with ⟨Hplatform, Hguard⟩
-  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
-  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
-  · iapply RwLock.rwGuard_valid
-    isplitl [Hlock] <;> iassumption
-  icases Hcompat with %Hvalid
-  cases Hvalid
-  ipureintro
-  rfl
 
 
 theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) (q : Qp) :
