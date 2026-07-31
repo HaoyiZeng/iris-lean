@@ -691,6 +691,23 @@ theorem stateVar_full_exclusive (γ : GName) (q : Qp) (σ₁ σ₂ : Arr) (M₁ 
   have := q.2
   grind
 
+/-- Two shares can only coexist if they fit inside one whole.  This is what makes
+    the writer's `3/4` receipt incompatible with the `3/4` the invariant keeps while
+    the platform lock is *not* write-held. -/
+theorem stateVar_frac_valid (γ : GName) (q₁ q₂ : Qp) (σ₁ σ₂ : Arr) (M₁ M₂ : H Data) :
+    stateVar (GF := GF) γ q₁ σ₁ M₁ ∗ stateVar γ q₂ σ₂ M₂ ⊢ ⌜(q₁ + q₂).val ≤ 1⌝ := by
+  unfold stateVar
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete $$ H with %Hvalid
+  ipureintro
+  exact (FracAgree.Frac.op_valid_L.mp Hvalid).1
+
+theorem q3_4_add_q3_4_invalid : ¬ ((q3_4 + q3_4).val ≤ 1) := by
+  unfold q3_4 Qp.half
+  native_decide
+
 /-- The `1/4` (invariant side) / `3/4` (writer side) split, mirroring `cellAlive`. -/
 theorem stateVar_split (γ : GName) (σ : Arr) (M : H Data) :
     stateVar (GF := GF) γ 1 σ M ⊣⊢ stateVar γ q1_4 σ M ∗ stateVar γ q3_4 σ M := by
@@ -965,19 +982,14 @@ def arrShared (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) : IProp GF := i
     inside the atomic update. -/
 def isPhysical (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     RwLock.State → IProp GF
-  | .write  => /- Sync -/ stateVar γ.s q1_4 σ M
-  | .read _ => iprop% arrShared γ γp M σ ∗ /- Sync -/ stateVar γ.s 1 σ M
-  | .free   => iprop% arrContent γ M σ ∗ /- Sync -/ stateVar γ.s 1 σ M
+  | .write  => iprop% emp
+  | .read _ => iprop% arrShared γ γp M σ ∗ /- Sync -/ stateVar γ.s q3_4 σ M
+  | .free   => iprop% arrContent γ M σ ∗ /- Sync -/ stateVar γ.s q3_4 σ M
 
 def isPlatform (ρ : GName) (s : RwLock.State) (platform : Val) : IProp GF := iprop%
   ∃ α : GName, ∃ gate : Val, ∃ cell : Loc,
     arcHasStrong α ∗ isArc α platform gate ∗
     isRwLock ρ gate s hl_val(#cell) ∗ cell ↦ hl_val(#())
-
-def Arr.isArr (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) : IProp GF := iprop%
-  ∃ s : RwLock.State, ∃ M : H Data,
-    isPlatform γp s platform ∗
-    isPhysical γ γp M σ s
 
 instance instSharedViewTimeless (γ γP : GName) (M : H Data) (σ : Arr) :
     Timeless (sharedView (GF := GF) γ γP M σ) := by unfold sharedView; infer_instance
@@ -1030,8 +1042,16 @@ instance instArrFragTimeless (γ : Arrγ) (σ : Arr) :
 example (γ : Arrγ) (γp : GName) (platform : Val) :
     Timeless (arrInvBody (GF := GF) γ γp platform) := inferInstance
 
+/-- What a client owns: a persistent handle plus the abstract state. -/
+def Arr.isArr (N : Namespace) (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) :
+    IProp GF := iprop%
+  isArrInv N γ γp platform ∗ arrFrag γ σ
+
+/-- A freshly built node chain that has not been handed to a platform yet: the whole
+    content, and the *undivided* abstract state.  Nothing is shared, so no invariant
+    exists and there is nothing atomic about it. -/
 def Arr.isList (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
-  ∀ γp platform, isPlatform γp .free platform -∗ Arr.isArr γ γp σ platform
+  ∃ M : H Data, arrContent γ M σ ∗ stateVar γ.s 1 σ M
 
 def Arr.isId (γ : Arrγ) (node : Val) (id : Nat) : IProp GF := iprop%
   ∃ d : Data, metaAt γ.l id d ∗ isArc d.arc node d.mux
@@ -1740,216 +1760,72 @@ theorem isPhysical_read_release_last (γ : Arrγ) (γp : GName) (M : H Data) (σ
   ipureintro; exact hdom
 
 
+/-- Taking the platform write lock empties the invariant: the whole content, and the
+    `3/4` receipt that goes with it, leave with the writing thread. -/
 theorem isPhysical_write_acquire (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     isPhysical γ γp M σ .free ⊢@{IProp GF}
       (arrContent γ M σ ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write := by
   simp only [isPhysical]
   iintro H
-  icases H with ⟨Hview, Hstate⟩
-  icases (stateVar_split γ.s σ M).mp $$ Hstate with ⟨Hinv, Hout⟩
   iframe
 
-
-/-- Releasing the platform write lock is the linearisation point: the `3/4` share
-    the writer took out meets the `1/4` the invariant kept, and only together can
-    they advance the abstract state to whatever `f` actually built. -/
+/-- Releasing the platform write lock is the linearisation point.  The writer's `3/4`
+    receipt only becomes a whole once the client's `1/4` arrives through the atomic
+    update, and only a whole can advance the abstract state — which is exactly why
+    the linearisation point cannot be anywhere else. -/
 theorem isPhysical_write_release (γ : Arrγ) (γp : GName)
     (M M' : H Data) (σ σ' : Arr) :
-    (arrContent γ M' σ' ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write
-      ⊢@{IProp GF} |==> isPhysical γ γp M' σ' .free := by
+    ⊢@{IProp GF}
+      arrContent γ M' σ' -∗ stateVar γ.s q3_4 σ M -∗ arrFrag γ σ ==∗
+        isPhysical γ γp M' σ' .free ∗ arrFrag γ σ' := by
   simp only [isPhysical]
-  iintro H
-  icases H with ⟨⟨Hview, Hout⟩, Hinv⟩
-  ihave Hfull := (stateVar_split γ.s σ M).mpr $$ [Hinv Hout]
+  iintro Hview Hout Hfrag
+  iunfold arrFrag at Hfrag
+  icases Hfrag with ⟨%M₀, Hinv⟩
+  ihave #hag : ⌜σ = σ ∧ M₀ = M⌝ $$ [Hinv Hout]
+  · iapply stateVar_agree γ.s q1_4 q3_4 σ σ M₀ M
+    isplitl [Hinv] <;> iassumption
+  icases hag with ⟨-, %hM⟩
+  subst hM
+  ihave Hfull := (stateVar_split γ.s σ M₀).mpr $$ [Hinv Hout]
   · isplitl [Hinv] <;> iassumption
-  ihave Hupd := stateVar_full_update γ.s σ σ' M M' $$ Hfull
+  ihave Hupd := stateVar_full_update γ.s σ σ' M₀ M' $$ Hfull
   imod Hupd with Hfull
+  icases (stateVar_split γ.s σ' M').mp $$ Hfull with ⟨Hinv', Hout'⟩
   imodintro
+  iframe Hview Hout'
+  unfold arrFrag
+  iexists M'
   iframe
 
+omit [RwLockG GF] [ArcG GF] in
+/-- The client's fragment agrees with the writer's receipt on the abstract state. -/
+theorem arrFrag_agree (γ : Arrγ) (σ σ' : Arr) (M : H Data) :
+    arrFrag γ σ ∗ stateVar γ.s q3_4 σ' M ⊢@{IProp GF} ⌜σ = σ'⌝ := by
+  unfold arrFrag
+  iintro ⟨⟨%M₀, Hfrag⟩, Hout⟩
+  icases stateVar_agree γ.s q1_4 q3_4 σ σ' M₀ M $$ [Hfrag Hout] with %h
+  · isplitl [Hfrag] <;> iassumption
+  ipureintro
+  exact h.1
 
-/-- The `3/4` share is a *receipt* for the platform write lock: it proves the lock
-    is write-held and pins the abstract state the invariant still remembers. -/
+/-- The `3/4` share is a *receipt* for the platform write lock: no other lock state
+    leaves that much of `stateVar` unclaimed. -/
 theorem isPhysical_write_pinned (γ : Arrγ) (γp : GName) (M M' : H Data)
     (σ σ' : Arr) (s : RwLock.State) :
-    isPhysical γ γp M σ s ∗ stateVar γ.s q3_4 σ' M' ⊢@{IProp GF}
-      ⌜s = .write ∧ σ = σ' ∧ M = M'⌝ := by
+    isPhysical γ γp M σ s ∗ stateVar γ.s q3_4 σ' M' ⊢@{IProp GF} ⌜s = .write⌝ := by
   cases s <;> simp only [isPhysical] <;> iintro ⟨Hphys, Hout⟩
   · iexfalso
     icases Hphys with ⟨-, Hstate⟩
-    iapply stateVar_full_exclusive γ.s q3_4 σ σ' M M'
-    isplitl [Hstate] <;> iassumption
+    icases stateVar_frac_valid γ.s q3_4 q3_4 σ σ' M M' $$ [Hstate Hout] with %h
+    · isplitl [Hstate] <;> iassumption
+    exact absurd h q3_4_add_q3_4_invalid
   · iexfalso
     icases Hphys with ⟨-, Hstate⟩
-    iapply stateVar_full_exclusive γ.s q3_4 σ σ' M M'
-    isplitl [Hstate] <;> iassumption
-  · icases stateVar_agree γ.s q1_4 q3_4 σ σ' M M' $$ [Hphys Hout] with %h
-    · isplitl [Hphys] <;> iassumption
-    ipureintro
-    exact ⟨trivial, h.1, h.2⟩
-
-theorem platform_write_acquire_spec
-    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
-    ⊢@{IProp GF}
-      ⟪ ∀ s, isRwLock ρ gate s hl_val(#cell) ∗ isPhysical γ ρ M σ s ⟫
-        hl(&RwLock.write_acquire &gate) @ ∅
-      ⟪ (isRwLock ρ gate .write hl_val(#cell) ∗ isPhysical γ ρ M σ .write) ∗
-          (rwGuard ρ .write ∗ (arrContent γ M σ ∗ stateVar γ.s q3_4 σ M))
-        | RET hl_val(#cell) ⟫ := by
-  iintro %Φ HAU
-  iapply RwLock.write_acquire_spec ρ gate hl_val(#cell)
-  iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨%s, Hpre, Hclose⟩
-  icases Hpre with ⟨Hlock, Hphys⟩
-  imodintro
-  iexists s
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      iapply Habort
-      iframe
-    · iintro Hpost
-      icases Hpost with ⟨Hlock, Hguard, %hs⟩
-      subst s
-      icases Hclose with ⟨-, Hcommit⟩
-      iapply Hcommit
-      icases isPhysical_write_acquire γ ρ M σ $$ Hphys with ⟨Hout, Hinv⟩
-      iframe
-
-
-theorem platform_write_release_spec
-    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc)
-    (M M' : H Data) (σ σ' : Arr) :
-    ⊢@{IProp GF}
-      rwGuard ρ .write -∗ arrContent γ M' σ' -∗ stateVar γ.s q3_4 σ M -∗
-      ⟪ isRwLock ρ gate .write hl_val(#cell) ∗
-          isPhysical γ ρ M σ .write ⟫
-        hl(&RwLock.write_release &gate) @ ∅
-      ⟪ isRwLock ρ gate .free hl_val(#cell) ∗
-          isPhysical γ ρ M' σ' .free
-        | RET hl_val(#()) ⟫ := by
-  iintro Hguard Hview H %Φ HAU
-  iapply RwLock.write_release_spec ρ gate hl_val(#cell) $$ Hguard
-  iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨Hpre, Hclose⟩
-  icases Hpre with ⟨Hlock, Hphys⟩
-  imodintro
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      iframe Hview H
-      iapply Habort
-      iframe
-    · iintro Hlock
-      icases Hclose with ⟨-, Hcommit⟩
-      ihave Hupd := isPhysical_write_release γ ρ M M' σ σ' $$ [Hview H Hphys]
-      · isplitl [Hview H]
-        · isplitl [Hview] <;> iassumption
-        · iassumption
-      imod Hupd with Hphys
-      iapply Hcommit
-      iframe
-
-
-theorem platform_read_acquire_spec
-    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
-    ⊢@{IProp GF}
-      ⟪ ∃ s, isRwLock ρ gate s hl_val(#cell) ∗ isPhysical γ ρ M σ s ⟫
-        hl(&RwLock.read_acquire &gate) @ ∅
-      ⟪ (∃ n, isRwLock ρ gate (.read (n + 1)) hl_val(#cell) ∗
-            isPhysical γ ρ M σ (.read (n + 1))) ∗
-          rwGuard ρ .read
-        | RET hl_val(#cell) ⟫ := by
-  iintro %Φ HAU
-  iapply RwLock.read_acquire_spec ρ gate hl_val(#cell)
-  iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨Hpre, Hclose⟩
-  icases Hpre with ⟨%s, Hlock, Hphys⟩
-  imodintro
-  iexists s
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      iapply Habort
-      iexists s
-      iframe
-    · iintro Hpost
-      icases Hpost with ⟨Hguard, Hcases⟩
-      icases Hclose with ⟨-, Hcommit⟩
-      iapply Hcommit
-      icases Hcases with (⟨Hlock, %hs⟩ | ⟨%n, Hlock, %hs⟩)
-      · subst s
-        isplitr [Hguard]
-        · iexists 0
-          iframe
-          iapply isPhysical_read_acquire_first γ ρ M σ
-          iexact Hphys
-        · iexact Hguard
-      · subst s
-        isplitr [Hguard]
-        · iexists n
-          iframe
-          iapply isPhysical_read_acquire_more γ ρ M σ n
-          iexact Hphys
-        · iexact Hguard
-
-
-theorem platform_read_release_spec
-    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
-    ⊢@{IProp GF}
-      rwGuard ρ .read -∗
-      ⟪ ∀ n, isRwLock ρ gate (.read (n + 1)) hl_val(#cell) ∗
-          isPhysical γ ρ M σ (.read (n + 1)) ⟫
-        hl(&RwLock.read_release &gate) @ ∅
-      ⟪ (isRwLock ρ gate .free hl_val(#cell) ∗
-            isPhysical γ ρ M σ .free ∗ ⌜n = 0⌝) ∨
-          (isRwLock ρ gate (.read n) hl_val(#cell) ∗
-            isPhysical γ ρ M σ (.read n) ∗ ⌜n > 0⌝)
-        | RET hl_val(#()) ⟫ := by
-  iintro Hguard %Φ HAU
-  iapply RwLock.read_release_spec ρ gate hl_val(#cell) $$ Hguard
-  iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨%n, Hpre, Hclose⟩
-  icases Hpre with ⟨Hlock, Hphys⟩
-  imodintro
-  iexists n
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      iapply Habort
-      iframe
-    · iintro Hpost
-      icases Hclose with ⟨-, Hcommit⟩
-      iapply Hcommit
-      icases Hpost with (⟨Hlock, %hn⟩ | ⟨Hlock, %hn⟩)
-      · subst n
-        ileft
-        ihave Hres := isPhysical_read_release_last γ ρ M σ $$ Hphys Hlock
-        icases Hres with ⟨Hphys, Hlock⟩
-        iframe
-        ipureintro
-        rfl
-      · iright
-        iframe Hlock
-        isplitl [Hphys]
-        · iapply isPhysical_read_release_nonlast γ ρ M σ n
-          iexact Hphys
-        · ipureintro
-          exact hn
-
-
+    icases stateVar_frac_valid γ.s q3_4 q3_4 σ σ' M M' $$ [Hstate Hout] with %h
+    · isplitl [Hstate] <;> iassumption
+    exact absurd h q3_4_add_q3_4_invalid
+  · ipureintro; trivial
 
 theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
     isPlatform ρ s platform ∗ rwGuard ρ .write ⊢@{IProp GF} ⌜s = .write⌝ := by
@@ -2006,12 +1882,34 @@ theorem Arr.isId_lookup (γ : Arrγ) (M : H Data) (node : Val) (id : Nat) :
 
 end Resources
 
-axiom Arr.isList_bind
+/-- Handing a freshly built list to a platform.  This is where the array becomes
+    concurrent: the physical content is sealed into an invariant, the abstract state
+    is split `3/4` (invariant) / `1/4` (client), and what comes back is a persistent
+    handle plus the client's fragment.
+
+    Allocating an invariant is a ghost update, so unlike the old pure wand this has
+    to be a fancy update. -/
+theorem Arr.isList_bind (N : Namespace)
     (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) :
   ⊢@{IProp GF}
     Arr.isList γ σ -∗
-    isPlatform γp .free platform -∗
-    Arr.isArr γ γp σ platform
+    isPlatform γp .free platform ={⊤}=∗
+    Arr.isArr N γ γp σ platform := by
+  iintro Hlist Hplat
+  unfold Arr.isList
+  icases Hlist with ⟨%M, Hcontent, Hstate⟩
+  icases (stateVar_split γ.s σ M).mp $$ Hstate with ⟨Hfrag, Hinv⟩
+  ihave Hbody : arrInvBody γ γp platform $$ [Hplat Hcontent Hinv]
+  · unfold arrInvBody
+    iexists RwLock.State.free, M, σ
+    simp only [isPhysical]
+    iframe
+  imod inv_alloc N ⊤ (arrInvBody γ γp platform) $$ Hbody with #Hinvariant
+  imodintro
+  unfold Arr.isArr isArrInv arrFrag
+  iframe Hinvariant
+  iexists M
+  iframe
 
 axiom Impl.init_spec (x : Int) :
   ⊢@{IProp GF}
@@ -2069,42 +1967,53 @@ axiom Impl.dropLink_none_spec :
     ⦃ r, RET r; ⌜r = hl_val(#())⌝ ⦄
 
 
-axiom Impl.execute_shared_spec
-    (γ : Arrγ) (γP : GName) (platform f : Val) (Ψ : Arr → Val → IProp GF) :
+/-- Running `f` under the platform **read** lock.  `f` never sees the platform: it
+    gets a persistent handle plus a read permit, and its atomic update carries only
+    the abstract state.  `execute` itself never opens the atomic update — it just
+    passes it through, so the linearisation point is wherever `f` puts it. -/
+axiom Impl.execute_shared_spec (N : Namespace)
+    (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
-    (rwGuard γP .read -∗
-       ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
-         hl(&f #()) @ ∅
-       ⟪ ∃ r, Ψ σ r ∗ rwGuard γP .read | RET r ⟫) -∗
-    ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
-      hl(&Impl.execute &platform #false &f) @ ∅
-    ⟪ ∃ r, Ψ σ r | RET r ⟫
+    isArrInv N γ γP platform -∗
+    (isArrInv N γ γP platform -∗ rwGuard γP .read -∗
+       ⟪ ∀ σ, arrFrag γ σ ⟫
+         hl(&f #()) @ ↑N
+       ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫) -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&Impl.execute &platform #false &f) @ ↑N
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫
 
 
 /-- Running `f` under the platform **write** lock.  `f` gets the whole content
     sequentially — no atomic update, no lock, no ghost names — and hands back a
     content at a possibly different abstract state plus its own result `Q`.
 
-    The linearisation point is `write_release`: while `f` runs, the invariant only
-    holds `stateVar γ.s ¼ σ M`, which pins `σ`, and the abstract state is advanced
-    only when the remaining `¾` comes back inside the atomic update. -/
-theorem Impl.execute_exclusive_spec
+    Every lock operation only opens the *invariant*; the atomic update is touched
+    exactly once, at `write_release`, which is the linearisation point.  While `f`
+    runs the invariant is empty and the abstract state cannot move, because
+    advancing it needs the writer's `3/4` receipt *and* the client's `1/4`. -/
+theorem Impl.execute_exclusive_spec (N : Namespace)
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
+    isArrInv N γ γP platform -∗
     (∀ M σ,
        ⦃ arrContent γ M σ ⦄
          hl(&f #())
        ⦃ r, RET r; ∃ M' σ', arrContent γ M' σ' ∗ Q σ σ' r ⦄) -∗
-    ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
-      hl(&Impl.execute &platform #true &f) @ ∅
-    ⟪ ∃ r, ∃ σ', Arr.isArr γ γP σ' platform ∗ Q σ σ' r | RET r ⟫ := by
-  iintro Hf %Φ HAU
-  -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.  This is
-  -- an open/abort with no program step, hence `fupd_wp`.
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&Impl.execute &platform #true &f) @ ↑N
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
+  iintro #Hinv Hf %Φ HAU
+  iunfold isArrInv at Hinv
+  have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+  -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.  Opening
+  -- and closing the invariant with no program step in between, hence `fupd_wp`.
   iapply fupd_wp
-  iauopen HAU with ⟨%σ0, Hpre, Hclose⟩
-  iunfold Arr.isArr at Hpre
-  icases Hpre with ⟨%s0, %M0, Hplat, Hphys⟩
+  imod inv_acc Hfull $$ Hinv with ⟨>HI, Hcl⟩
+  iunfold arrInvBody at HI
+  icases HI with ⟨%s0, %M0, %σ0, Hplat, Hphys⟩
   iunfold isPlatform at Hplat
   icases Hplat with ⟨%α, %gate, %cell, Hstrong, Harc, Hlock, Hcell⟩
   ihave #hshape : ⌜∃ ps pw p c : Loc, platform = hl_val(((#ps, #pw), (#p, #c)))⌝ $$ [Harc Hlock]
@@ -2112,158 +2021,156 @@ theorem Impl.execute_exclusive_spec
     icases RwLock.isRwLock_copyRuntime γP gate hl_val(#cell) s0 $$ Hlock with ⟨⟨%p, %hg⟩, -⟩
     ipureintro
     exact ⟨ps, pw, p, cell, by rw [hp, hg]⟩
-  ihave Hisarr : Arr.isArr γ γP σ0 platform $$ [Hphys Hstrong Harc Hlock Hcell]
-  · unfold Arr.isArr isPlatform
-    iexists s0, M0
+  ihave HI : arrInvBody γ γP platform $$ [Hphys Hstrong Harc Hlock Hcell]
+  · unfold arrInvBody isPlatform
+    iexists s0, M0, σ0
     isplitl [Hstrong Harc Hlock Hcell]
     · iexists α, gate, cell
       iframe
     · iframe
-  icases Hclose with ⟨Habort, -⟩
-  imod Habort $$ Hisarr with HAU
+  imod Hcl $$ HI with -
   imodintro
   icases hshape with ⟨%ps, %pw, %p, %c, %hplat⟩
   subst hplat
   unfold Impl.execute Arc.get
   wp_pures
-  -- `write_acquire`: open the update, abort (σ is untouched), and walk out with the
-  -- whole content plus the `3/4` share that will later license the state change.
+  -- `write_acquire`: only the invariant is touched; σ does not move.
   wp_bind &RwLock.write_acquire _
   iapply RwLock.write_acquire_spec γP hl_val((#p, #c)) hl_val(#c)
   iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨%σ1, Hpre, Hclose⟩
-  iunfold Arr.isArr at Hpre
-  icases Hpre with ⟨%s1, %M1, Hplat, Hphys⟩
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinv
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨%s1, %M1, %σ1, Hplat, Hphys⟩
   iunfold isPlatform at Hplat
   icases Hplat with ⟨%α1, %gate1, %cell1, Hstrong, Harc, Hlock, Hcell⟩
   ihave #hg1 : ⌜gate1 = hl_val((#p, #c)) ∧ cell1 = c⌝ $$ [Harc Hlock]
-  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc with ⟨⟨%q1, %q2, %hq⟩, -⟩
-    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%r1, %hr⟩, -⟩
+  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc
+      with ⟨⟨%u1, %u2, %hu⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%u3, %hv⟩, -⟩
     ipureintro
-    simp only [Val.pair.injEq, Val.lit.injEq] at hq hr
+    simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
     grind
   icases hg1 with ⟨%hg1a, %hg1b⟩
   subst hg1a
   subst cell1
-  imodintro
-  iexists s1
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
-        $$ [Hphys Hstrong Harc Hlock Hcell]
-      · unfold Arr.isArr isPlatform
-        iexists s1, M1
-        isplitl [Hstrong Harc Hlock Hcell]
-        · iexists α1, hl_val((#p, #c)), c
-          iframe
-        · iframe
-      imod Habort $$ Hisarr with HAU
+  ihave Hα : isRwLock γP hl_val((#p, #c)) s1 hl_val(#c) $$ [Hlock]
+  · iframe
+  iaaccintro' with Hα
+  · -- abort: nothing happened, put the body back
+    iintro Hlock
+    imodintro
+    isplitl [Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody isPlatform
+      iexists s1, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · iframe
       imodintro
-      iframe
-    · iintro Hpost
-      icases Hpost with ⟨Hlock, Hguard, %hs1⟩
-      subst hs1
-      icases Hclose with ⟨Habort, -⟩
-      icases isPhysical_write_acquire γ γP M1 σ1 $$ Hphys with ⟨⟨Hcontent, Hout⟩, Hphys⟩
-      ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
-        $$ [Hphys Hstrong Harc Hlock Hcell]
-      · unfold Arr.isArr isPlatform
-        iexists RwLock.State.write, M1
-        isplitl [Hstrong Harc Hlock Hcell]
-        · iexists α1, hl_val((#p, #c)), c
-          iframe
-        · iframe
-      imod Habort $$ Hisarr with HAU
-      imodintro
+      iexact Hinv
+  · -- commit: the lock was free, so the content walks out with us
+    itele_reduce
+    iintro Hpost
+    icases Hpost with ⟨Hlock, Hguard, %hs1⟩
+    subst hs1
+    imodintro
+    icases isPhysical_write_acquire γ γP M1 σ1 $$ Hphys with ⟨⟨Hcontent, Hout⟩, Hphys⟩
+    isplitl [Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody isPlatform
+      iexists RwLock.State.write, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · itele_reduce
       wp_pures
-      -- `f` runs sequentially on the whole content; σ is pinned by the `1/4` share
-      -- the invariant kept, so nothing can be observed in between.
+      -- `f` runs sequentially on the whole content
       wp_bind &f _
       iapply Hf $$ Hcontent
       iintro %r !> Hres
       icases Hres with ⟨%M2, %σ2, Hcontent2, HQ⟩
       wp_pures
-      -- `write_release`: the linearisation point.
+      -- `write_release`: the linearisation point.  Invariant *and* atomic update.
       wp_bind &RwLock.write_release _
       iapply RwLock.write_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
       iauintro
-      simp only [atomicAcc]
-      iauopen HAU with ⟨%σ3, Hpre, Hclose⟩
-      iunfold Arr.isArr at Hpre
-      icases Hpre with ⟨%s3, %M3, Hplat, Hphys⟩
-      ihave #hw : ⌜s3 = .write ∧ σ3 = σ1 ∧ M3 = M1⌝ $$ [Hphys Hout]
+      iapply aacc_inv _ _ _ _ Hfull' $$ Hinv
+      iintro HI
+      iunfold arrInvBody at HI
+      icases HI with ⟨%s3, %M3, %σ3, Hplat, Hphys⟩
+      ihave #hw : ⌜s3 = .write⌝ $$ [Hphys Hout]
       · iapply isPhysical_write_pinned γ γP M3 M1 σ3 σ1 s3
         isplitl [Hphys] <;> iassumption
-      icases hw with ⟨%hw1, %hw2, %hw3⟩
-      subst hw1
-      subst σ3
-      subst M3
+      icases hw with %hw
+      subst hw
       iunfold isPlatform at Hplat
       icases Hplat with ⟨%α3, %gate3, %cell3, Hstrong, Harc, Hlock, Hcell⟩
       ihave #hg3 : ⌜gate3 = hl_val((#p, #c)) ∧ cell3 = c⌝ $$ [Harc Hlock]
       · icases Arc.isArc_copyRuntime α3 hl_val(((#ps, #pw), (#p, #c))) gate3 $$ Harc
-          with ⟨⟨%u1, %u2, %hu⟩, -⟩
+          with ⟨⟨%v1, %v2, %hv1⟩, -⟩
         icases RwLock.isRwLock_copyRuntime γP gate3 hl_val(#cell3) .write $$ Hlock
-          with ⟨⟨%u3, %hv⟩, -⟩
+          with ⟨⟨%v3, %hv2⟩, -⟩
         ipureintro
-        simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
+        simp only [Val.pair.injEq, Val.lit.injEq] at hv1 hv2
         grind
       icases hg3 with ⟨%hg3a, %hg3b⟩
       subst hg3a
       subst cell3
-      imodintro
-      isplitl [Hlock]
-      · iexact Hlock
-      · isplit
-        · iintro Hlock
-          icases Hclose with ⟨Habort, -⟩
-          ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
-            $$ [Hphys Hstrong Harc Hlock Hcell]
-          · unfold Arr.isArr isPlatform
-            iexists RwLock.State.write, M1
-            isplitl [Hstrong Harc Hlock Hcell]
-            · iexists α3, hl_val((#p, #c)), c
-              iframe
-            · iframe
-          imod Habort $$ Hisarr with HAU
-          imodintro
-          iframe
-        · iintro Hlock
-          icases Hclose with ⟨-, Hcommit⟩
-          ihave Hupd := isPhysical_write_release γ γP M1 M2 σ1 σ2 $$ [Hcontent2 Hout Hphys]
-          · isplitl [Hcontent2 Hout]
-            · isplitl [Hcontent2] <;> iassumption
-            · iassumption
-          imod Hupd with Hphys
-          ihave Hisarr : Arr.isArr γ γP σ2 hl_val(((#ps, #pw), (#p, #c)))
-            $$ [Hphys Hstrong Harc Hlock Hcell]
-          · unfold Arr.isArr isPlatform
-            iexists RwLock.State.free, M2
-            isplitl [Hstrong Harc Hlock Hcell]
-            · iexists α3, hl_val((#p, #c)), c
-              iframe
-            · iframe
-          ihave Hbeta : ∃ σ', Arr.isArr γ γP σ' hl_val(((#ps, #pw), (#p, #c))) ∗ Q σ1 σ' r
-            $$ [Hisarr HQ]
-          · iexists σ2
+      ihave Hα : isRwLock γP hl_val((#p, #c)) .write hl_val(#c) $$ [Hlock]
+      · iframe
+      iaaccintro' with Hα
+      · -- abort: keep everything, put the (empty) body back
+        iintro Hlock
+        imodintro
+        isplitl [Hstrong Harc Hlock Hcell Hphys]
+        · unfold arrInvBody isPlatform
+          iexists RwLock.State.write, M3, σ3
+          isplitl [Hstrong Harc Hlock Hcell]
+          · iexists α3, hl_val((#p, #c)), c
             iframe
-          imod Hcommit $$ Hbeta with HΦ
+          · iframe
+        · iframe
           imodintro
+          iexact Hinv
+      · -- commit: open the atomic update, advance σ, seal the new content back in
+        itele_reduce
+        iintro Hlock
+        iauopen HAU with ⟨%σc, Hfrag, Hclose⟩
+        ihave #hac : ⌜σc = σ1⌝ $$ [Hfrag Hout]
+        · iapply arrFrag_agree γ σc σ1 M1
+          isplitl [Hfrag] <;> iassumption
+        icases hac with %hac
+        subst hac
+        ihave Hupd := isPhysical_write_release γ γP M1 M2 σc σ2 $$ Hcontent2 Hout Hfrag
+        imod Hupd with ⟨Hphys', Hfrag'⟩
+        icases Hclose with ⟨-, Hcommit⟩
+        ihave Hbeta : ∃ σ', arrFrag γ σ' ∗ Q σc σ' r $$ [Hfrag' HQ]
+        · iexists σ2
+          iframe
+        imod Hcommit $$ Hbeta with HΦ
+        imodintro
+        isplitl [Hstrong Harc Hlock Hcell Hphys']
+        · unfold arrInvBody isPlatform
+          iexists RwLock.State.free, M2, σ2
+          isplitl [Hstrong Harc Hlock Hcell]
+          · iexists α3, hl_val((#p, #c)), c
+            iframe
+          · iframe
+        · itele_reduce
           wp_pures
           iexact HΦ
 
-axiom Impl.insert_spec
+axiom Impl.insert_spec (N : Namespace)
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
+    isArrInv N γ γp platform -∗
     Arr.isId γ node id -∗
-    ⟪ ∀ σ, Arr.isArr γ γp σ platform ⟫
-      hl(&Impl.insert &platform &node #x) @ ∅
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&Impl.insert &platform &node #x) @ ↑N
     ⟪ ∃ ret,
-        Arr.isArr γ γp (Arr.insert σ id x).1 platform ∗
+        arrFrag γ (Arr.insert σ id x).1 ∗
         Arr.isId γ node id ∗
         match (Arr.insert σ id x).2 with
         | none => iprop% ⌜ret = hl_val(none())⌝
@@ -2274,13 +2181,14 @@ axiom Impl.insert_spec
       | RET ret
     ⟫
 
-axiom Impl.revoke_spec
+axiom Impl.revoke_spec (N : Namespace)
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
+    isArrInv N γ γp platform -∗
     Arr.isId γ node id -∗
-    ⟪ ∀ σ, Arr.isArr γ γp σ platform ⟫
-      hl(&Impl.revoke &platform &node) @ ∅
-    ⟪ Arr.isArr γ γp (Arr.revoke σ id).1 platform ∗ Arr.isId γ node id
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&Impl.revoke &platform &node) @ ↑N
+    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
       | RET match (Arr.revoke σ id).2 with
             | none => hl_val(none())
             | some _ => hl_val(some(#()))
