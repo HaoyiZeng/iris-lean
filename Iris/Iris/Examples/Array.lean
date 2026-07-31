@@ -2495,6 +2495,47 @@ theorem Impl.execute_exclusive_spec (N : Namespace)
           wp_pures
           iexact HΦ
 
+/-- Releasing a node's write lock **at a linearisation point that grows the array**.
+
+    The `σ`-preserving `nodeWriteReleaseSpec` cannot be used here: by the time the
+    predecessor's lock is dropped the new node is already physically linked, so the
+    invariant can only be re-established at the *new* abstract state, and moving the
+    abstract state needs the client's fragment — which only the atomic update can
+    deliver.  Hence this one is logically atomic while its `σ`-preserving sibling is
+    not.
+
+    Everything about the new node arrives raw: `new` and `Arc.clone` have run, so
+    there are two strong references (one becomes the edge stored in the predecessor,
+    one is handed back to the caller) and the metadata record has not been registered
+    yet.  Registering it is part of the linearisation point, because its id is
+    `σ.counter`, which is only known once the update is open. -/
+theorem nodeWriteReleaseInsertSpec (N : Namespace)
+    (γ : Arrγ) (γp : GName) (platform node newNode : Val)
+    (id : Nat) (x : Int) (d dNew : Data) (nxt : Option Nat) :
+    ⊢@{IProp GF}
+      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      rwGuard d.rw .write -∗ rwGuardFrac γp .read q1_2 -∗
+      -- the predecessor: its `3/4` cell share still says `nxt`, but its payload has
+      -- already been re-pointed at the new node
+      cellAlive d.cell q3_4 nxt -∗
+      d.ptr ↦ hl_val((#false, (#d.val, some(&newNode)))) -∗
+      -- the new node, straight out of `Impl.new` followed by `Arc.clone`
+      ⌜x = dNew.val⌝ -∗
+      arcAuth dNew.arc 2 0 -∗
+      isArc dNew.arc newNode dNew.mux -∗
+      isArc dNew.arc newNode dNew.mux -∗
+      isRwLock dNew.rw dNew.mux .free hl_val(#dNew.ptr) -∗
+      cellAlive dNew.cell 1 nxt -∗
+      livePayload γ.l dNew nxt -∗
+      ⟪ ∀ σ, arrFrag γ σ ⟫
+        hl(&RwLock.write_release &d.mux) @ ↑N
+      ⟪ arrFrag γ (Arr.insert σ id x).1 ∗
+          isArc d.arc node d.mux ∗ rwGuard γp .read ∗
+          Arr.isId γ newNode σ.counter ∗
+          ⌜(Arr.insert σ id x).2 = some σ.counter⌝
+        | RET hl_val(#()) ⟫ := by
+  sorry
+
 /-- What `Impl.insert`'s body achieves, phrased as `Impl.execute_shared_spec` wants
     it: the abstract state moves to `(Arr.insert σ id x).1` and the result reports
     whether a node was actually created. -/
@@ -2530,8 +2571,109 @@ theorem Impl.insert_spec (N : Namespace)
   iintro #Hinv Hid %Φ HAU
   unfold Impl.insert
   wp_pures
-  iapply Impl.execute_shared_spec N γ γp platform _ (Impl.insertQ γ node id x) $$ Hinv
-  · sorry
+  iapply Impl.execute_shared_spec N γ γp platform _ (Impl.insertQ γ node id x) $$ Hinv [Hid]
+  · -- the body, running under the platform read lock
+    iintro #Hinv' Hguard %Φ' HAU'
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hat, HArc⟩
+    wp_pures
+    wp_bind &Arc.get _
+    iapply Arc.get_spec (γ := d.arc) node d.mux $$ HArc
+    iintro !> HArc
+    wp_pures
+    -- take the node's write lock; the abstract state does not move here
+    wp_bind &RwLock.write_acquire _
+    iapply wp_wand $$ [Hinv' Hat HArc Hguard]
+    · iapply nodeWriteAcquireSpec N γ γp platform node id d $$ Hinv' Hat HArc Hguard
+    iintro %ptr ⟨%hptr, HArc, Hwguard, Hkeep, Hpay⟩
+    subst hptr
+    wp_pures
+    icases Hpay with ⟨Hlive | Hrev⟩
+    · -- the node is still live: link a fresh node in after it
+      sorry
+    · -- the node has already been revoked: read `true`, put the slot straight back
+      ihave #Hcd : cellDead d.cell $$ [Hrev]
+      · iunfold revokedPayload at Hrev
+        icases Hrev with ⟨#H, -⟩
+        iexact H
+      iunfold revokedPayload at Hrev
+      icases Hrev with ⟨-, Hptr⟩
+      wp_bind !_
+      iapply wp_load $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      -- hand the (unchanged) payload back and drop the node lock
+      ihave Hpay : ((∃ n : Option Nat, alivePayload γ.l d q3_4 n) ∨ revokedPayload d)
+          $$ [Hptr Hcd]
+      · iright
+        unfold revokedPayload
+        iframe Hcd Hptr
+      wp_bind &RwLock.write_release _
+      iapply wp_wand $$ [Hinv' Hat HArc Hwguard Hkeep Hpay]
+      · iapply nodeWriteReleaseSpec N γ γp platform node id d
+          $$ Hinv' Hat HArc Hwguard Hkeep Hpay
+      iintro %u ⟨%hu, HArc, Hguard⟩
+      subst hu
+      wp_pures
+      -- linearise: nothing changed, and `id` is not in `σ` because the cell is dead.
+      -- No program step is involved, so this is a plain fancy update.
+      ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv']
+      · iunfold isArrInv at Hinv'
+        iexact Hinv'
+      have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+      imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
+      iunfold arrInvBody at HI
+      icases HI with ⟨%sp, %M, %σi, Hplat, Hphys⟩
+      ihave #hread : ⌜∃ n, sp = RwLock.State.read (n + 1)⌝ $$ [Hplat Hguard]
+      · iapply isPlatform_read_guard_valid γp sp platform 1
+        isplitl [Hplat]
+        · iexact Hplat
+        · iapply rwGuard_toFrac γp $$ Hguard
+      icases hread with ⟨%np, %hsp⟩
+      subst hsp
+      simp only [isPhysical]
+      icases Hphys with ⟨Hsh, HstateVar⟩
+      iunfold arrShared at Hsh
+      icases Hsh with ⟨HM, %hwf, %hdom, Hview⟩
+      ihave #hnotin : ⌜id ∉ σi.cells.map (·.1)⌝ $$ [Hat Hcd Hview]
+      · iapply cellDead_not_mem γ.l γp M σi id d $$ Hat Hcd Hview
+      icases hnotin with %hnotin
+      iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+      ihave #hσ : ⌜σc = σi⌝ $$ [Hfrag HstateVar]
+      · iapply arrFrag_agree γ σc σi M
+        isplitl [Hfrag] <;> iassumption
+      icases hσ with %hσ
+      subst hσ
+      icases Hclose with ⟨-, Hcommit⟩
+      ihave Hbeta : ∃ σ', arrFrag γ σ' ∗ Impl.insertQ γ node id x σc σ' hl_val(none())
+                          ∗ rwGuard γp .read $$ [Hfrag Hguard HArc]
+      · iexists σc
+        iframe Hfrag Hguard
+        have hnone : Arr.insert σc id x = (σc, none) := by
+          unfold Arr.insert
+          rw [if_neg (by
+            intro hex
+            simp only [List.any_eq_true, decide_eq_true_eq] at hex
+            obtain ⟨c, hmem, hc⟩ := hex
+            exact hnotin (List.mem_map.mpr ⟨c, hmem, hc⟩))]
+        unfold Impl.insertQ
+        rw [hnone]
+        isplit
+        · ipureintro; rfl
+        isplitl [HArc]
+        · unfold Arr.isId
+          iexists d
+          iframe HArc
+          iexact Hat
+        · itrivial
+      imod Hcommit $$ Hbeta with HΦ
+      iunfold sharedView at Hview
+      icases Hview with ⟨Hghost, Hretired⟩
+      ihave HI := arrInvBody_read γ γp platform np M σc hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
+      imod Hcl $$ HI with -
+      imodintro
+      iexact HΦ
   · -- the abstract state `f` reports is exactly the one our own client expects
     iapply aupd_mono_commit _ _ _ _ $$ HAU
     rintro ⟨σ, ⟨⟩⟩ ⟨ret, ⟨⟩⟩
