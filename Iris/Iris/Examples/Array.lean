@@ -3075,7 +3075,18 @@ theorem Impl.insert_spec (N : Namespace)
     subst hσ'
     iframe
 
-axiom Impl.revoke_spec (N : Namespace)
+/-- What `Impl.revoke`'s body achieves, in the shape `Impl.execute_exclusive_spec`
+    wants.  Unlike insert this runs under the platform *write* lock, so the body is
+    an ordinary Hoare triple on `arrContent` — no atomic update, no invariant. -/
+def Impl.revokeQ (γ : Arrγ) (node : Val) (id : Nat)
+    (σ σ' : Arr) (ret : Val) : IProp GF := iprop%
+  ⌜σ' = (Arr.revoke σ id).1⌝ ∗
+  Arr.isId γ node id ∗
+  ⌜ret = match (Arr.revoke σ id).2 with
+         | none => hl_val(none())
+         | some _ => hl_val(some(#()))⌝
+
+theorem Impl.revoke_spec (N : Namespace)
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
     isArrInv N γ γp platform -∗
@@ -3086,7 +3097,44 @@ axiom Impl.revoke_spec (N : Namespace)
       | RET match (Arr.revoke σ id).2 with
             | none => hl_val(none())
             | some _ => hl_val(some(#()))
-    ⟫
+    ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold Impl.revoke
+  wp_pures
+  iapply Impl.execute_exclusive_spec N γ γp platform _ (Impl.revokeQ γ node id)
+    $$ Hinv [Hid]
+  · -- the body, running with exclusive access to the whole content
+    sorry
+  · -- our own update backs the one `execute` wants; the return value is computed
+    -- from `σ`, so the telescopes differ and this has to be built by hand
+    iauintro
+    simp only [atomicAcc]
+    iauopen HAU with ⟨%σ, Hfrag, Hclose⟩
+    imodintro
+    iexists σ
+    isplitl [Hfrag]
+    · iexact Hfrag
+    · isplit
+      · iintro Hfrag
+        icases Hclose with ⟨Habort, -⟩
+        imod Habort $$ Hfrag with HAU
+        imodintro
+        iframe
+        imodintro
+        iexact Hinv
+      · itele_reduce
+        iintro %r Hbeta
+        iunfold Impl.revokeQ at Hbeta
+        icases Hbeta with ⟨%σ', Hfrag', %hσ', Hid, %hr⟩
+        subst hσ'
+        subst hr
+        icases Hclose with ⟨-, Hcommit⟩
+        ihave Hb : (arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id)
+            $$ [Hfrag' Hid]
+        · iframe
+        imod Hcommit $$ Hb with HΦ
+        imodintro
+        iexact HΦ
 
 end Specs
 
