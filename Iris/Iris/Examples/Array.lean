@@ -502,6 +502,23 @@ def cellAlive (γ : GName) (q : Qp) (nxt : Option Nat) : IProp GF :=
 def cellDead (γ : GName) : IProp GF :=
   iOwn γ (F := CellRF) (FracAgree.mk .discard Cell.dead)
 
+/-! ### Timelessness
+
+Every resource in the array lives in a discrete camera or is a `↦`, so the whole
+thing is timeless.  This is what lets `aacc_inv` open the array invariant without
+leaving a `▷` behind. -/
+
+instance instMetaMapTimeless (γ : GName) (M : H Data) :
+    Timeless (metaMap (GF := GF) γ M) := by unfold metaMap; infer_instance
+instance instMetaAtTimeless (γ : GName) (id : Nat) (d : Data) :
+    Timeless (metaAt (GF := GF) γ id d) := by unfold metaAt; infer_instance
+instance instStateVarTimeless (γ : GName) (q : Qp) (σ : Arr) (M : H Data) :
+    Timeless (stateVar (GF := GF) γ q σ M) := by unfold stateVar; infer_instance
+instance instCellAliveTimeless (γ : GName) (q : Qp) (nxt : Option Nat) :
+    Timeless (cellAlive (GF := GF) γ q nxt) := by unfold cellAlive; infer_instance
+instance instCellDeadTimeless (γ : GName) :
+    Timeless (cellDead (GF := GF) γ) := by unfold cellDead; infer_instance
+
 def q1_4 : Qp := Qp.half (Qp.half 1)
 def q3_4 : Qp := Qp.half 1 + Qp.half (Qp.half 1)
 def q1_2 : Qp := Qp.half 1
@@ -819,26 +836,109 @@ def retiredNodes (slot : Slot GF) (M : H Data)
   [∗map] id ↦ d ∈ M,
     if id ∈ cells.map (·.1) then emp else retiredSlot slot d
 
+/-- What a shared-mode slot holds in each lock state.  Named rather than inlined so
+    that instance resolution can case-split on `s` underneath the existential. -/
+def nodeSlotSharedBody (γP : GName) (C : Qp → IProp GF) (P : IProp GF) :
+    RwLock.State → IProp GF
+  | .free =>
+      iprop% P ∗ C 1
+  | .write =>
+      /- The thread that write-locked this node parks *half* its platform read
+         permit here.  Keeping the other half is what lets it still prove the
+         platform lock is read-held while it works — and it cannot leave the
+         platform read lock without first releasing this node to get the half
+         back, since `read_release` only accepts a full permit. -/
+      iprop% rwGuardFrac γP RwLock.Mode.read q1_2 ∗ C q1_4
+  | .read _ =>
+      iprop% False
+
 def nodeSlotShared (γP : GName) (d : Data) (C : Qp → IProp GF) (P : IProp GF) :
     IProp GF := iprop%
   arcHasStrong d.arc ∗
     ∃ s : RwLock.State,
-    isRwLock d.rw d.mux s hl_val(#d.ptr) ∗
-    match s with
-    | .free =>
-        iprop% P ∗ C 1
-    | .write =>
-        /- The thread that write-locked this node parks *half* its platform read
-           permit here.  Keeping the other half is what lets it still prove the
-           platform lock is read-held while it works — and it cannot leave the
-           platform read lock without first releasing this node to get the half
-           back, since `read_release` only accepts a full permit. -/
-        iprop% rwGuardFrac γP RwLock.Mode.read q1_2 ∗ C q1_4
-    | .read _ =>
-        iprop% False
+    isRwLock d.rw d.mux s hl_val(#d.ptr) ∗ nodeSlotSharedBody γP C P s
 
 def nodeSlotExclusive (d : Data) (C : Qp → IProp GF) (P : IProp GF) : IProp GF := iprop%
   arcHasStrong d.arc ∗ isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗ C 1 ∗ P
+
+instance instArcHasStrongTimeless (γ : GName) :
+    Timeless (arcHasStrong (GF := GF) γ) := by unfold arcHasStrong; infer_instance
+instance instArcNoStrongTimeless (γ : GName) :
+    Timeless (arcNoStrong (GF := GF) γ) := by unfold arcNoStrong; infer_instance
+instance instSuccRefTimeless (γ : GName) (node : Val) (id : Nat) :
+    Timeless (succRef (GF := GF) γ node id) := by unfold succRef; infer_instance
+instance instLivePayloadTimeless (γ : GName) (d : Data) (nxt : Option Nat) :
+    Timeless (livePayload (GF := GF) γ d nxt) := by
+  cases nxt <;> unfold livePayload <;> infer_instance
+instance instRevokedPayloadTimeless (d : Data) :
+    Timeless (revokedPayload (GF := GF) d) := by unfold revokedPayload; infer_instance
+
+/-- Abbreviation for "this slot interpretation is timeless whenever the resources it
+    is applied to are".  Used as an instance-implicit hypothesis by everything built
+    on top of a slot. -/
+class SlotTimeless (slot : Slot GF) : Prop where
+  out : ∀ (d : Data) (C : Qp → IProp GF) (P : IProp GF),
+    (∀ q, Timeless (C q)) → Timeless P → Timeless (slot d C P)
+
+instance instNodeSlotSharedBodyTimeless (γP : GName) (C : Qp → IProp GF) (P : IProp GF)
+    [∀ q, Timeless (C q)] [Timeless P] (s : RwLock.State) :
+    Timeless (nodeSlotSharedBody (GF := GF) γP C P s) := by
+  cases s <;> simp only [nodeSlotSharedBody] <;> infer_instance
+
+instance instNodeSlotSharedTimeless (γP : GName) (d : Data)
+    (C : Qp → IProp GF) (P : IProp GF) [∀ q, Timeless (C q)] [Timeless P] :
+    Timeless (nodeSlotShared (GF := GF) γP d C P) := by
+  unfold nodeSlotShared; infer_instance
+
+instance instNodeSlotExclusiveTimeless (d : Data)
+    (C : Qp → IProp GF) (P : IProp GF) [∀ q, Timeless (C q)] [Timeless P] :
+    Timeless (nodeSlotExclusive (GF := GF) d C P) := by
+  unfold nodeSlotExclusive; infer_instance
+
+instance instNodeSlotSharedSlotTimeless (γP : GName) :
+    SlotTimeless (nodeSlotShared (GF := GF) γP) :=
+  ⟨fun _ _ _ hC hP => by haveI := hC; haveI := hP; infer_instance⟩
+
+instance instNodeSlotExclusiveSlotTimeless :
+    SlotTimeless (GF := GF) (H := H) nodeSlotExclusive :=
+  ⟨fun _ _ _ hC hP => by haveI := hC; haveI := hP; infer_instance⟩
+
+instance instAliveSlotTimeless (slot : Slot GF) [inst : SlotTimeless slot]
+    (γ : GName) (d : Data) (nxt : Option Nat) :
+    Timeless (aliveSlot slot γ d nxt) :=
+  inst.out d _ _ (fun _ => inferInstance) inferInstance
+
+instance instIsGhostHelpTimeless (slot : Slot GF) [inst : SlotTimeless slot]
+    (γ : GName) (tail : Option Nat) :
+    ∀ cells, Timeless (isGhostHelp slot γ tail cells)
+  | [] => by unfold isGhostHelp; infer_instance
+  | (_, _) :: cs => by
+      have := instIsGhostHelpTimeless slot (inst := inst) γ tail cs
+      unfold isGhostHelp
+      infer_instance
+
+instance instIsGhostTimeless (slot : Slot GF) [inst : SlotTimeless slot]
+    (γ : GName) (cells : List (Nat × Int)) :
+    Timeless (isGhost slot γ cells) := by
+  unfold isGhost
+  exact instIsGhostHelpTimeless slot (inst := inst) γ none cells
+
+instance instRetiredSlotTimeless (slot : Slot GF) [inst : SlotTimeless slot] (d : Data) :
+    Timeless (retiredSlot slot d) := by
+  haveI := inst.out d (fun _ => iprop% emp) (revokedPayload d)
+            (fun _ => inferInstance) inferInstance
+  unfold retiredSlot
+  infer_instance
+
+instance instRetiredNodesTimeless (slot : Slot GF) [inst : SlotTimeless slot]
+    (M : H Data) (cells : List (Nat × Int)) :
+    Timeless (retiredNodes slot M cells) := by
+  unfold retiredNodes
+  refine BigSepM.bigSepM_timeless (fun {id} {d} _ => ?_)
+  haveI := instRetiredSlotTimeless slot (inst := inst) d
+  by_cases h : id ∈ cells.map (·.1)
+  · rw [if_pos h]; infer_instance
+  · rw [if_neg h]; infer_instance
 
 def sharedView (γ γP: GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
   isGhost (nodeSlotShared γP) γ σ.cells ∗
@@ -879,6 +979,57 @@ def Arr.isArr (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) : IProp GF 
     isPlatform γp s platform ∗
     isPhysical γ γp M σ s
 
+instance instSharedViewTimeless (γ γP : GName) (M : H Data) (σ : Arr) :
+    Timeless (sharedView (GF := GF) γ γP M σ) := by unfold sharedView; infer_instance
+instance instExclusiveViewTimeless (γ : GName) (M : H Data) (σ : Arr) :
+    Timeless (exclusiveView (GF := GF) γ M σ) := by unfold exclusiveView; infer_instance
+instance instArrContentTimeless (γ : Arrγ) (M : H Data) (σ : Arr) :
+    Timeless (arrContent (GF := GF) γ M σ) := by unfold arrContent; infer_instance
+instance instArrSharedTimeless (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
+    Timeless (arrShared (GF := GF) γ γp M σ) := by unfold arrShared; infer_instance
+instance instIsPhysicalTimeless (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr)
+    (s : RwLock.State) :
+    Timeless (isPhysical (GF := GF) γ γp M σ s) := by
+  cases s <;> simp only [isPhysical] <;> infer_instance
+instance instIsPlatformTimeless (ρ : GName) (s : RwLock.State) (platform : Val) :
+    Timeless (isPlatform (GF := GF) ρ s platform) := by unfold isPlatform; infer_instance
+
+/-! ### The array invariant
+
+All *physical* resources live here: the platform `Arc` and `RwLock`, the metadata
+map, every node slot and every payload.  The only thing that stays outside is
+`arrFrag`, the client's fragment of the abstract state, and that is exactly what
+an atomic update gets to touch — at the linearisation point and nowhere else. -/
+
+def arrInvBody (γ : Arrγ) (γp : GName) (platform : Val) : IProp GF := iprop%
+  ∃ s : RwLock.State, ∃ M : H Data, ∃ σ : Arr,
+    isPlatform γp s platform ∗ isPhysical γ γp M σ s
+
+instance instArrInvBodyTimeless (γ : Arrγ) (γp : GName) (platform : Val) :
+    Timeless (arrInvBody (GF := GF) γ γp platform) := by unfold arrInvBody; infer_instance
+
+/-- Persistent handle to a well-formed concurrent array.  Because it is persistent
+    it survives past a linearisation point, which is what lets an operation still
+    release the platform lock after its atomic update has been committed. -/
+def isArrInv (N : Namespace) (γ : Arrγ) (γp : GName) (platform : Val) : IProp GF :=
+  inv N (arrInvBody γ γp platform)
+
+instance instIsArrInvPersistent (N : Namespace) (γ : Arrγ) (γp : GName) (platform : Val) :
+    Persistent (isArrInv (GF := GF) N γ γp platform) := by unfold isArrInv; infer_instance
+
+/-- The client's view: just the abstract state.  This is the *only* thing that ever
+    appears inside an atomic update. -/
+def arrFrag (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
+  ∃ M : H Data, stateVar γ.s q1_4 σ M
+
+instance instArrFragTimeless (γ : Arrγ) (σ : Arr) :
+    Timeless (arrFrag (GF := GF) γ σ) := by unfold arrFrag; infer_instance
+
+/-- Sanity check: the invariant body really is timeless, so `aacc_inv` applies to it
+    without leaving a `▷`. -/
+example (γ : Arrγ) (γp : GName) (platform : Val) :
+    Timeless (arrInvBody (GF := GF) γ γp platform) := inferInstance
+
 def Arr.isList (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
   ∀ γp platform, isPlatform γp .free platform -∗ Arr.isArr γ γp σ platform
 
@@ -902,7 +1053,7 @@ theorem nodeSlotSharedUpgrade :
   iintro Hslot Hlock
   unfold nodeSlotShared nodeSlotExclusive
   icases Hslot with ⟨Harc, ⟨%s, H1, H2⟩⟩
-  rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+  rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
   · icases H2 with ⟨HP, HC⟩
     iframe
   · iframe
@@ -1015,7 +1166,7 @@ def nodeSlotExclusiveDowngrad (d : Data) (C : Qp → IProp GF) (P : IProp GF) :
   icases H with ⟨Harc, Hlock, HC, HP⟩
   iframe
   iexists .free
-  dsimp
+  dsimp only [nodeSlotSharedBody]
   iframe
 
 def exclusiveViewDowngrad : exclusiveView γ M σ ⊢@{IProp GF} sharedView γ γP M σ := by
@@ -1170,7 +1321,7 @@ theorem cellDead_not_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d 
     iunfold nodeSlotShared at Hslot
     icases Hslot with ⟨-, %s, -, Hstate⟩
     iexfalso
-    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
     · icases Hstate with ⟨-, Halive⟩
       iapply cellAlive_dead_False d.cell 1 nxt
       isplitl [Halive] <;> iassumption
@@ -1231,6 +1382,7 @@ theorem sharedViewWriteAcquireSpec
       itele_reduce
       iexists _
       trivial
+      iunfold nodeSlotSharedBody at Hstate
       icases Hstate with ⟨HP, HC⟩
       -- 1/4 stays behind in the invariant, 3/4 goes out with the caller
       icases (cellAlive_split d.cell nxt).mp $$ HC with ⟨HC14, HC34⟩
@@ -1242,7 +1394,7 @@ theorem sharedViewWriteAcquireSpec
       · unfold aliveSlot nodeSlotShared
         iframe Harc
         iexists .write
-        dsimp
+        dsimp only [nodeSlotSharedBody]
         iframe Hlock Hdep HC14
       ihave Hghost := Hback $$ Hslot
       iframe Hghost Hretired Hguard HArc Hkeep
@@ -1297,9 +1449,10 @@ theorem sharedViewWriteAcquireSpec
         unfold nodeSlotShared
         iframe
         iexists .write
-        dsimp
+        dsimp only [nodeSlotSharedBody]
         iframe
         iright
+        iunfold nodeSlotSharedBody at Hstate
         icases Hstate with ⟨HP, HC⟩
         iframe
       · iintro H
@@ -1352,7 +1505,7 @@ theorem sharedViewWriteReleaseSpec
     icases Hacc with ⟨%nxt', Hslot, Hback⟩
     iunfold nodeSlotShared at Hslot
     icases Hslot with ⟨Harc, %s, Hlock, Hstate⟩
-    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
     · -- `.free` is impossible: we are holding the payload out here
       icases Hstate with ⟨HP', -⟩
       iexfalso
@@ -1382,7 +1535,7 @@ theorem sharedViewWriteReleaseSpec
         · unfold aliveSlot nodeSlotShared
           iframe Harc
           iexists .write
-          dsimp
+          dsimp only [nodeSlotSharedBody]
           iframe Hlock Hdep Hcell14
         ihave Hghost := Hback $$ Hslot
         iframe HM Hghost Hretired Hpay
@@ -1403,7 +1556,7 @@ theorem sharedViewWriteReleaseSpec
         · unfold aliveSlot nodeSlotShared
           iframe Harc
           iexists .free
-          dsimp
+          dsimp only [nodeSlotSharedBody]
           iframe Hlock HP Hfull
         ihave Hghost := Hback $$ Hslot
         ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
@@ -1424,7 +1577,7 @@ theorem sharedViewWriteReleaseSpec
     icases Hslot with ⟨-, Hlive | Hdead⟩
     · iunfold nodeSlotShared at Hlive
       icases Hlive with ⟨Harc, %s, Hlock, Hstate⟩
-      rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+      rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
       · icases Hstate with ⟨HP', -⟩
         iexfalso
         ihave ⟨%v', Hp'⟩ := revokedPayload_ptr d $$ HP'
@@ -1442,7 +1595,7 @@ theorem sharedViewWriteReleaseSpec
             ileft
             iframe Harc
             iexists .write
-            dsimp
+            dsimp only [nodeSlotSharedBody]
             iframe Hlock Hdep
           ihave Hretired := Hback $$ Hslot
           ihave Hpay : ((∃ n : Option Nat, alivePayload γ.l d q3_4 n) ∨ revokedPayload d)
@@ -1467,7 +1620,7 @@ theorem sharedViewWriteReleaseSpec
             ileft
             iframe Harc
             iexists .free
-            dsimp
+            dsimp only [nodeSlotSharedBody]
             iframe Hlock Hptr Hcd
           ihave Hretired := Hback $$ Hslot
           ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
@@ -1480,98 +1633,8 @@ theorem sharedViewWriteReleaseSpec
       isplitl [Hdead] <;> iassumption
 
 
-theorem nodeSlotShared_write_acquire_spec (d : Data) (P : IProp GF) :
-    ⊢@{IProp GF}
-    rwGuard γ .read -∗
-      ⟪ nodeSlotShared γ d P ⟫
-        hl(&RwLock.write_acquire &d.mux) @ ∅
-      ⟪ nodeSlotShared γ d P ∗ rwGuard d.rw .write ∗ P
-        | RET hl_val(#d.ptr) ⟫ := by
-
-
-
-theorem nodeSlotShared_write_release_spec (d : Data) (P : IProp GF) :
-    ⊢@{IProp GF}
-      rwGuard d.rw .write -∗ P -∗
-      ⟪ arcHasStrong d.arc ∗
-          isRwLock d.rw d.mux .write hl_val(#d.ptr) ⟫
-        hl(&RwLock.write_release &d.mux) @ ∅
-      ⟪ nodeSlotShared d P | RET hl_val(#()) ⟫ := by
-  iintro Hguard HP %Φ HAU
-  iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
-  iauintro
-  simp only [atomicAcc]
-  iauopen HAU with ⟨Hslot, Hclose⟩
-  icases Hslot with ⟨Harc, Hlock⟩
-  imodintro
-  isplitl [Hlock]
-  · iexact Hlock
-  · isplit
-    · iintro Hlock
-      icases Hclose with ⟨Habort, -⟩
-      iframe HP
-      iapply Habort
-      iframe
-    · iintro Hlock
-      icases Hclose with ⟨-, Hcommit⟩
-      iapply Hcommit
-      iapply (nodeSlotShared_unfold d P).mpr
-      iexists .free
-      iframe
-
-
-
-theorem liveSegment_append (slot : Data → IProp GF → IProp GF)
-    (γ : GName) (M : H Data) (left right : List (Nat × Int)) (tail : Option Nat) :
-    liveSegment slot γ M tail (left ++ right) ⊣⊢
-      liveSegment slot γ M (Arr.nextIdOr right tail) left ∗
-      liveSegment slot γ M tail right := by
-  induction left with
-  | nil =>
-      simp only [List.nil_append, liveSegment]
-      exact (emp_sep (PROP := IProp GF)).symm
-  | cons cell left ih =>
-      rcases cell with ⟨id, x⟩
-      simp only [List.cons_append, liveSegment, Arr.nextIdOr_append]
-      isplit
-      · iintro H
-        icases H with ⟨%d, Hd, Hslot, Hrest⟩
-        icases ih.mp $$ Hrest with ⟨Hleft, Hright⟩
-        isplitr [Hright]
-        · iexists d
-          iframe
-        · iexact Hright
-      · iintro H
-        icases H with ⟨Hleft, Hright⟩
-        icases Hleft with ⟨%d, Hd, Hslot, Hleft⟩
-        iexists d
-        iframe
-        iapply ih.mpr
-        iframe
-
-
-theorem liveSpine_append (slot : Data → IProp GF → IProp GF)
-    (γ : GName) (M : H Data) (left right : List (Nat × Int)) :
-    liveSpine slot γ M (left ++ right) ⊣⊢
-      isGhostHelp slot γ M (Arr.nextId right) left ∗
-      isGhost slot γ M right := by
-  exact isGhostHelp_append slot γ M left right none
-
-
-theorem liveSpine_split_at (slot : Data → IProp GF → IProp GF)
-    (γ : GName) (M : H Data) (pre post : List (Nat × Int)) (id : Nat) (x : Int) :
-    liveSpine slot γ M (pre ++ (id, x) :: post) ⊣⊢
-      liveSegment slot γ M (some id) pre ∗
-      ∃ d : Data,
-        metaAt γ id d ∗
-        slot d (livePayload γ d x (Arr.nextId post)) ∗
-        liveSpine slot γ M post := by
-  simpa [Arr.nextId, Arr.nextIdOr, liveSpine, liveSegment] using
-    liveSpine_append slot γ M pre ((id, x) :: post)
-
-
-omit [ArrG GF H] in
-theorem retiredNodes_congr (slot : Data → IProp GF → IProp GF) (M : H Data)
+omit [RwLockG GF] in
+theorem retiredNodes_congr (slot : Slot GF) (M : H Data)
     (cells₁ cells₂ : List (Nat × Int))
     (hmem : ∀ id, id ∈ cells₁.map (·.1) ↔ id ∈ cells₂.map (·.1)) :
     retiredNodes slot M cells₁ ⊣⊢ retiredNodes slot M cells₂ := by
@@ -1585,8 +1648,8 @@ theorem retiredNodes_congr (slot : Data → IProp GF → IProp GF) (M : H Data)
   · have h₂ : id ∉ cells₂.map (·.1) := fun h => h₁ ((hmem id).mpr h)
     simp [h₁, h₂]
 
-omit [ArrG GF H] in
-theorem retiredNodes_delete (slot : Data → IProp GF → IProp GF)
+omit [RwLockG GF] in
+theorem retiredNodes_delete (slot : Slot GF)
     (M : H Data) (cells : List (Nat × Int)) (id : Nat) (d : Data)
     (hlookup : get? M id = some d) (hretired : id ∉ cells.map (·.1)) :
     retiredNodes slot M cells ⊣⊢
@@ -1598,8 +1661,8 @@ theorem retiredNodes_delete (slot : Data → IProp GF → IProp GF)
   rw [if_neg hretired]
   exact .rfl
 
-omit [ArrG GF H] in
-theorem retiredNodes_delete_live (slot : Data → IProp GF → IProp GF)
+omit [RwLockG GF] in
+theorem retiredNodes_delete_live (slot : Slot GF)
     (M : H Data) (cells : List (Nat × Int)) (id : Nat) (d : Data)
     (hlookup : get? M id = some d) (hlive : id ∈ cells.map (·.1)) :
     retiredNodes slot M cells ⊣⊢ retiredNodes slot (delete M id) cells := by
@@ -1610,8 +1673,8 @@ theorem retiredNodes_delete_live (slot : Data → IProp GF → IProp GF)
   rw [if_pos hlive]
   exact (emp_sep (PROP := IProp GF))
 
-omit [ArrG GF H] in
-theorem retiredNodes_insert_live (slot : Data → IProp GF → IProp GF)
+omit [RwLockG GF] in
+theorem retiredNodes_insert_live (slot : Slot GF)
     (M : H Data) (oldCells newCells : List (Nat × Int)) (id : Nat) (d : Data)
     (fresh : get? M id = none) (hlive : id ∈ newCells.map (·.1))
     (hsame : ∀ k v, get? M k = some v →
