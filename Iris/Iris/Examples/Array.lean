@@ -1281,6 +1281,79 @@ These two are the reason `cellDead` is hoisted out of `retiredSlot`: they turn a
 lock state.  They are strictly stronger than carrying `⌜id ∈ σ.cells⌝` around in a
 spec, because they apply to every future `σ`, not to a snapshot. -/
 
+omit [RwLockG GF] in
+/-- Accessor for splicing a node in.  Given the chain over `pre ++ (id, x) :: post`,
+    hand out the slot sitting at `id` and, in exchange for that slot re-pointed at a
+    fresh `nid` plus a slot for `nid` itself, get back the chain over the list with
+    `(nid, v)` inserted right after `id`.
+
+    Cells in `pre` are untouched because a slot only records the *head* of the list
+    that follows it (`nextIdOr`), and inserting after `id` does not move that head. -/
+theorem isGhostHelpAccInsert (γ : GName) (d : Data) (slot : Slot GF)
+    (tail : Option Nat) (id : Nat) (x : Int) (post : List (Nat × Int)) :
+    ∀ pre : List (Nat × Int),
+    metaAt γ id d ⊢@{IProp GF}
+      isGhostHelp slot γ tail (pre ++ (id, x) :: post) -∗
+        aliveSlot slot γ d (nextIdOr post tail) ∗
+        ((aliveSlot slot γ d (nextIdOr post tail) -∗
+            isGhostHelp slot γ tail (pre ++ (id, x) :: post)) ∧
+         (∀ nid : Nat, ∀ v : Int, ∀ dNew : Data, ⌜v = dNew.val⌝ -∗ metaAt γ nid dNew -∗
+            aliveSlot slot γ d (some nid) -∗
+            aliveSlot slot γ dNew (nextIdOr post tail) -∗
+            isGhostHelp slot γ tail (pre ++ (id, x) :: (nid, v) :: post))) := by
+  intro pre
+  induction pre with
+  | nil =>
+      iintro #Hmeta Hlist
+      simp only [List.nil_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave %hd := metaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iframe Hslot
+      isplit
+      · iintro Hd
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hd Hrest
+      · iintro %nid %v %dNew %hv #HmetaN Hd Hnew
+        simp only [nextIdOr]
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hd
+        iexists dNew
+        isplit
+        · ipureintro; exact hv
+        iframe HmetaN Hnew Hrest
+  | cons c pre ih =>
+      rcases c with ⟨id', x'⟩
+      iintro #Hmeta Hlist
+      simp only [List.cons_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave Hacc := ih $$ Hmeta Hrest
+      icases Hacc with ⟨Hslot', Hboth⟩
+      iframe Hslot'
+      isplit
+      · iintro Hd
+        icases Hboth with ⟨Hsame, -⟩
+        ihave Hrest' := Hsame $$ Hd
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hrest' Hslot
+      · iintro %nid %v %dNew %hv #HmetaN Hd Hnew
+        icases Hboth with ⟨-, Hback⟩
+        ihave Hrest' := Hback $$ %nid %v %dNew %hv HmetaN Hd Hnew
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hrest'
+        cases pre with
+        | nil => simp only [List.nil_append, nextIdOr]; iexact Hslot
+        | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
+
+
 /-- Holding any share of the live witness proves the node is still in `σ`. -/
 theorem cellAlive_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d : Data)
     (q : Qp) (nxt : Option Nat) (hl : get? M id = some d) :
@@ -1614,7 +1687,8 @@ theorem nodeWriteReleaseSpec (N : Namespace)
           iexists nxt
           unfold alivePayload
           iframe Hcell HP
-        ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d nxt $$ [Harc Hlock Hdep Hcell14]
+        ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d nxt
+          $$ [Harc Hlock Hdep Hcell14]
         · unfold aliveSlot nodeSlotShared
           iframe Harc
           iexists .write
@@ -2534,7 +2608,215 @@ theorem nodeWriteReleaseInsertSpec (N : Namespace)
           Arr.isId γ newNode σ.counter ∗
           ⌜(Arr.insert σ id x).2 = some σ.counter⌝
         | RET hl_val(#()) ⟫ := by
-  sorry
+  iintro #Hinv #Hat HArc Hwguard Hkeep Hcell Hptr %hval HauthN HarcN HedgeN
+         HlockN HcellN HpayN %Φ HAU
+  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  · iunfold isArrInv at Hinv
+    iexact Hinv
+  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+  iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+  iauintro
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨%sp, %M, %σ, Hplat, Hphys⟩
+  ihave #hread : ⌜∃ n, sp = RwLock.State.read (n + 1)⌝ $$ [Hplat Hkeep]
+  · iapply isPlatform_read_guard_valid γp sp platform q1_2
+    isplitl [Hplat] <;> iassumption
+  icases hread with ⟨%np, %hsp⟩
+  subst hsp
+  simp only [isPhysical]
+  icases Hphys with ⟨Hsh, HstateVar⟩
+  iunfold arrShared at Hsh
+  icases Hsh with ⟨HM, %hwf, %hdom, Hview⟩
+  ihave #Hl : ⌜get? M id = some d⌝ $$ [HM Hat]
+  · iapply metaMap_lookup γ.l M id d $$ HM Hat
+  icases Hl with %Hl
+  -- the `3/4` cell share says the node is still in `σ`
+  ihave #hin : ⌜id ∈ σ.cells.map (·.1)⌝ $$ [Hcell Hview Hat]
+  · iapply cellAlive_mem γ.l γp M σ id d q3_4 nxt Hl $$ Hat Hcell Hview
+  icases hin with %hin
+  obtain ⟨pre, xv, post, hsplit⟩ := Arr.exists_split_id hin
+  iunfold sharedView at Hview
+  icases Hview with ⟨Hghost, Hretired⟩
+  iunfold isGhost at Hghost
+  ihave Hghost' : isGhostHelp (nodeSlotShared γp) γ.l none (pre ++ (id, xv) :: post)
+      $$ [Hghost]
+  · rw [← hsplit]
+    iexact Hghost
+  ihave Hacc := isGhostHelpAccInsert γ.l d (nodeSlotShared γp) none id xv post pre
+                  $$ Hat Hghost'
+  icases Hacc with ⟨Hslot, Hback⟩
+  iunfold aliveSlot at Hslot
+  iunfold nodeSlotShared at Hslot
+  icases Hslot with ⟨Harc, %s, Hlock, Hstate⟩
+  -- the payload is in our hands, so the slot cannot be `.free`; `.read` is absurd
+  rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
+  · icases Hstate with ⟨HP', -⟩
+    iexfalso
+    ihave ⟨%v', Hp'⟩ := livePayload_ptr γ.l d (nextIdOr post none) $$ HP'
+    iapply pointsTo_twice_False d.ptr hl_val((#false, (#d.val, some(&newNode)))) v'
+    isplitl [Hptr] <;> iassumption
+  · iexfalso
+    iexact Hstate
+  · icases Hstate with ⟨Hdep, Hcell14⟩
+    ihave #hnx : ⌜nxt = nextIdOr post none⌝ $$ [Hcell Hcell14]
+    · iapply cellAlive_agree d.cell q3_4 q1_4 nxt (nextIdOr post none)
+      isplitl [Hcell] <;> iassumption
+    icases hnx with %hnx
+    subst hnx
+    iaaccintro' with Hlock
+    · -- ABORT: put the slot back exactly as we found it
+      iintro Hlock
+      imodintro
+      ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d (nextIdOr post none)
+          $$ [Harc Hlock Hdep Hcell14]
+      · unfold aliveSlot nodeSlotShared
+        iframe Harc
+        iexists .write
+        dsimp only [nodeSlotSharedBody]
+        iframe Hlock Hdep Hcell14
+      -- rebuild the chain at the *same* shape
+      icases Hback with ⟨Hsame, -⟩
+      ihave Hghost' := Hsame $$ Hslot
+      ihave Hghost : isGhost (nodeSlotShared γp) γ.l σ.cells $$ [Hghost']
+      · unfold isGhost
+        rw [hsplit]
+        iexact Hghost'
+      ihave HIb := arrInvBody_read γ γp platform np M σ hwf hdom
+        $$ Hplat HM Hghost Hretired HstateVar
+      iframe
+      isplitl []
+      · isplitl []
+        · imodintro; iexact Hinv
+        · imodintro; iexact Hat
+      · imodintro; iexact Hinvraw
+    · -- COMMIT: the linearisation point
+      itele_reduce
+      iintro Hlock
+      iauopen HAU with ⟨%σc, Hfrag, Hclose⟩
+      ihave #hσ : ⌜σc = σ⌝ $$ [Hfrag HstateVar]
+      · iapply arrFrag_agree γ σc σ M
+        isplitl [Hfrag] <;> iassumption
+      icases hσ with %hσ
+      subst hσ
+      -- register the new node's metadata; its id is `σ.counter`
+      imod metaMap_insert_counter γ.l M σc.counter dNew hdom $$ HM with ⟨HM, #HatN⟩
+      -- re-point the predecessor at it
+      imod cellAlive_update d.cell (nextIdOr post none) (some σc.counter)
+        $$ [Hcell14 Hcell] with ⟨Hcell14, Hcell⟩
+      · isplitl [Hcell14] <;> iassumption
+      -- the predecessor's slot, back in `.free` and pointing at the new node
+      ihave Hslotd : aliveSlot (nodeSlotShared γp) γ.l d (some σc.counter)
+          $$ [Harc Hlock Hcell14 Hcell Hptr HedgeN]
+      · unfold aliveSlot nodeSlotShared
+        iframe Harc
+        iexists .free
+        dsimp only [nodeSlotSharedBody]
+        iframe Hlock
+        isplitl [Hptr HedgeN]
+        · unfold livePayload
+          iexists newNode
+          iframe Hptr
+          unfold succRef
+          iexists dNew
+          iframe HedgeN
+          iexact HatN
+        · iapply (cellAlive_split d.cell (some σc.counter)).mpr
+          iframe Hcell14 Hcell
+      -- and the new node's own slot
+      ihave HslotN : aliveSlot (nodeSlotShared γp) γ.l dNew (nextIdOr post none)
+          $$ [HauthN HlockN HcellN HpayN]
+      · unfold aliveSlot nodeSlotShared
+        isplitl [HauthN]
+        · unfold arcHasStrong
+          iexists 2, 0
+          iframe HauthN
+          ipureintro
+          omega
+        iexists .free
+        dsimp only [nodeSlotSharedBody]
+        iframe HlockN HpayN HcellN
+      icases Hback with ⟨-, Hsplice⟩
+      ihave Hghost' := Hsplice $$ %σc.counter %x %dNew %hval HatN Hslotd HslotN
+      -- what the abstract insert does to the list, spelled out
+      obtain ⟨hpre, hpost⟩ := Arr.nodup_split_id pre post id xv (hsplit ▸ hwf.idUqi)
+      have hins : Arr.insert σc id x =
+          ({ cells := pre ++ (id, xv) :: (σc.counter, x) :: post,
+             counter := σc.counter + 1 }, some σc.counter) :=
+        Arr.insert_eq_of_split σc pre post id xv x hsplit hpre hpost
+      -- advance the abstract state: `3/4` from the invariant, `1/4` from the client
+      iunfold arrFrag at Hfrag
+      icases Hfrag with ⟨%M₀, Hfrag⟩
+      ihave #hag : ⌜σc = σc ∧ M₀ = M⌝ $$ [Hfrag HstateVar]
+      · iapply stateVar_agree γ.s q1_4 q3_4 σc σc M₀ M
+        isplitl [Hfrag] <;> iassumption
+      icases hag with ⟨-, %hM⟩
+      subst hM
+      ihave Hfull := (stateVar_split γ.s σc M₀).mpr $$ [Hfrag HstateVar]
+      · isplitl [Hfrag] <;> iassumption
+      ihave Hupd := stateVar_full_update γ.s σc (Arr.insert σc id x).1 M₀
+                      (Std.insert M₀ σc.counter dNew) $$ Hfull
+      imod Hupd with Hfull
+      icases (stateVar_split γ.s (Arr.insert σc id x).1
+                (Std.insert M₀ σc.counter dNew)).mp $$ Hfull with ⟨Hfrag, HstateVar⟩
+      -- the retired map is unchanged: the new id is live, and no old id moved
+      ihave Hretired' : retiredNodes (nodeSlotShared γp)
+            (Std.insert M₀ σc.counter dNew) (Arr.insert σc id x).1.cells $$ [Hretired]
+      · iapply (retiredNodes_insert_live (nodeSlotShared γp) M₀ σc.cells
+            (Arr.insert σc id x).1.cells σc.counter dNew
+            (metaMap_counter_fresh M₀ σc.counter hdom)
+            (by rw [hins]; simp) (by
+              intro k v hk
+              rw [hins, hsplit]
+              simp only [List.map_append, List.map_cons, List.mem_append, List.mem_cons]
+              have hklt : k < σc.counter := (hdom k).mp (by unfold dom; rw [hk]; rfl)
+              constructor
+              · rintro (h | h | h | h)
+                · exact Or.inl h
+                · exact Or.inr (Or.inl h)
+                · omega
+                · exact Or.inr (Or.inr h)
+              · rintro (h | h | h)
+                · exact Or.inl h
+                · exact Or.inr (Or.inl h)
+                · exact Or.inr (Or.inr (Or.inr h)))).mpr
+        iexact Hretired
+      -- reassemble and commit
+      ihave Hghost : isGhost (nodeSlotShared γp) γ.l (Arr.insert σc id x).1.cells
+          $$ [Hghost']
+      · unfold isGhost
+        rw [hins]
+        iexact Hghost'
+      have hdom' : ∀ i, dom (Std.insert M₀ σc.counter dNew) i ↔
+          i < (Arr.insert σc id x).1.counter := by
+        rw [hins]
+        exact metaMap_insert_counter_dom M₀ σc.counter dNew hdom
+      ihave HIb := arrInvBody_read γ γp platform np (Std.insert M₀ σc.counter dNew)
+        (Arr.insert σc id x).1 (Arr.insert_wellFormed σc hwf id x) hdom'
+        $$ Hplat HM Hghost Hretired' HstateVar
+      icases Hclose with ⟨-, Hcommit⟩
+      ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
+      ihave Hbeta : (arrFrag γ (Arr.insert σc id x).1 ∗ isArc d.arc node d.mux ∗
+                     rwGuard γp .read ∗ Arr.isId γ newNode σc.counter ∗
+                     ⌜(Arr.insert σc id x).2 = some σc.counter⌝)
+          $$ [Hfrag HArc Hfullguard HarcN]
+      · unfold arrFrag Arr.isId
+        isplitl [Hfrag]
+        · iexists (Std.insert M₀ σc.counter dNew)
+          iexact Hfrag
+        iframe HArc Hfullguard
+        isplitl [HarcN]
+        · iexists dNew
+          iframe HarcN
+          iexact HatN
+        · ipureintro
+          rw [hins]
+      imod Hcommit $$ Hbeta with HΦ
+      imodintro
+      iframe HIb
+      iexact HΦ
 
 /-- What `Impl.insert`'s body achieves, phrased as `Impl.execute_shared_spec` wants
     it: the abstract state moves to `(Arr.insert σ id x).1` and the result reports
