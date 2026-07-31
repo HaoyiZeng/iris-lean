@@ -4,7 +4,6 @@ public import Iris.BI
 public import Iris.BI.Updates
 public import Iris.BI.Telescopes
 public import Iris.BI.Lib.Fixpoint
-public import Iris.ProofMode.Classes
 public meta import Iris.ProofMode.Tactics
 
 @[expose] public section
@@ -350,16 +349,17 @@ instance elimModalAcc p q φ Eo Ei Pas Q Q'
       (Q' := iprop(|={Eo,Ei}=> ∃.. x, α x ∗ ((α x ={Ei, Eo}=∗ Pas) ∧ (∀.. y, β x y ={Ei, Eo}=∗ Φ x y)))) hφ
 
 @[rocq_alias aacc_aacc]
-theorem aacc_aacc (E1 E1' E2 E3 : CoPset)
-    (α' : TA → PROP) (P' : PROP) (β' Φ' : TA → TB → PROP) :
+theorem aacc_aacc {TA' TB' : Tele} (E1 E1' E2 E3 : CoPset)
+    (α' : TA' → PROP) (P' : PROP) (β' Φ' : TA' → TB' → PROP) :
     E1' ⊆ E1 →
     atomicAcc E1' E2 α P β Φ -∗
-    (∀ x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (P ={E1}=∗ P'))) β'
+    (∀.. x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (P ={E1}=∗ P'))) β'
       (fun x' y' => iprop((α x ∗ (P ={E1}=∗ Φ' x' y')) ∨
         ∃ y, β x y ∗ (Φ x y ={E1}=∗ Φ' x' y')))) -∗
     atomicAcc E1 E3 α' P' β' Φ' := by
   intro HE
   iintro Hupd Hstep
+  ihave Hstep := (biTforall_forall _).mp $$ Hstep
   ihave Hupd2 : atomicAcc E1 E2 α P β Φ $$ [Hupd]
   · iapply atomicAcc_maskWeaken _ _ _ _ _ _ _ HE $$ Hupd
   simp only [atomicAcc]
@@ -386,11 +386,11 @@ theorem aacc_aacc (E1 E1' E2 E3 : CoPset)
       imod Hclose $$ %y Hβ with HΦ
       iapply HΦ' $$ HΦ
 @[rocq_alias aacc_aupd]
-theorem aacc_aupd (E1 E1' E2 E3 : CoPset)
-    (α' : TA → PROP) (P' : PROP) (β' Φ' : TA → TB → PROP) :
+theorem aacc_aupd {TA' TB' : Tele} (E1 E1' E2 E3 : CoPset)
+    (α' : TA' → PROP) (P' : PROP) (β' Φ' : TA' → TB' → PROP) :
     E1' ⊆ E1 →
     atomicUpdate E1' E2 α β Φ -∗
-    (∀ x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
+    (∀.. x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
       (fun x' y' => iprop((α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ Φ' x' y')) ∨
         ∃ y, β x y ∗ (Φ x y ={E1}=∗ Φ' x' y')))) -∗
     atomicAcc E1 E3 α' P' β' Φ' := by
@@ -402,11 +402,11 @@ theorem aacc_aupd (E1 E1' E2 E3 : CoPset)
   iapply aacc_aacc α β Φ (atomicUpdate E1' E2 α β Φ) E1 E1' E2 E3 α' P' β' Φ' HE $$ Haacc Hstep
 
 @[rocq_alias aacc_aupd_commit]
-theorem aacc_aupd_commit (E1 E1' E2 E3 : CoPset)
-    (α' : TA → PROP) (P' : PROP) (β' Φ' : TA → TB → PROP) :
+theorem aacc_aupd_commit {TA' TB' : Tele} (E1 E1' E2 E3 : CoPset)
+    (α' : TA' → PROP) (P' : PROP) (β' Φ' : TA' → TB' → PROP) :
     E1' ⊆ E1 →
     atomicUpdate E1' E2 α β Φ -∗
-    (∀ x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
+    (∀.. x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
       (fun x' y' => iprop(∃ y, β x y ∗ (Φ x y ={E1}=∗ Φ' x' y')))) -∗
     atomicAcc E1 E3 α' P' β' Φ' := by
   intro HE
@@ -429,11 +429,11 @@ theorem aacc_aupd_commit (E1 E1' E2 E3 : CoPset)
   · iapply Hstep $$ %x Hα
 
 @[rocq_alias aacc_aupd_abort]
-theorem aacc_aupd_abort (E1 E1' E2 E3 : CoPset)
-    (α' : TA → PROP) (P' : PROP) (β' Φ' : TA → TB → PROP) :
+theorem aacc_aupd_abort {TA' TB' : Tele} (E1 E1' E2 E3 : CoPset)
+    (α' : TA' → PROP) (P' : PROP) (β' Φ' : TA' → TB' → PROP) :
     E1' ⊆ E1 →
     atomicUpdate E1' E2 α β Φ -∗
-    (∀ x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
+    (∀.. x, α x -∗ atomicAcc E2 E3 α' (iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ P'))) β'
       (fun x' y' => iprop(α x ∗ (atomicUpdate E1' E2 α β Φ ={E1}=∗ Φ' x' y')))) -∗
     atomicAcc E1 E3 α' P' β' Φ' := by
   intro HE
@@ -625,6 +625,27 @@ public partial def reduceTeleApps (e : Expr) : MetaM Expr :=
     else
       return .continue)
 
+/-- Peel the binder names of a *single* telescope `T` off the component `g`,
+returning one name per `Tele.cons` level together with the residual body.
+Telescopes deeper than one level (e.g. `⟪ ∀ x, ∀ y, … ⟫`) consume one lambda
+binder per level, so a flat `one name per telescope` walk would mis-align the
+names of the following component. -/
+public partial def teleNamesOne (g T : Expr) : List Name × Expr :=
+  let g := if g.isAppOf ``Tele.app then g.getAppArgs[2]! else g
+  if T.isAppOf ``Tele.cons then
+    match g with
+    | .lam nm _ body _ =>
+      let body := if body.isAppOf ``ULift.up then body.appArg! else body
+      -- descend into the tail telescope `β x`; we only inspect its head symbol,
+      -- so the loose bvar left by opening the lambda is harmless
+      let tail := match T.getAppArgs[1]! with | .lam _ _ tb _ => tb | β => β
+      let (nms, rest) := teleNamesOne body tail
+      (nm :: nms, rest)
+    | _ => ([], g)
+  else
+    let inner := if g.isAppOf ``ULift.up then g.appArg! else g
+    ([], inner)
+
 /-- Extract the ordinary binder names of a telescope-function component from its
 *original* (un-reduced) structure, one per `Tele.cons` level of `Ts` (nil levels
 contribute none). Used to keep binder names stable and consistent across
@@ -632,14 +653,8 @@ contribute none). Used to keep binder names stable and consistent across
 public partial def teleNames : Expr → List Expr → List Name
   | _, [] => []
   | comp, T :: Ts =>
-    let g := if comp.isAppOf ``Tele.app then comp.getAppArgs[2]! else comp
-    match g with
-    | .lam nm _ body _ =>
-      let body := if body.isAppOf ``ULift.up then body.appArg! else body
-      if T.isConstOf ``Tele.nil then teleNames body Ts else nm :: teleNames body Ts
-    | _ =>
-      let inner := if g.isAppOf ``ULift.up then g.appArg! else g
-      teleNames inner Ts
+    let (nms, rest) := teleNamesOne comp T
+    nms ++ teleNames rest Ts
 
 -- A single proof-mode reduction tactic (Lean analogue of Rocq's `pm_prettify`):
 -- reduce the constructor-applied telescope functions in the goal so tactics like
@@ -648,7 +663,7 @@ public partial def teleNames : Expr → List Expr → List Name
 open Lean.Elab.Tactic in
 elab "itele_reduce_apps" : tactic =>
   liftMetaTactic1 fun mvar => do
-    return some (← mvar.change (← reduceTeleApps (← mvar.getType)))
+    return some (← mvar.change (← reduceTeleApps (← instantiateMVars (← mvar.getType))))
 
 /-- Proof-mode normalisation tactic, the Lean analogue of Rocq's `pm_prettify`
 (`cbn [tele_app bi_texist bi_tforall …]`). It (a) peels telescopic quantifiers
@@ -684,9 +699,31 @@ binders (Rocq's `λ..`: packed binder → ordinary binder). The result is reduce
 so an inlined `POST x y z` / `f x y z` collapses to its clean body with ordinary
 binder names — no `Tele.app`/`{down}` leaks. `Tele.nil` levels contribute no
 binder. Handles both the notation form `Tele.app (fun x => ULift.up _)` and the
-plain `fun x => _` form (from `atomicWP`). Only single-level telescopes
-(`Tele.cons (fun _ => Tele.nil)`) are handled, which is all the atomic notations
-produce. -/
+plain `fun x => _` form (from `atomicWP`). Telescopes of *any* depth are handled;
+each `Tele.cons` level contributes one ordinary binder. -/
+public partial def buildTeleArg {α : Type} (argTy g : Expr) (names : List Name)
+    (k : Array Name → List Name → Expr → MetaM α) : MetaM α := do
+  let argTy ← Meta.whnf argTy
+  if argTy.isAppOf ``Sigma then
+    -- `Tele.Arg (cons X β) = Σ x : X, Tele.Arg (β x)`: introduce a binder for `x`
+    -- and recurse into the tail, which for a multi-level telescope is another
+    -- `Sigma` rather than `PUnit`.
+    let X := argTy.getAppArgs[0]!
+    let β := argTy.getAppArgs[1]!
+    let g := if g.isAppOf ``Tele.app then g.getAppArgs[2]! else g
+    let nm := names.head?.getD <| match g with | .lam n .. => n | _ => `x
+    Meta.withLocalDeclD nm X fun fv => do
+      let gBody :=
+        let b := g.beta #[fv]
+        if b.isAppOf ``ULift.up then b.appArg! else b
+      buildTeleArg (β.beta #[fv]) gBody names.tail fun nms rest tail => do
+        let arg ← Meta.mkAppOptM ``Sigma.mk #[X, β, fv, tail]
+        k (#[← fv.fvarId!.getUserName] ++ nms) rest arg
+  else
+    match argTy.getAppFn with
+    | .const ``PUnit us => k #[] names (mkConst ``PUnit.unit us)
+    | _ => throwError "peelComp: expected `PUnit` at the end of a telescope, got {argTy}"
+
 public partial def peelComp {α : Type} (comp : Expr) (Ts : List Expr) (names : List Name)
     (k : Array Name → Expr → MetaM α) : MetaM α := do
   let comp ← reduceTeleApps comp
@@ -697,20 +734,14 @@ public partial def peelComp {α : Type} (comp : Expr) (Ts : List Expr) (names : 
     let argTy ← Meta.whnf dom.bindingDomain!
     if (← Meta.whnf T).isConstOf ``Tele.nil then
       -- `argTy` is `PUnit.{v}`; apply `comp` to `PUnit.unit` (nil consumes no binder name)
-      peelComp (comp.beta #[mkConst ``PUnit.unit argTy.constLevels!]) Ts names k
+      match argTy.getAppFn with
+      | .const ``PUnit us => peelComp (comp.beta #[mkConst ``PUnit.unit us]) Ts names k
+      | _ => throwError "peelComp: expected `PUnit` for a nil telescope, got {argTy}"
     else
-      -- `argTy` is `@Sigma X β`; introduce the head binder and pass `⟨fv, ()⟩`
-      let X := argTy.getAppArgs[0]!
-      let β := argTy.getAppArgs[1]!
-      -- derive the binder name from the telescope function (or use the override)
-      let f := if comp.isAppOf ``Tele.app then comp.getAppArgs[2]! else comp
-      let nm := names.head?.getD <| match f with | .lam n .. => n | _ => `x
-      Meta.withLocalDeclD nm X fun fv => do
-        let tailTy ← Meta.whnf (β.beta #[fv])
-        let arg ← Meta.mkAppOptM ``Sigma.mk
-          #[X, β, fv, mkConst ``PUnit.unit tailTy.constLevels!]
-        peelComp (comp.beta #[arg]) Ts names.tail fun nms body => do
-          k (#[← fv.fvarId!.getUserName] ++ nms) body
+      let g := if comp.isAppOf ``Tele.app then comp.getAppArgs[2]! else comp
+      buildTeleArg argTy g names fun nms rest arg =>
+        peelComp (comp.beta #[arg]) Ts rest fun nms' body =>
+          k (nms ++ nms') body
 
 /-- Peel a component and delaborate its reduced body, returning the ordinary
 binder names and the body syntax. `names` overrides the derived binder names at
@@ -741,9 +772,16 @@ def peelAtomicParts (args : Array Expr) (αIdx βIdx ΦIdx : Nat) :
   let (_, Φ) ← peelDelab args[ΦIdx]! [TA, TB] βNames
   let taCons := !(TA.isConstOf ``Tele.nil)
   let tbCons := !(TB.isConstOf ``Tele.nil)
-  let pre ← if taCons then (do let x := mkIdent (αn[0]?.getD `x); `(∃ $x:ident, $α)) else pure α
-  let comm ← if tbCons then
-      (do let y := mkIdent (βn[if taCons then 1 else 0]?.getD `y); `(∀ $y:ident, $β)) else pure β
+  -- `αn` holds one name per `cons` level of `TA`, `βn` the names of `TA` followed by
+  -- those of `TB`; emit one binder each so multi-level telescopes print in full.
+  let mut pre := α
+  if taCons then
+    for nm in αn.reverse do
+      pre ← `(∃ $(mkIdent nm):ident, $pre)
+  let mut comm := β
+  if tbCons then
+    for nm in (βn.extract αn.size βn.size).reverse do
+      comm ← `(∀ $(mkIdent nm):ident, $comm)
   return (Eo, Ei, pre, comm, Φ)
 
 @[delab app.Iris.atomicUpdate]

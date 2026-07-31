@@ -70,48 +70,135 @@ abbrev atomicWP
 
 declare_syntax_cat atomicWpPre
 syntax "⟪" ("∀ " ident ", ")? term "⟫" : atomicWpPre
+syntax "⟪" "∀ " ident ", " "∀ " ident ", " term "⟫" : atomicWpPre
 
 declare_syntax_cat atomicWpPost
 syntax "⟪" "∃ " ident ", " term " | " ident ", " "RET " term "; " term "⟫" : atomicWpPost
+syntax "⟪" "∃ " ident ", " term " | " "RET " term "⟫" : atomicWpPost
 syntax "⟪" term " | " "RET " term "⟫" : atomicWpPost
 
 syntax (name := atomicTripleNotation)
   ppRealFill(atomicWpPre ppSpace term:arg " @ " term:arg ppSpace atomicWpPost) : term
 
 macro_rules
+  | `(⟪ ∀ $x₁:ident, ∀ $x₂:ident, $α:term ⟫ $e:term @ $E:term
+      ⟪ ∃ $y:ident, $β:term | $z:ident, RET $v:term; $POST:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.cons <| λ _ => Tele.cons <| λ _ => Tele.nil.{0})
+        (TB := Tele.cons <| λ _ => Tele.nil.{0})
+        (TP := Tele.cons <| λ _ => Tele.nil.{0})
+        $e $E
+        (Tele.app <| λ $x₁ => λ $x₂ => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y => ULift.up.{0,0} iprop($β))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y =>
+            ULift.up.{0,0} <| Tele.app <| λ $z => ULift.up.{0,0} (some iprop($POST)))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y =>
+            ULift.up.{0,0} <| Tele.app <| λ $z => ULift.up.{0,0} $v))
+  | `(⟪ ∀ $x₁:ident, ∀ $x₂:ident, $α:term ⟫ $e:term @ $E:term
+      ⟪ ∃ $y:ident, $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.cons <| λ _ => Tele.cons <| λ _ => Tele.nil.{0})
+        (TB := Tele.cons <| λ _ => Tele.nil.{0})
+        (TP := Tele.nil.{0})
+        $e $E
+        (Tele.app <| λ $x₁ => λ $x₂ => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y => ULift.up.{0,0} iprop($β))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y =>
+            ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app <| λ $y =>
+            ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v)))
+  | `(⟪ ∀ $x₁:ident, ∀ $x₂:ident, $α:term ⟫ $e:term @ $E:term
+      ⟪ $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.cons <| λ _ => Tele.cons <| λ _ => Tele.nil.{0})
+        (TB := Tele.nil.{0})
+        (TP := Tele.nil.{0})
+        $e $E
+        (Tele.app <| λ $x₁ => λ $x₂ => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} iprop($β)))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app
+            (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none)))
+        (Tele.app <| λ $x₁ => λ $x₂ =>
+          ULift.up.{0,0} <| Tele.app
+            (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v))))
   | `(⟪ ∀ $x:ident, $α:term ⟫ $e:term @ $E:term
       ⟪ ∃ $y:ident, $β:term | $z:ident, RET $v:term; $POST:term ⟫) =>
       `(atomicWP
-        (TA := Tele.cons <| λ xn => Tele.nil)
-        (TB := Tele.cons <| λ yn => Tele.nil)
-        (TP := Tele.cons <| λ zn => Tele.nil)
+        (TA := Tele.cons <| λ xn => Tele.nil.{0})
+        (TB := Tele.cons <| λ yn => Tele.nil.{0})
+        (TP := Tele.cons <| λ zn => Tele.nil.{0})
         $e $E
-        (Tele.app <| λ $x => ULift.up iprop($α))
-        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up iprop($β))
-        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up <| Tele.app <| λ $z => ULift.up (some iprop($POST)))
-        (Tele.app <| λ $x => ULift.up <| Tele.app <| λ $y => ULift.up <| Tele.app <| λ $z => ULift.up $v))
+        (Tele.app <| λ $x => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} iprop($β))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app <| λ $z =>
+            ULift.up.{0,0} (some iprop($POST)))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app <| λ $z => ULift.up.{0,0} $v))
+  | `(⟪ ∀ $x:ident, $α:term ⟫ $e:term @ $E:term
+      ⟪ ∃ $y:ident, $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.cons <| λ _ => Tele.nil.{0})
+        (TB := Tele.cons <| λ _ => Tele.nil.{0})
+        (TP := Tele.nil.{0})
+        $e $E
+        (Tele.app <| λ $x => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} iprop($β))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v)))
   | `(⟪ ∀ $x:ident, $α:term ⟫ $e:term @ $E:term
       ⟪ $β:term | RET $v:term ⟫) =>
       `(atomicWP
-        (TA := Tele.cons <| λ xn => Tele.nil)
-        (TB := Tele.nil)
-        (TP := Tele.nil)
+        (TA := Tele.cons <| λ xn => Tele.nil.{0})
+        (TB := Tele.nil.{0})
+        (TP := Tele.nil.{0})
         $e $E
-        (Tele.app <| λ $x => ULift.up iprop($α))
-        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up iprop($β)))
-        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up none)))
-        (Tele.app <| λ $x => ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up $v))))
+        (Tele.app <| λ $x => ULift.up.{0,0} iprop($α))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app
+          (ULift.up.{0,0} iprop($β)))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app
+          (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none)))
+        (Tele.app <| λ $x => ULift.up.{0,0} <| Tele.app
+          (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v))))
+  | `(⟪ $α:term ⟫ $e:term @ $E:term
+      ⟪ ∃ $y:ident, $β:term | RET $v:term ⟫) =>
+      `(atomicWP
+        (TA := Tele.nil.{0})
+        (TB := Tele.cons <| λ _ => Tele.nil.{0})
+        (TP := Tele.nil.{0})
+        $e $E
+        (Tele.app (ULift.up.{0,0} iprop($α)))
+        (Tele.app (ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} iprop($β)))
+        (Tele.app (ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none)))
+        (Tele.app (ULift.up.{0,0} <| Tele.app <| λ $y =>
+          ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v))))
   | `(⟪ $α:term ⟫ $e:term @ $E:term
       ⟪ $β:term | RET $v:term ⟫) =>
       `(atomicWP
-        (TA := Tele.nil)
-        (TB := Tele.nil)
-        (TP := Tele.nil)
+        (TA := Tele.nil.{0})
+        (TB := Tele.nil.{0})
+        (TP := Tele.nil.{0})
         $e $E
-        (Tele.app (ULift.up iprop($α)))
-        (Tele.app (ULift.up <| Tele.app (ULift.up iprop($β))))
-        (Tele.app (ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up none))))
-        (Tele.app (ULift.up <| Tele.app (ULift.up <| Tele.app (ULift.up $v)))))
+        (Tele.app (ULift.up.{0,0} iprop($α)))
+        (Tele.app (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} iprop($β))))
+        (Tele.app (ULift.up.{0,0} <| Tele.app
+          (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} none))))
+        (Tele.app (ULift.up.{0,0} <| Tele.app
+          (ULift.up.{0,0} <| Tele.app (ULift.up.{0,0} $v)))))
 
 
 section Lemmas
@@ -381,27 +468,33 @@ def delabAtomicWP : Delab := do
   let (αn, α) ← peelDelab args[n-4]! [TA] αNames
   let taCons := !(TA.isConstOf ``Tele.nil)
   let tbCons := !(TB.isConstOf ``Tele.nil)
+  -- `TA` may have several `cons` levels (`⟪ ∀ x, ∀ y, … ⟫`), so the `TB`/`TP`
+  -- binder names start after *all* of them, not after a single one.
+  let nA := if taCons then αn.size else 0
   if tbCons then
     let (βn, β) ← peelDelab args[n-3]! [TA, TB] βNames
     let (postn, POST) ← peelComp args[n-2]! [TA, TB, TP] pNames fun nms body => do
       let body := if body.isAppOf ``Option.some then body.appArg! else body
       return (nms, ← unpackIprop (← Lean.PrettyPrinter.delab body))
     let (_, v) ← peelDelab args[n-1]! [TA, TB, TP] pNames
-    let y := mkIdent (βn[if taCons then 1 else 0]?.getD `y)
-    let z := mkIdent (postn[(if taCons then 1 else 0) + 1]?.getD `z)
-    if taCons then
-      let x := mkIdent (αn[0]?.getD `x)
-      `(⟪ ∀ $x, $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
-    else
-      `(⟪ $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+    let y := mkIdent (βn[nA]?.getD `y)
+    let z := mkIdent (postn[nA + 1]?.getD `z)
+    match αn.toList with
+    | [] => `(⟪ $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+    | [x₁] => `(⟪ ∀ $(mkIdent x₁), $α ⟫ $prog @ $E ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+    | [x₁, x₂] =>
+        `(⟪ ∀ $(mkIdent x₁), ∀ $(mkIdent x₂), $α ⟫ $prog @ $E
+            ⟪ ∃ $y, $β | $z, RET $v; $POST ⟫)
+    | _ => failure   -- no surface syntax for deeper telescopes: default printer
   else
     let (_, β) ← peelDelab args[n-3]! [TA, TB] βNames
     let (_, v) ← peelDelab args[n-1]! [TA, TB, TP] pNames
-    if taCons then
-      let x := mkIdent (αn[0]?.getD `x)
-      `(⟪ ∀ $x, $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
-    else
-      `(⟪ $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+    match αn.toList with
+    | [] => `(⟪ $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+    | [x₁] => `(⟪ ∀ $(mkIdent x₁), $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+    | [x₁, x₂] =>
+        `(⟪ ∀ $(mkIdent x₁), ∀ $(mkIdent x₂), $α ⟫ $prog @ $E ⟪ $β | RET $v ⟫)
+    | _ => failure
 end
 end Delab
 

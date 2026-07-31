@@ -1,10 +1,9 @@
 module
 
-public import Iris.HeapLang.PrimitiveLaws
-public import Iris.HeapLang.ProofMode
-public import Iris.HeapLang.Lib.SpinLock
-public import Iris.Algebra.Lib.ExclAuth
+public import Iris.Examples.SafeAPI
 public import Iris.ProgramLogic.Atomic
+public import Iris.HeapLang.Lib.IInv
+public import Iris.HeapLang.Lib.FracAgreeLocal
 
 @[expose] public section
 namespace Iris.Examples.HeapLang
@@ -12,6 +11,11 @@ namespace Iris.Examples.HeapLang
 structure Arr where
   cells : List (Nat × Int)
   counter : Nat
+deriving DecidableEq, Repr
+
+instance : OFE Arr := OFE.ofDiscrete _ Eq_Equivalence
+instance : OFE.Discrete Arr := ⟨fun h => h⟩
+instance : OFE.Leibniz Arr := ⟨fun h => h⟩
 
 def Arr.idUqi (arr : Arr) : Prop := (arr.cells.map (·.1)).Nodup
 
@@ -21,16 +25,36 @@ structure Arr.wellFormed (arr : Arr) : Prop where
 
 def Arr.init (x : Int) : Arr := { cells := [(0, x)], counter := 1 }
 
-def Arr.insert (arr : Arr) (id : Nat) (val : Int) : Arr :=
+def Arr.insert (arr : Arr) (id : Nat) (val : Int) : Arr × Option Nat :=
   if arr.cells.any (·.1 = id)
-    then {
+    then ({
       cells := arr.cells.flatMap λ c => if c.1 = id then [c, (arr.counter, val)] else [c],
       counter := arr.counter + 1
-    }
-    else arr
+    }, some arr.counter)
+    else (arr, none)
 
-def Arr.remove (arr : Arr) (id : Nat) : Arr :=
-  { cells := arr.cells.filter (·.1 ≠ id), counter := arr.counter }
+def Arr.cellsBefore (cells : List (Nat × Int)) (id : Nat) : List (Nat × Int) :=
+  match cells with
+  | [] => []
+  | (id', x) :: cs =>
+    if id' = id
+      then [(id', x)]
+      else (id', x) :: Arr.cellsBefore cs id
+
+def Arr.revoke (arr : Arr) (id : Nat) : Arr × Option Unit :=
+  if arr.cells.any (·.1 = id)
+    then ({
+      cells := Arr.cellsBefore arr.cells id,
+      counter := arr.counter
+    }, some ())
+    else (arr, none)
+
+section Facts
+
+/-- `sid` is the immediate successor of `id` in the abstract list (the remove-after target). -/
+def Arr.adjacent (σ : Arr) (id sid : Nat) : Prop :=
+  ∃ (pre post : List (Nat × Int)) (x sx : Int),
+    σ.cells = pre ++ (id, x) :: (sid, sx) :: post
 
 def Arr.insertBody (id counter : Nat) (val : Int) : (Nat × Int) → List (Nat × Int) :=
   fun c => if c.1 = id then [c, (counter, val)] else [c]
@@ -111,13 +135,123 @@ theorem Arr.nodup_insert_ids (id counter : Nat) (val : Int) :
       · intro heq; subst heq; exact hcnotin hbcs
       · intro heq; omega
 
+theorem Arr.exists_split_id {cells : List (Nat × Int)} {id : Nat}
+    (hmem : id ∈ cells.map (·.1)) :
+    ∃ pre x post, cells = pre ++ (id, x) :: post := by
+  induction cells with
+  | nil => simp at hmem
+  | cons c cells ih =>
+      simp only [List.map_cons, List.mem_cons] at hmem
+      rcases hmem with h | h
+      · rcases c with ⟨cid, x⟩
+        dsimp only at h
+        subst cid
+        exact ⟨[], x, cells, rfl⟩
+      · obtain ⟨pre, x, post, rfl⟩ := ih h
+        exact ⟨c :: pre, x, post, rfl⟩
+
+theorem Arr.nodup_split_id (pre post : List (Nat × Int)) (id : Nat) (x : Int)
+    (hnd : ((pre ++ (id, x) :: post).map (·.1)).Nodup) :
+    (∀ p ∈ pre, p.1 ≠ id) ∧ (∀ p ∈ post, p.1 ≠ id) := by
+  rw [List.map_append, List.map_cons, List.nodup_append] at hnd
+  obtain ⟨-, hrest, hdisj⟩ := hnd
+  rw [List.nodup_cons] at hrest
+  obtain ⟨hidpost, -⟩ := hrest
+  constructor
+  · intro p hp heq
+    exact hdisj p.1 (List.mem_map.mpr ⟨p, hp, rfl⟩) id
+      (List.mem_cons_self) heq
+  · intro p hp heq
+    apply hidpost
+    rw [← heq]
+    exact List.mem_map.mpr ⟨p, hp, rfl⟩
+
+theorem Arr.flatMap_insert_split (pre post : List (Nat × Int))
+    (id counter : Nat) (x val : Int)
+    (hpre : ∀ p ∈ pre, p.1 ≠ id) (hpost : ∀ p ∈ post, p.1 ≠ id) :
+    (pre ++ (id, x) :: post).flatMap (Arr.insertBody id counter val) =
+      pre ++ (id, x) :: (counter, val) :: post := by
+  rw [List.flatMap_append, Arr.flatMap_no_match id counter val pre hpre]
+  rw [List.flatMap_cons,
+    show Arr.insertBody id counter val (id, x) = [(id, x), (counter, val)] by
+      simp [Arr.insertBody],
+    Arr.flatMap_no_match id counter val post hpost]
+  rfl
+
+theorem Arr.cellsBefore_split (pre post : List (Nat × Int)) (id : Nat) (x : Int)
+    (hpre : ∀ p ∈ pre, p.1 ≠ id) :
+    Arr.cellsBefore (pre ++ (id, x) :: post) id = pre ++ [(id, x)] := by
+  induction pre with
+  | nil => simp [Arr.cellsBefore]
+  | cons p pre ih =>
+      simp only [List.cons_append, Arr.cellsBefore]
+      rw [if_neg (hpre p List.mem_cons_self)]
+      rw [ih (fun q hq => hpre q (List.mem_cons_of_mem p hq))]
+
+theorem Arr.insert_eq_of_split (arr : Arr) (pre post : List (Nat × Int))
+    (id : Nat) (x val : Int) (hcells : arr.cells = pre ++ (id, x) :: post)
+    (hpre : ∀ p ∈ pre, p.1 ≠ id) (hpost : ∀ p ∈ post, p.1 ≠ id) :
+    Arr.insert arr id val =
+      ({ cells := pre ++ (id, x) :: (arr.counter, val) :: post,
+         counter := arr.counter + 1 }, some arr.counter) := by
+  unfold Arr.insert
+  have hany : arr.cells.any (·.1 = id) = true := by
+    rw [List.any_eq_true]
+    exact ⟨(id, x), hcells ▸ (by simp), by simp⟩
+  simp only [hany, ↓reduceIte]
+  rw [hcells]
+  congr 1
+  rw [Arr.mk.injEq]
+  constructor
+  · exact Arr.flatMap_insert_split pre post id arr.counter x val hpre hpost
+  · rfl
+
+theorem Arr.insert_eq_none (arr : Arr) (id : Nat) (val : Int)
+    (hnot : id ∉ arr.cells.map (·.1)) :
+    Arr.insert arr id val = (arr, none) := by
+  unfold Arr.insert
+  have hany : arr.cells.any (·.1 = id) = false := by
+    rw [List.any_eq_false]
+    intro p hp heq
+    apply hnot
+    exact List.mem_map.mpr ⟨p, hp, by simpa using heq⟩
+  simp [hany]
+
+theorem Arr.revoke_eq_of_split (arr : Arr) (pre post : List (Nat × Int))
+    (id : Nat) (x : Int) (hcells : arr.cells = pre ++ (id, x) :: post)
+    (hpre : ∀ p ∈ pre, p.1 ≠ id) :
+    Arr.revoke arr id =
+      ({ cells := pre ++ [(id, x)], counter := arr.counter }, some ()) := by
+  unfold Arr.revoke
+  have hany : arr.cells.any (·.1 = id) = true := by
+    rw [List.any_eq_true]
+    exact ⟨(id, x), hcells ▸ (by simp), by simp⟩
+  simp only [hany, ↓reduceIte]
+  rw [hcells]
+  congr 1
+  rw [Arr.mk.injEq]
+  constructor
+  · exact Arr.cellsBefore_split pre post id x hpre
+  · rfl
+
+theorem Arr.revoke_eq_none (arr : Arr) (id : Nat)
+    (hnot : id ∉ arr.cells.map (·.1)) :
+    Arr.revoke arr id = (arr, none) := by
+  unfold Arr.revoke
+  have hany : arr.cells.any (·.1 = id) = false := by
+    rw [List.any_eq_false]
+    intro p hp heq
+    apply hnot
+    exact List.mem_map.mpr ⟨p, hp, by simpa using heq⟩
+  simp [hany]
+
 def Arr.init_wellFormed (x : Int) : Arr.wellFormed <| Arr.init x := {
   idUqi := by simp [Arr.init, Arr.idUqi]
   counterFresh := by simp [Arr.init]
 }
 
 def Arr.insert_wellFormed (arr : Arr) (h : arr.wellFormed) (id : Nat) (val : Int) :
-    (Arr.insert arr id val).wellFormed := {
+    (Arr.insert arr id val).1.wellFormed := {
   idUqi := by
     unfold Arr.insert Arr.idUqi
     split
@@ -142,445 +276,1952 @@ def Arr.insert_wellFormed (arr : Arr) (h : arr.wellFormed) (id : Nat) (val : Int
     · exact h.counterFresh
 }
 
+theorem Arr.cellsBefore_sublist (cells : List (Nat × Int)) (id : Nat) :
+    (Arr.cellsBefore cells id).Sublist cells := by
+  induction cells with
+  | nil => exact .slnil
+  | cons c cells ih =>
+      simp only [Arr.cellsBefore]
+      split
+      · exact .cons_cons c (List.nil_sublist cells)
+      · exact .cons_cons c ih
 
-def Arr.remove_wellFormed (arr : Arr) (h : arr.wellFormed) (id : Nat) :
-    (Arr.remove arr id).wellFormed := {
-  idUqi := by
-    unfold Arr.remove Arr.idUqi
-    have s : List.Sublist ((arr.cells.filter (·.1 ≠ id)).map (·.1)) (arr.cells.map (·.1)) :=
-      (List.filter_sublist (l := arr.cells)).map (·.1)
-    exact s.nodup h.idUqi
-  counterFresh := by
-    intro p hp
-    simp only [Arr.remove, List.mem_filter] at hp
-    exact h.counterFresh p hp.1
-}
+def Arr.revoke_wellFormed (arr : Arr) (h : arr.wellFormed) (id : Nat) :
+    (Arr.revoke arr id).1.wellFormed := by
+  unfold Arr.revoke
+  split
+  · constructor
+    · unfold Arr.idUqi
+      exact ((Arr.cellsBefore_sublist arr.cells id).map
+        (fun p : Nat × Int => p.1)).nodup h.idUqi
+    · intro p hp
+      exact h.counterFresh p
+        (List.Sublist.mem hp (Arr.cellsBefore_sublist arr.cells id))
+  · exact h
+
+end Facts
 
 open Iris.HeapLang
-open SpinLock
 
+def Impl.platformNew : Val := hl_val%
+  λ _,
+    let cell := ref(#());
+    let lock := &RwLock.new cell;
+    &Arc.new lock
+
+def Impl.execute : Val := hl_val%
+  λ platform exclusive f,
+    let gate := &Arc.get(platform);
+    if exclusive then
+      let _ := &RwLock.write_acquire(gate);
+      let result := f #();
+      &RwLock.write_release(gate);
+      result
+    else
+      let _ := &RwLock.read_acquire(gate);
+      let result := f #();
+      &RwLock.read_release(gate);
+      result
+
+def Impl.new : Val := hl_val%
+  λ value next,
+    let contents := ref((#false, (value, next)));
+    let lock := &RwLock.new contents;
+    &Arc.new lock
 
 def Impl.init : Val := hl_val%
-  λ x,
-    let lk := &newlock #();
-    let c  := ref((x, none()));
-    (lk, c)
+  λ value, &new value (none())
+
+def Impl.dropLink : Val := hl_val%
+  λ link,
+    match link with
+    | none() => #()
+    | some(node) => &Arc.drop(node)
 
 def Impl.insert : Val := hl_val%
-  λ node nval,
-    let lk := fst(node);
-    &acquire(lk);
-    let ptr := snd(node);
-    let contents := !ptr;
-    let val := fst(contents);
-    let next := snd(contents);
-    -- create a new node with the new value and the old next pointer
-    let nlk := &newlock #();
-    let nptr := ref((nval, next));
-    let nnode := (nlk, nptr);
-    let ncontents := (val, some(nnode));
-    ptr ← ncontents;
-    &release(lk)
-    nnode
+  λ platform node value,
+    &execute platform #false (λ _,
+      let lock := &Arc.get(node); -- using isId and metaPointsTo
+      /- `RwLockGuard γP read` -/
+      let ptr := &RwLock.write_acquire(lock); -- access to atomic precondition to get the slot
+      /- `RwLockGuard γP read ∗ metaPointsTo id d ∗ isArr` gives me `PhysicalSlot id d`  -/
+      let contents := !ptr; -- unnfold the slot to get the payload
+      /- unfold `PhysicalSlot id d` -/
+      let revoked := fst(contents);
+      let payload := snd(contents);
+      let oldValue := fst(payload);
+      let oldNext := snd(payload);
+      if revoked then -- in this case, we are done
+        /- easy case because we don't have to update the abstract state -/
+        /- return `PhysicalSlot id d` to release the lock and get the `RwLockGuard γP read` back to unlock the platform -/
+        (&RwLock.write_release(lock); -- access to atomic precondition to release the slot
+         none())
+      else
+        (let newNode := &new value oldNext; -- create a new node with the value and the cloned arc
+        /- create a new node, what would be the spec of new? do we assign any resources to next... -/
+         let edge := &Arc.clone(newNode); -- clone the arc from the new node to create an edge
+        /- copy the new node -/
+         ptr ← (#false, (oldValue, some(edge))); -- update the physical payload!!
+         &RwLock.write_release(lock); -- LINEARIZATION POINT
+        /-
+         At this point we need to update the abstract state
+         we have updated the physical state
+         basically now we have a different `PhysicalSlot id d` because the payload has changed
+         and we also have a new `PhysicalSlot counter d'` for the new node
+         emm, to make things easier, we should separate the physical resources from the abstract resources here,
+         so that we can update the physical resources without having to update the abstract resources
 
-def Impl.remove : Val := hl_val%
-  λ node,
-    let lk := fst(node);
-    &acquire(lk);
-    let ptr := snd(node);
-    let contents := !ptr;
-    let next := snd(contents);
-    match next with
-    | none() => &release(lk)
-    | some(nnode) =>
-      let nlk := fst(nnode);
-      &acquire(nlk);
-      let nptr := snd(nnode);
-      let ncontents := !nptr;
-      free(nptr);
-      let nnext := snd(ncontents);
-      ptr ← (fst(contents), nnext);
-      &release(nlk);
-      &release(lk)
+         then we access to the atomic precondition
+         the we get `isGhost(σ)` and `isPhysical(M)`
+         as we hold `metaPointsTo id p`
+         HOW CAN we know that `σ.cells` contains `id`, does it matter?
+         now we perform an insert to the `M`
+         it's easy to make `isPhysical(M')` work
+         then we need to looks at the `isGhost(σ)`
+         okk, seems like it's easy to proof `isGhost(σ) ∗ metaPointsTo σ.counter d ⊢ isGhost(σ.insert(d.value))`
+         if we define `isGhost(σ)` as recursively over the `σ.cells` list, and
+         interpret each cell to a `MetaPointsTo`
+
+         IN THIS WAY, SEEMS LIKE TWP THINGS I HAVE FORGET
+         1. i don't know if a node is alive
+         2. i don't what is the next node
+        -/
+         some(newNode)))
+
+def Impl.revokeSuffix : Val := hl_val%
+  rec go current :=
+    match current with
+    | none() => #()
+    | some(node) =>
+      let lock := &Arc.get(node);
+      let ptr := &RwLock.write_acquire(lock);
+      let contents := !ptr;
+      let payload := snd(contents);
+      let value := fst(payload);
+      let next := snd(payload);
+      ptr ← (#true, (value, none()));
+      &RwLock.write_release(lock);
+      go next;
+      &Arc.drop(node)
+
+def Impl.revoke : Val := hl_val%
+  λ platform node,
+    &execute platform #true (λ _,
+      let lock := &Arc.get(node);
+      let ptr := &RwLock.write_acquire(lock);
+      let contents := !ptr;
+      let revoked := fst(contents);
+      let payload := snd(contents);
+      let value := fst(payload);
+      let next := snd(payload);
+      if revoked then
+        (&RwLock.write_release(lock);
+         none())
+      else
+        (ptr ← (#false, (value, none()));
+         &RwLock.write_release(lock);
+         &revokeSuffix next;
+         some(#())))
+
 
 section Specs
 
-open Std PartialMap
+open Std PartialMap FracAgree
 
-abbrev ArrNameRF : COFE.OFunctorPre :=
-  constOF (Agree (LeibnizO (Val × GName × GName × GName)))
+structure Data where
+  arc : GName
+  rw : GName
+  cell : GName
+  mux : Val
+  ptr : Loc
+  val : Int
+deriving DecidableEq, Repr
 
-class ArrG (GF : BundledGFunctors) (H H': outParam <| Type → Type) [LawfulFiniteMap H' Nat]  [LawfulFiniteMap H Loc] where
-  [vmapG : GhostMapG GF Loc (Int × (Option Loc)) H]
-  [nmapG : GhostMapG GF Loc Nat H]
-  [rmapG : GhostMapG GF Nat Val H']
-  [rootG : ElemG GF ArrNameRF]
+/-- The synchronised ghost state: the abstract array **together with** the metadata
+    map.  Pinning both under one fraction is what lets a writer that stepped outside
+    the invariant (holding `3/4`) prove on the way back in that neither `σ` nor `M`
+    moved.  `σ` alone would not be enough: `retiredNodes` is a big-op over `M`, so a
+    silently grown `M` would leave the writer unable to restore the invariant. -/
+structure ArrState (H : Type → Type) where
+  arr : Arr
+  mmap : H Data
 
-attribute [reducible, instance] ArrG.vmapG ArrG.nmapG ArrG.rootG ArrG.rmapG
+instance : OFE (ArrState H) := OFE.ofDiscrete _ Eq_Equivalence
+instance : OFE.Discrete (ArrState H) := ⟨fun h => h⟩
+instance : OFE.Leibniz (ArrState H) := ⟨fun h => h⟩
+
+abbrev ArrStateRF (H : Type → Type) : COFE.OFunctorPre :=
+  constOF (DFracAgreeR (ArrState H))
+
+inductive Cell where
+  | alive : Option Nat → Cell
+  | dead : Cell
+  deriving DecidableEq, Repr
+
+instance : OFE Cell := OFE.ofDiscrete _ Eq_Equivalence
+instance : OFE.Discrete Cell := ⟨fun h => h⟩
+instance : OFE.Leibniz Cell := ⟨fun h => h⟩
+
+abbrev CellRF : COFE.OFunctorPre :=
+  constOF (DFracAgreeR Cell)
+
+class ArrG (GF : BundledGFunctors) (H : outParam <| Type → Type) [LawfulFiniteMap H Nat] where
+  [metaMapG : GhostMapG GF Nat Data H]
+  [fracStateG : ElemG GF (ArrStateRF H)]
+  [cellG : ElemG GF CellRF]
+
+/-- The ghost names owned by the array itself.
+
+    The platform lock's name is deliberately **not** a field: an array is created
+    (`Impl.init`) before it is bound to a platform (`Impl.platformNew`), so that
+    name is still universally quantified in `Arr.isList` and only gets fixed by
+    `Arr.isArr`.  Bundling it here would force `isList` to guess it. -/
+structure Arrγ where
+  /-- Metadata map: `id ↦ Data` (per-node arc / rwlock / cell names). -/
+  l : GName
+  /-- Synchronisation variable pinning `(σ, M)` under one fraction. -/
+  s : GName
+
+
+attribute [reducible, instance] ArrG.metaMapG ArrG.fracStateG ArrG.cellG
 open Iris.BI
 
 section RA
-variable [LawfulFiniteMap H Loc] [LawfulFiniteMap H' Nat] [ArrG GF H H']
+variable [LawfulFiniteMap H Nat] [ArrG GF H]
 
-def idMap (γ : GName) (m : H Nat) : IProp GF := γ ↪●MAP m
-def idPointsto (γ : GName) (loc : Loc) (id : Nat) (π : DFrac) : IProp GF :=  γ ↪◯MAP[loc]{π} id
+def metaMap (γ : GName) (M : H Data) : IProp GF :=
+  γ ↪●MAP M
+def metaAt (γ : GName) (id : Nat) (d : Data) : IProp GF :=
+  γ ↪◯MAP[id]{.discard} d
 
--- ===== id map  (Loc → Nat) =====
-theorem idMap_alloc : ⊢@{IProp GF} |==> ∃ γ, idMap γ (∅ : H Nat) := by
-  unfold idMap; iapply ghost_map_alloc_empty
-theorem idMap_lookup (γ : GName) (n : H Nat) (loc : Loc) (id : Nat) (π : DFrac) :
-    ⊢@{IProp GF} idMap γ n -∗ idPointsto γ loc id π -∗ ⌜get? n loc = some id⌝ := by
- unfold idMap idPointsto; iapply ghost_map_lookup
-theorem idPointsto_agree (γ : GName) (loc : Loc) (i1 i2 : Nat) (π1 π2 : DFrac) :
-    ⊢@{IProp GF} idPointsto γ loc i1 π1 -∗ idPointsto γ loc i2 π2 -∗ ⌜i1 = i2⌝ := by
-  unfold idPointsto
-  iintro H1 H2
-  icases ghost_map_elem_agree $$ [$H1 $H2] with %Heq
-  ipureintro; exact Heq
-theorem idMap_insert (γ : GName) (n : H Nat) (loc : Loc) (id : Nat) (Hfresh : get? n loc = none) :
-    ⊢@{IProp GF} idMap γ n ==∗ idMap γ (insert n loc id) ∗ idPointsto γ loc id (.own 1) := by
-  unfold idMap idPointsto; iapply (ghost_map_insert loc id Hfresh)
-theorem idMap_update (γ : GName) (n : H Nat) (loc : Loc) (id id' : Nat) :
-    ⊢@{IProp GF} idMap γ n -∗ idPointsto γ loc id (.own 1) ==∗
-      idMap γ (insert n loc id') ∗ idPointsto γ loc id' (.own 1) := by
-  unfold idMap idPointsto; iapply (ghost_map_update id')
-theorem idMap_delete (γ : GName) (n : H Nat) (loc : Loc) (id : Nat) :
-    ⊢@{IProp GF} idMap γ n -∗ idPointsto γ loc id (.own 1) ==∗ idMap γ (delete n loc) := by
-  unfold idMap idPointsto; iapply (ghost_map_delete loc id)
-instance (γ : GName) (n : H Nat) : Timeless (PROP := IProp GF) (idMap γ n) := by
-  unfold idMap; infer_instance
-instance (γ : GName) (loc : Loc) (id : Nat) (π : DFrac) : Timeless (PROP := IProp GF) (idPointsto γ loc id π) := by
-  unfold idPointsto; infer_instance
-instance (γ : GName) (loc : Loc) (id : Nat) : Persistent (PROP := IProp GF) (idPointsto γ loc id .discard) := by
-  unfold idPointsto; infer_instance
-theorem idPointsto_exclusive (γ : GName) (loc : Loc) (i1 i2 : Nat) :
-    ⊢@{IProp GF} idPointsto γ loc i1 (.own 1) -∗ idPointsto γ loc i2 (.own 1) -∗ ⌜False⌝ := by
-  unfold idPointsto
-  iintro H1 H2
-  icombine H1 H2 gives ⟨%Hv, %_⟩
+def stateVar (γ : GName) (q : Qp) (σ : Arr) (M : H Data) : IProp GF :=
+  iOwn γ (F := ArrStateRF H) (FracAgree.Frac.mk q ⟨σ, M⟩)
+
+def cellAlive (γ : GName) (q : Qp) (nxt : Option Nat) : IProp GF :=
+  iOwn γ (F := CellRF) (FracAgree.mk (.own q) (Cell.alive nxt))
+def cellDead (γ : GName) : IProp GF :=
+  iOwn γ (F := CellRF) (FracAgree.mk .discard Cell.dead)
+
+def q1_4 : Qp := Qp.half (Qp.half 1)
+def q3_4 : Qp := Qp.half 1 + Qp.half (Qp.half 1)
+def q1_2 : Qp := Qp.half 1
+
+section Facts
+theorem metaMap_alloc : ⊢@{IProp GF} |==> ∃ γ, metaMap γ (∅ : H Data) := by
+  unfold metaMap
+  iapply ghost_map_alloc_empty
+
+theorem metaMap_lookup (γ : GName) (M : H Data) (id : Nat) (d : Data) :
+    ⊢@{IProp GF} metaMap γ M -∗ metaAt γ id d -∗
+      ⌜get? M id = some d⌝ := by
+  unfold metaMap metaAt
+  iapply ghost_map_lookup
+
+/-- `metaAt` uses the `.discard` fraction, so it is persistent — but `metaAt` is a
+    `def`, which instance resolution cannot see through, so the instance has to be
+    restated here (same situation as `cellDead_persistent`). -/
+instance metaAt_persistent (γ : GName) (id : Nat) (d : Data) :
+    Persistent (metaAt (GF := GF) (H := H) γ id d) := by
+  unfold metaAt; infer_instance
+
+theorem metaAt_agree (γ : GName) (id : Nat) (d₁ d₂ : Data) :
+    ⊢@{IProp GF} metaAt γ id d₁ -∗ metaAt γ id d₂ -∗ ⌜d₁ = d₂⌝ := by
+  unfold metaAt
+  iintro H₁ H₂
+  iapply ghost_map_elem_agree
+  iframe
+
+theorem metaMap_insert (γ : GName) (M : H Data) (id : Nat) (d : Data)
+    (fresh : get? M id = none) :
+    ⊢@{IProp GF} metaMap γ M ==∗
+      metaMap γ (insert M id d) ∗ metaAt γ id d := by
+  unfold metaMap metaAt
+  iapply ghost_map_insert_persist id d fresh
+
+theorem metaMap_counter_fresh (M : H Data) (counter : Nat)
+    (hdom : ∀ id, dom M id ↔ id < counter) :
+    get? M counter = none := by
+  apply Option.not_isSome_iff_eq_none.mp
+  intro hmem
+  exact (Nat.lt_irrefl counter) ((hdom counter).mp hmem)
+
+theorem metaMap_insert_counter_dom (M : H Data) (counter : Nat) (d : Data)
+    (hdom : ∀ id, dom M id ↔ id < counter) :
+    ∀ id, dom (insert M counter d) id ↔ id < counter + 1 := by
+  intro id
+  unfold dom
+  by_cases h : counter = id
+  · subst id
+    simp [get?_insert_eq rfl]
+  · rw [get?_insert_ne h]
+    change dom M id ↔ _
+    rw [hdom]
+    omega
+
+theorem metaMap_insert_counter (γ : GName) (M : H Data) (counter : Nat) (d : Data)
+    (hdom : ∀ id, dom M id ↔ id < counter) :
+    ⊢@{IProp GF} metaMap γ M ==∗
+      metaMap γ (insert M counter d) ∗ metaAt γ counter d := by
+  iapply metaMap_insert γ M counter d (metaMap_counter_fresh M counter hdom)
+
+theorem metaMap_lookup_lt (γ : GName) (M : H Data) (counter id : Nat) (d : Data)
+    (hdom : ∀ id, dom M id ↔ id < counter) :
+    ⊢@{IProp GF} metaMap γ M -∗ metaAt γ id d -∗ ⌜id < counter⌝ := by
+  iintro HM Hid
+  ihave %hlookup := metaMap_lookup γ M id d $$ HM Hid
   ipureintro
-  exact absurd (DFrac.valid_own_op Hv) (by have : (1 : Qp).val = 1 := rfl; grind)
+  exact (hdom id).mp (by simp [dom, hlookup])
 
--- fractional structure of id fragments ⇒ `icases H with ⟨H1, H2⟩` splits a full fragment into halves
-instance idPointsto_fractional (γ : GName) (loc : Loc) (id : Nat) :
-    Fractional (PROP := IProp GF) (fun q => idPointsto γ loc id (.own q)) :=
-  @ghost_map_elem_fractional GF Loc Nat H _ _ γ loc id
-instance idPointsto_asFractional (γ : GName) (loc : Loc) (id : Nat) (q : Qp) :
-    AsFractional (PROP := IProp GF) (idPointsto γ loc id (.own q))
-      (fun q => idPointsto γ loc id (.own q)) q where
-  as_fractional := .rfl
-  as_fractional_fractional := idPointsto_fractional γ loc id
-instance idPointsto_intoSep (γ : GName) (loc : Loc) (id : Nat) :
-    Iris.ProofMode.IntoSep (idPointsto γ loc id (.own 1) : IProp GF)
-      (idPointsto γ loc id (.own (Qp.half 1))) (idPointsto γ loc id (.own (Qp.half 1))) where
-  into_sep := by
-    have h := (@ghost_map_elem_fractional GF Loc Nat H _ _ γ loc id).fractional (Qp.half 1) (Qp.half 1)
-    rw [Qp.half_add_half] at h; exact h.1
-instance idPointsto_fromSep (γ : GName) (loc : Loc) (id : Nat) :
-    Iris.ProofMode.FromSep (idPointsto γ loc id (.own 1) : IProp GF)
-      (idPointsto γ loc id (.own (Qp.half 1))) (idPointsto γ loc id (.own (Qp.half 1))) where
-  from_sep := by
-    have h := (@ghost_map_elem_fractional GF Loc Nat H _ _ γ loc id).fractional (Qp.half 1) (Qp.half 1)
-    rw [Qp.half_add_half] at h; exact h.2
+theorem q1_4_add_q3_4 : q1_4 + q3_4 = 1 := by
+  unfold q1_4 q3_4 Qp.half; apply Subtype.ext; native_decide
 
-def arrMap (γ : GName) (m : H (Int × (Option Loc))) : IProp GF := γ ↪●MAP m
-def arrPointsto (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) (π : DFrac) : IProp GF := γ ↪◯MAP[loc]{π} (v, sl)
+theorem q1_2_add_q1_2 : q1_2 + q1_2 = 1 := by
+  unfold q1_2 Qp.half; apply Subtype.ext; native_decide
 
+instance cellDead_persistent (γ : GName) : Persistent (cellDead (GF := GF) γ) := by
+  unfold cellDead FracAgree.mk; infer_instance
 
--- ===== arr map  (Loc → Int × Option Loc) =====
-theorem arrMap_alloc : ⊢@{IProp GF} |==> ∃ γ, arrMap γ (∅ : H (Int × Option Loc)) := by
-  unfold arrMap; iapply ghost_map_alloc_empty
-theorem arrMap_lookup (γ : GName) (m : H (Int × Option Loc)) (loc : Loc) (v : Int) (sl : Option Loc) (π : DFrac) :
-    ⊢@{IProp GF} arrMap γ m -∗ arrPointsto γ loc v sl π -∗ ⌜get? m loc = some (v, sl)⌝ := by
-  unfold arrMap arrPointsto; iapply ghost_map_lookup
-theorem arrPointsto_agree (γ : GName) (loc : Loc) (v1 v2 : Int) (sl1 sl2 : Option Loc) (π1 π2 : DFrac) :
-    ⊢@{IProp GF} arrPointsto γ loc v1 sl1 π1 -∗ arrPointsto γ loc v2 sl2 π2 -∗ ⌜v1 = v2 ∧ sl1 = sl2⌝ := by
-  unfold arrPointsto
-  iintro H1 H2
-  icases ghost_map_elem_agree $$ [$H1 $H2] with %Heq
-  ipureintro; injection Heq with h1 h2; exact ⟨h1, h2⟩
-theorem arrMap_insert (γ : GName) (m : H (Int × Option Loc)) (loc : Loc) (v : Int) (sl : Option Loc)
-    (Hfresh : get? m loc = none) :
-    ⊢@{IProp GF} arrMap γ m ==∗ arrMap γ (insert m loc (v, sl)) ∗ arrPointsto γ loc v sl (.own 1) := by
-  unfold arrMap arrPointsto; iapply (ghost_map_insert loc (v, sl) Hfresh)
-theorem arrMap_update (γ : GName) (m : H (Int × Option Loc)) (loc : Loc) (v : Int) (sl : Option Loc) (w : Int) (sl' : Option Loc) :
-    ⊢@{IProp GF} arrMap γ m -∗ arrPointsto γ loc v sl (.own 1) ==∗
-      arrMap γ (insert m loc (w, sl')) ∗ arrPointsto γ loc w sl' (.own 1) := by
-  unfold arrMap arrPointsto; iapply (ghost_map_update (w, sl'))
-theorem arrMap_delete (γ : GName) (m : H (Int × Option Loc)) (loc : Loc) (v : Int) (sl : Option Loc) :
-    ⊢@{IProp GF} arrMap γ m -∗ arrPointsto γ loc v sl (.own 1) ==∗ arrMap γ (delete m loc) := by
-  unfold arrMap arrPointsto; iapply (ghost_map_delete loc (v, sl))
-instance (γ : GName) (m : H (Int × Option Loc)) : Timeless (PROP := IProp GF) (arrMap γ m) := by
-  unfold arrMap; infer_instance
-instance (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) (π : DFrac) : Timeless (PROP := IProp GF) (arrPointsto γ loc v sl π) := by
-  unfold arrPointsto; infer_instance
-theorem arrPointsto_exclusive (γ : GName) (loc : Loc) (v1 v2 : Int) (sl1 sl2 : Option Loc) :
-    ⊢@{IProp GF} arrPointsto γ loc v1 sl1 (.own 1) -∗ arrPointsto γ loc v2 sl2 (.own 1) -∗ ⌜False⌝ := by
-  unfold arrPointsto
-  iintro H1 H2
-  icombine H1 H2 gives ⟨%Hv, %_⟩
+/-- Two live witnesses for the same cell must agree on the successor. -/
+theorem cellAlive_agree (γ : GName) (q₁ q₂ : Qp) (n₁ n₂ : Option Nat) :
+    cellAlive (GF := GF) γ q₁ n₁ ∗ cellAlive γ q₂ n₂ ⊢ ⌜n₁ = n₂⌝ := by
+  unfold cellAlive
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete  $$ H with %Hvalid
   ipureintro
-  exact absurd (DFrac.valid_own_op Hv) (by have : (1 : Qp).val = 1 := rfl; grind)
-instance arrPointsto_fractional (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) :
-    Fractional (PROP := IProp GF) (fun q => arrPointsto γ loc v sl (.own q)) :=
-  @ghost_map_elem_fractional GF Loc (Int × Option Loc) H _ _ γ loc (v, sl)
-instance arrPointsto_asFractional (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) (q : Qp) :
-    AsFractional (PROP := IProp GF) (arrPointsto γ loc v sl (.own q))
-      (fun q => arrPointsto γ loc v sl (.own q)) q where
-  as_fractional := .rfl
-  as_fractional_fractional := arrPointsto_fractional γ loc v sl
--- explicit half-split so `icases H with ⟨H1, H2⟩` / `isplit` fire directly
-instance arrPointsto_intoSep (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) :
-    Iris.ProofMode.IntoSep (arrPointsto γ loc v sl (.own 1) : IProp GF)
-      (arrPointsto γ loc v sl (.own (Qp.half 1))) (arrPointsto γ loc v sl (.own (Qp.half 1))) where
-  into_sep := by
-    have h := (@ghost_map_elem_fractional GF Loc (Int × Option Loc) H _ _ γ loc (v, sl)).fractional (Qp.half 1) (Qp.half 1)
-    rw [Qp.half_add_half] at h; exact h.1
-instance arrPointsto_fromSep (γ : GName) (loc : Loc) (v : Int) (sl : Option Loc) :
-    Iris.ProofMode.FromSep (arrPointsto γ loc v sl (.own 1) : IProp GF)
-      (arrPointsto γ loc v sl (.own (Qp.half 1))) (arrPointsto γ loc v sl (.own (Qp.half 1))) where
-  from_sep := by
-    have h := (@ghost_map_elem_fractional GF Loc (Int × Option Loc) H _ _ γ loc (v, sl)).fractional (Qp.half 1) (Qp.half 1)
-    rw [Qp.half_add_half] at h; exact h.2
+  have H := (FracAgree.op_valid_L.mp Hvalid).2
+  apply (Cell.alive.inj H)
 
-def arrRoot (γ : GName) (v : Val) (γL γI γH : GName) : IProp GF :=
-  iOwn (E := ArrG.rootG) γ (toAgree (⟨(v, γL, γI, γH)⟩ : LeibnizO _))
-
-def histAuth  (γ : GName) (m : H' Val) : IProp GF := γ ↪●MAP m
-def histView  (γ : GName) (node : Val) (id : Nat) : IProp GF := γ ↪◯MAP[id]{.discard} node
-
--- ===== root binding (Agree, immutable ⇒ no update/insert/delete) =====
-theorem arrRoot_alloc (v : Val) (γL γI γH : GName) :
-    ⊢@{IProp GF} |==> ∃ γ, arrRoot γ v γL γI γH := by
-  unfold arrRoot; iapply (iOwn_alloc (E := ArrG.rootG) _ Agree.toAgree_valid)
-theorem arrRoot_agree (γ : GName) (v v' : Val) (γL γI γH γL' γI' γH' : GName) :
-    ⊢@{IProp GF} arrRoot γ v γL γI γH -∗ arrRoot γ v' γL' γI' γH' -∗
-      ⌜v = v' ∧ γL = γL' ∧ γI = γI' ∧ γH = γH'⌝ := by
-  unfold arrRoot
-  iintro H1 H2
-  icases iOwn_cmraValid_op $$ [$H1 $H2] with %Hvalid
+/-- A live witness and the retirement witness cannot coexist, at any fraction.
+    This is the lemma that closes the `retiredSlot` case of `insert`'s positive
+    branch and the `nodeSlotShared` case of its negative branch. -/
+theorem cellAlive_dead_False (γ : GName) (q : Qp) (n : Option Nat) :
+    cellAlive (GF := GF) γ q n ∗ cellDead γ ⊢ False := by
+  unfold cellAlive cellDead
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete $$ H with %Hvalid
   ipureintro
-  have h := congrArg LeibnizO.car (toAgree_op_valid_iff_eq.mp Hvalid)
-  injection h with h1 h; injection h with h2 h; injection h with h3 h4
-  exact ⟨h1, h2, h3, h4⟩
-instance (γ : GName) (v : Val) (γL γI γH : GName) : Persistent (PROP := IProp GF) (arrRoot γ v γL γI γH) := by
-  unfold arrRoot; infer_instance
-instance (γ : GName) (v : Val) (γL γI γH : GName) : Timeless (PROP := IProp GF) (arrRoot γ v γL γI γH) := by
-  unfold arrRoot; infer_instance
+  exact absurd (FracAgree.op_valid_L.mp Hvalid).2 (by simp)
 
--- ===== history map  (Nat → Val) : views are always persistent (discarded) =====
-theorem histAuth_alloc : ⊢@{IProp GF} |==> ∃ γ, histAuth γ (∅ : H' Val) := by
-  unfold histAuth; iapply ghost_map_alloc_empty
-theorem histAuth_lookup (γ : GName) (h : H' Val) (node : Val) (id : Nat) :
-    ⊢@{IProp GF} histAuth γ h -∗ histView γ node id -∗ ⌜get? h id = some node⌝ := by
-  unfold histAuth histView; iapply ghost_map_lookup
-theorem histView_agree (γ : GName) (id : Nat) (node1 node2 : Val) :
-    ⊢@{IProp GF} histView γ node1 id -∗ histView γ node2 id -∗ ⌜node1 = node2⌝ := by
-  unfold histView
-  iintro H1 H2
-  icases ghost_map_elem_agree $$ [$H1 $H2] with %Heq
-  ipureintro; exact Heq
+/-- The `1/4` (invariant side) / `3/4` (payload side) split. -/
+theorem cellAlive_split (γ : GName) (n : Option Nat) :
+    cellAlive (GF := GF) γ 1 n ⊣⊢ cellAlive γ q1_4 n ∗ cellAlive γ q3_4 n := by
+  unfold cellAlive
+  have h : (FracAgree.mk (DFrac.own (1 : Qp)) (Cell.alive n) : DFracAgreeR Cell)
+      = FracAgree.mk (DFrac.own q1_4) (Cell.alive n)
+        • FracAgree.mk (DFrac.own q3_4) (Cell.alive n) := by
+    rw [show DFrac.own (1 : Qp) = DFrac.own q1_4 • DFrac.own q3_4 from
+      congrArg _ q1_4_add_q3_4.symm]
+    exact FracAgree.mk_op.to_eq
+  rw [h]; exact iOwn_op
 
-theorem histAuth_insert (γ : GName) (h : H' Val) (node : Val) (id : Nat) (Hfresh : get? h id = none) :
-    ⊢@{IProp GF} histAuth γ h ==∗ histAuth γ (insert h id node) ∗ histView γ node id := by
-  unfold histAuth histView; iapply (ghost_map_insert_persist id node Hfresh)
-instance (γ : GName) (h : H' Val) : Timeless (PROP := IProp GF) (histAuth γ h) := by
-  unfold histAuth; infer_instance
-instance (γ : GName) (node : Val) (id : Nat) : Persistent (PROP := IProp GF) (histView γ node id) := by
-  unfold histView; infer_instance
-instance (γ : GName) (node : Val) (id : Nat) : Timeless (PROP := IProp GF) (histView γ node id) := by
-  unfold histView; infer_instance
+/-- Full ownership can be retargeted at will. -/
+theorem cellAlive_full_update (γ : GName) (n n' : Option Nat) :
+    cellAlive (GF := GF) γ 1 n ⊢ |==> cellAlive γ 1 n' := by
+  unfold cellAlive
+  exact iOwn_update (Update.exclusive ⟨DFrac.valid_own_one, Agree.toAgree_valid⟩)
+
+/-- Retiring: full ownership collapses to the persistent dead witness. -/
+theorem cellAlive_full_kill (γ : GName) (n : Option Nat) :
+    cellAlive (GF := GF) γ 1 n ⊢ |==> cellDead γ := by
+  unfold cellAlive cellDead
+  exact iOwn_update (Update.exclusive ⟨DFrac.valid_discard, Agree.toAgree_valid⟩)
+
+/-- Rewiring the successor needs the full fraction, i.e. both halves. -/
+theorem cellAlive_update (γ : GName) (n n' : Option Nat) :
+    cellAlive (GF := GF) γ q1_4 n ∗ cellAlive γ q3_4 n ⊢
+      |==> (cellAlive γ q1_4 n' ∗ cellAlive γ q3_4 n') :=
+  (cellAlive_split γ n).mpr.trans
+    ((cellAlive_full_update γ n n').trans (bupd_mono (cellAlive_split γ n').mp))
+
+/-- Retiring a cell also needs the full fraction; the result is persistent. -/
+theorem cellAlive_kill (γ : GName) (n : Option Nat) :
+    cellAlive (GF := GF) γ q1_4 n ∗ cellAlive γ q3_4 n ⊢ |==> cellDead γ :=
+  (cellAlive_split γ n).mpr.trans (cellAlive_full_kill γ n)
+
+theorem cellAlive_alloc (n : Option Nat) :
+    ⊢@{IProp GF} |==> ∃ γ, cellAlive γ 1 n := by
+  unfold cellAlive
+  exact iOwn_alloc (F := CellRF) _ ⟨DFrac.valid_own_one, Agree.toAgree_valid⟩
+
+
+theorem stateVar_agree (γ : GName) (q₁ q₂ : Qp) (σ₁ σ₂ : Arr) (M₁ M₂ : H Data) :
+    stateVar (GF := GF) γ q₁ σ₁ M₁ ∗ stateVar γ q₂ σ₂ M₂ ⊢ ⌜σ₁ = σ₂ ∧ M₁ = M₂⌝ := by
+  unfold stateVar
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete $$ H with %Hvalid
+  ipureintro
+  have H := (FracAgree.Frac.op_valid_L.mp Hvalid).2
+  exact ⟨congrArg ArrState.arr H, congrArg ArrState.mmap H⟩
+
+/-- Full ownership is exclusive: while the invariant holds `1` (states `.free` and
+    `.read n`) nobody can be sitting outside with a share. -/
+theorem stateVar_full_exclusive (γ : GName) (q : Qp) (σ₁ σ₂ : Arr) (M₁ M₂ : H Data) :
+    stateVar (GF := GF) γ 1 σ₁ M₁ ∗ stateVar γ q σ₂ M₂ ⊢ False := by
+  unfold stateVar
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete $$ H with %Hvalid
+  ipureintro
+  have h := (FracAgree.Frac.op_valid_L.mp Hvalid).1
+  simp only [Qp.val_add, Qp.val_one] at h
+  have := q.2
+  grind
+
+/-- The `1/4` (invariant side) / `3/4` (writer side) split, mirroring `cellAlive`. -/
+theorem stateVar_split (γ : GName) (σ : Arr) (M : H Data) :
+    stateVar (GF := GF) γ 1 σ M ⊣⊢ stateVar γ q1_4 σ M ∗ stateVar γ q3_4 σ M := by
+  unfold stateVar
+  have h : (FracAgree.Frac.mk (1 : Qp) (⟨σ, M⟩ : ArrState H) : DFracAgreeR (ArrState H))
+      = FracAgree.Frac.mk q1_4 (⟨σ, M⟩ : ArrState H)
+        • FracAgree.Frac.mk q3_4 (⟨σ, M⟩ : ArrState H) := by
+    rw [← q1_4_add_q3_4]; exact FracAgree.Frac.mk_op.to_eq
+  rw [h]; exact iOwn_op
+
+theorem stateVar_full_update (γ : GName) (σ σ' : Arr) (M M' : H Data) :
+    stateVar (GF := GF) γ 1 σ M ⊢ |==> stateVar γ 1 σ' M' := by
+  unfold stateVar FracAgree.Frac.mk
+  exact iOwn_update (Update.exclusive ⟨DFrac.valid_own_one, Agree.toAgree_valid⟩)
+
+/-- Advancing the abstract state needs both halves, i.e. the writer must be inside
+    the atomic update.  This is what forces the linearisation point to be there. -/
+theorem stateVar_update (γ : GName) (σ σ' : Arr) (M M' : H Data) :
+    stateVar (GF := GF) γ q1_4 σ M ∗ stateVar γ q3_4 σ M ⊢
+      |==> (stateVar γ q1_4 σ' M' ∗ stateVar γ q3_4 σ' M') :=
+  (stateVar_split γ σ M).mpr.trans
+    ((stateVar_full_update γ σ σ' M M').trans (bupd_mono (stateVar_split γ σ' M').mp))
+
+theorem stateVar_alloc (σ : Arr) (M : H Data) :
+    ⊢@{IProp GF} |==> ∃ γ, stateVar γ 1 σ M := by
+  unfold stateVar FracAgree.Frac.mk
+  exact iOwn_alloc (F := ArrStateRF H) _ ⟨DFrac.valid_own_one, Agree.toAgree_valid⟩
+end Facts
 
 end RA
 
-variable {GF : BundledGFunctors} [LawfulFiniteMap H' Nat] [LawfulFiniteMap H Loc]
-variable [HeapLangGS hlc GF] [SpinLockG GF] [ArrG GF H H']
+variable {GF : BundledGFunctors} [LawfulFiniteMap H Nat]
+variable [HeapLangGS hlc GF] [RwLockG GF] [ArcG GF] [ArrG GF H]
 
-def isArrLockINV_pre (Ψ : GName → GName → Val → IProp GF) (γL γI : GName) (node : Val) : IProp GF := iprop%
-  ∃ (lk : Val) (γlock : GName) (ptr : Loc), ⌜node = hl_val((&lk, #ptr))⌝ ∗
-    SpinLock.isLock γlock lk iprop(
-      ∃ (x : Int) (nlk : Val),
-        (∃ id, idPointsto γI ptr id (DFrac.own (Qp.half 1))) ∗ -- do we really need this?
-        ((arrPointsto γL ptr x none (DFrac.own (Qp.half 1))) ∗
-          ptr ↦ hl_val((#x, none()))
-          ∨
-        (∃ loc: Loc, Ψ γL γI hl_val((&nlk, #loc)) ∗
-          ptr ↦ hl_val((#x, some((&nlk, #loc)))) ∗
-          arrPointsto γL ptr x (some loc) (DFrac.own (Qp.half 1)))))
+noncomputable section Resources
+
+omit [ArcG GF] in
+/-- Halve a platform read permit: one half is parked in the node slot, the other
+    stays with the thread so it can keep proving the platform lock is read-held. -/
+theorem rwGuardHalve (γ : GName) :
+    ⊢@{IProp GF} rwGuard γ .read -∗ rwGuardFrac γ .read q1_2 ∗ rwGuardFrac γ .read q1_2 := by
+  iintro H
+  iapply (RwLock.rwGuardFrac_split γ .read q1_2 q1_2).mp
+  rw [q1_2_add_q1_2, ← rwGuard_eq γ .read]
+  iexact H
+
+omit [ArcG GF] in
+/-- …and put the two halves back together. -/
+theorem rwGuardUnhalve (γ : GName) :
+    ⊢@{IProp GF} rwGuardFrac γ .read q1_2 -∗ rwGuardFrac γ .read q1_2 -∗ rwGuard γ .read := by
+  iintro H₁ H₂
+  rw [rwGuard_eq γ .read, ← q1_2_add_q1_2]
+  iapply (RwLock.rwGuardFrac_split γ .read q1_2 q1_2).mpr
+  iframe
+
+def arcHasStrong (γ : GName) : IProp GF := iprop%
+  ∃ n w : Nat, arcAuth γ n w ∗ ⌜n > 0⌝
+
+def arcNoStrong (γ : GName) : IProp GF := iprop%
+  ∃ w : Nat, arcAuth γ 0 w
+
+def nextIdOr (cells : List (Nat × Int)) (tail : Option Nat) : Option Nat :=
+  match cells with
+  | [] => tail
+  | (id, _) :: _ => some id
+
+def nextId? : List (Nat × Int) → Option Nat :=
+  λ l => nextIdOr l none
+
+def succRef (γ : GName) (node : Val) (id : Nat) : IProp GF := iprop%
+  ∃ d : Data, metaAt γ id d ∗ isArc d.arc node d.mux
+
+def livePayload (γ : GName) (d : Data): Option Nat → IProp GF
+  | none => iprop%
+      d.ptr ↦ hl_val((#false, (#d.val, none())))
+  | some id => iprop%
+      ∃ node : Val,
+        d.ptr ↦ hl_val((#false, (#d.val, some(&node)))) ∗
+        succRef γ node id
+
+abbrev alivePayload (γ : GName) (d : Data) (q : Qp) (nxt : Option Nat) : IProp GF := iprop%
+  cellAlive d.cell q nxt ∗ livePayload γ d nxt
+
+def revokedPayload (d : Data) : IProp GF := iprop%
+   cellDead d.cell ∗ d.ptr ↦ hl_val((#true, (#d.val, none())))
+
+omit [RwLockG GF] in
+theorem livePayload_ptr (γ : GName) (d : Data) (nxt : Option Nat) :
+    livePayload (GF := GF) γ d nxt ⊢ ∃ v : Val, d.ptr ↦ v := by
+  rcases nxt with _ | i <;> simp only [livePayload]
+  · iintro H
+    iexists _
+    iexact H
+  · iintro H
+    icases H with ⟨%nd, Hp, -⟩
+    iexists _
+    iexact Hp
+
+omit [RwLockG GF] [ArcG GF] in
+theorem revokedPayload_ptr (d : Data) :
+    revokedPayload (GF := GF) d ⊢ ∃ v : Val, d.ptr ↦ v := by
+  unfold revokedPayload
+  iintro H
+  icases H with ⟨-, Hp⟩
+  iexists _
+  iexact Hp
+
+omit [RwLockG GF] [ArcG GF] in
+theorem pointsTo_twice_False (l : Loc) (v w : Val) :
+    (iprop(l ↦ v ∗ l ↦ w) : IProp GF) ⊢ False := by
+  iintro ⟨H₁, H₂⟩
+  icases pointsTo_ne $$ H₁ H₂ with %Hne
+  ipureintro
+  exact Hne rfl
+
+abbrev Slot (GF : BundledGFunctors) [HeapLangGS hlc GF] [ArcG GF] [ArrG GF H] :=
+  Data → (Qp → IProp GF) → IProp GF → IProp GF
+
+abbrev aliveSlot (slot : Slot GF) (γ : GName) (d : Data) (nxt : Option Nat) : IProp GF :=
+  slot d (fun q => cellAlive d.cell q nxt) (livePayload γ d nxt)
+
+def isGhostHelp (slot : Slot GF) (γ : GName)
+    (tail : Option Nat) : List (Nat × Int) → IProp GF
+  | [] => iprop% emp
+  | (id, x) :: cells => iprop%
+      ∃ d : Data,
+        ⌜x = d.val⌝ ∗
+        metaAt γ id d ∗
+        aliveSlot slot γ d (nextIdOr cells tail) ∗
+        isGhostHelp slot γ tail cells
+
+def isGhost (slot : Slot GF) (γ : GName)
+    (cells : List (Nat × Int)) : IProp GF :=
+  isGhostHelp slot γ none cells
+
+def retiredSlot (slot : Slot GF) (d : Data) :
+    IProp GF := iprop%
+  cellDead d.cell ∗
+    (slot d (fun _ => iprop% emp) (revokedPayload d) ∨ arcNoStrong d.arc)
+
+def retiredNodes (slot : Slot GF) (M : H Data)
+    (cells : List (Nat × Int)) : IProp GF := iprop%
+  [∗map] id ↦ d ∈ M,
+    if id ∈ cells.map (·.1) then emp else retiredSlot slot d
+
+def nodeSlotShared (γP : GName) (d : Data) (C : Qp → IProp GF) (P : IProp GF) :
+    IProp GF := iprop%
+  arcHasStrong d.arc ∗
+    ∃ s : RwLock.State,
+    isRwLock d.rw d.mux s hl_val(#d.ptr) ∗
+    match s with
+    | .free =>
+        iprop% P ∗ C 1
+    | .write =>
+        /- The thread that write-locked this node parks *half* its platform read
+           permit here.  Keeping the other half is what lets it still prove the
+           platform lock is read-held while it works — and it cannot leave the
+           platform read lock without first releasing this node to get the half
+           back, since `read_release` only accepts a full permit. -/
+        iprop% rwGuardFrac γP RwLock.Mode.read q1_2 ∗ C q1_4
+    | .read _ =>
+        iprop% False
+
+def nodeSlotExclusive (d : Data) (C : Qp → IProp GF) (P : IProp GF) : IProp GF := iprop%
+  arcHasStrong d.arc ∗ isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗ C 1 ∗ P
+
+def sharedView (γ γP: GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
+  isGhost (nodeSlotShared γP) γ σ.cells ∗
+  retiredNodes (nodeSlotShared γP) M σ.cells
+
+def exclusiveView (γ : GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
+  isGhost nodeSlotExclusive γ σ.cells ∗ retiredNodes nodeSlotExclusive M σ.cells
+
+/-- The mutable *content* of the array: the metadata map, the two side conditions
+    `Arr.isArr` carries, and exclusive access to every node.  This is exactly what a
+    thread holding the platform write lock gets to play with. -/
+def arrContent (γ : Arrγ) (M : H Data) (σ : Arr) : IProp GF := iprop%
+  metaMap γ.l M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
+  exclusiveView γ.l M σ
+
+/-- The same content, but only shared (read) access to the nodes. -/
+def arrShared (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
+  metaMap γ.l M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
+  sharedView γ.l γp M σ
+
+/-- While the platform lock is write-held the content is *entirely* out with the
+    writing thread; all that stays behind is the `1/4` share of `stateVar`, which
+    pins `σ` and `M` so the abstract state cannot move until the writer comes back
+    inside the atomic update. -/
+def isPhysical (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
+    RwLock.State → IProp GF
+  | .write  => /- Sync -/ stateVar γ.s q1_4 σ M
+  | .read _ => iprop% arrShared γ γp M σ ∗ /- Sync -/ stateVar γ.s 1 σ M
+  | .free   => iprop% arrContent γ M σ ∗ /- Sync -/ stateVar γ.s 1 σ M
+
+def isPlatform (ρ : GName) (s : RwLock.State) (platform : Val) : IProp GF := iprop%
+  ∃ α : GName, ∃ gate : Val, ∃ cell : Loc,
+    arcHasStrong α ∗ isArc α platform gate ∗
+    isRwLock ρ gate s hl_val(#cell) ∗ cell ↦ hl_val(#())
+
+def Arr.isArr (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) : IProp GF := iprop%
+  ∃ s : RwLock.State, ∃ M : H Data,
+    isPlatform γp s platform ∗
+    isPhysical γ γp M σ s
+
+def Arr.isList (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
+  ∀ γp platform, isPlatform γp .free platform -∗ Arr.isArr γ γp σ platform
+
+def Arr.isId (γ : Arrγ) (node : Val) (id : Nat) : IProp GF := iprop%
+  ∃ d : Data, metaAt γ.l id d ∗ isArc d.arc node d.mux
 
 
--- TODO understand why this is so long
-instance isArrLockINV_pre.contractive : OFE.Contractive (isArrLockINV_pre (GF := GF)) := by
-  rw [contractive_internalEq (PROP := IProp GF)]
-  iintro %Ψ₁ %Ψ₂ #HEQ
-  iapply fun_extI; iintro %γL
-  iapply fun_extI; iintro %γI
-  iapply fun_extI; iintro %node
-  simp only [isArrLockINV_pre]
-  iapply prop_ext
+omit [RwLockG GF] in
+theorem arcNoStrong_isArc_False (γ : GName) (a x : Val) :
+    arcNoStrong γ ∗ isArc γ a x ⊢@{IProp GF} False := by
+  unfold arcNoStrong
+  iintro ⟨⟨%w, Hauth⟩, Harc⟩
+  ihave #Hpos : ⌜(0:Nat) > 0⌝ $$ [Hauth Harc]
+  · iapply Arc.arcAuth_isArc_valid
+    isplitl [Hauth] <;> iassumption
+  icases Hpos with %Hn
+  exact absurd Hn (Nat.lt_irrefl 0)
+
+theorem nodeSlotSharedUpgrade :
+  ⊢@{IProp GF} nodeSlotShared γP d C P -∗ isRwLock γP mux .free ptr -∗ nodeSlotExclusive d C P ∗ isRwLock γP mux .free ptr := by
+  iintro Hslot Hlock
+  unfold nodeSlotShared nodeSlotExclusive
+  icases Hslot with ⟨Harc, ⟨%s, H1, H2⟩⟩
+  rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+  · icases H2 with ⟨HP, HC⟩
+    iframe
+  · iframe
+    iexfalso
+    itrivial
+  · icases H2 with ⟨Hg, HC⟩
+    ihave Hf := (RwLock.rwGuardFrac_valid) $$ [Hlock Hg]
+    iframe Hlock Hg
+    icases Hf with %Hf
+    cases Hf
+
+theorem isGhostHelpUpgrade (cells : List (Nat × Int)) :
+    ⊢@{IProp GF}
+      isGhostHelp (nodeSlotShared γP) γ tail cells -∗
+      isRwLock γP mux .free ptr -∗
+      isGhostHelp nodeSlotExclusive γ tail cells ∗
+        isRwLock γP mux .free ptr := by
+  induction cells with
+  | nil =>
+      simp only [isGhostHelp]
+      iintro Hempty Hlock
+      iframe
+  | cons cell cells ih =>
+      simp only [isGhostHelp]
+      iintro Hghost Hlock
+      icases Hghost with ⟨%d, Hd, Hmeta, Hslot, Hrest⟩
+      ihave Hslot' := nodeSlotSharedUpgrade $$ Hslot Hlock
+      icases Hslot' with ⟨Hslot, Hlock⟩
+      ihave Hrest' := ih $$ Hrest Hlock
+      icases Hrest' with ⟨Hrest, Hlock⟩
+      iframe
+      iexists d
+      iframe
+theorem isGhostUpgrade :
+    ⊢@{IProp GF}
+      isGhost (nodeSlotShared γP) γ cells -∗
+      isRwLock γP mux .free ptr -∗
+      isGhost nodeSlotExclusive γ cells ∗ isRwLock γP mux .free ptr := by
+  iintro Hghost Hlock
+  unfold isGhost
+  iapply isGhostHelpUpgrade $$ Hghost Hlock
+omit [ArcG GF] [ArrG GF H] [RwLockG GF] in
+theorem bigSepM_acc_mono
+    {m : H Data}
+    {Φ Ψ : Nat → Data → IProp GF}
+    (step : ∀ k v, Φ k v -∗ A -∗ Ψ k v ∗ A) :
+    ⊢@{IProp GF} ([∗map] k ↦ v ∈ m, Φ k v) -∗ A -∗ ([∗map] k ↦ v ∈ m, Ψ k v) ∗ A := by
+  induction m using LawfulFiniteMap.induction_on with
+  | hemp =>
+      simp only [Algebra.BigOpM.bigOpM_empty]
+      iintro Hempty HA
+      iframe
+
+  | hins k v m hnone ih =>
+      iintro Hm HA
+
+      ihave Hm :=
+        (BigSepM.bigSepM_insert (Φ := Φ) hnone).mp $$ Hm
+      icases Hm with ⟨Hhead, Htail⟩
+
+      ihave Hhead' := step k v $$ Hhead HA
+      icases Hhead' with ⟨Hhead, HA⟩
+
+      ihave Htail' := ih $$ Htail HA
+      icases Htail' with ⟨Htail, HA⟩
+
+      isplitl [Hhead Htail]
+      · iapply (BigSepM.bigSepM_insert (Φ := Ψ) hnone).mpr
+        iframe
+      · iframe
+theorem retiredNodesUpgrade (M : H Data):
+    ⊢@{IProp GF}
+      retiredNodes (nodeSlotShared γP) M cells -∗
+      isRwLock γP mux .free ptr -∗
+      retiredNodes nodeSlotExclusive M cells ∗ isRwLock γP mux .free ptr := by
+  unfold retiredNodes
+  iapply bigSepM_acc_mono
+  iintro %id %d Hentry Hlock
+  by_cases h : id ∈ cells.map (·.1)
+  · simp only [h, if_true]
+    iframe
+  · simp only [h, if_false, retiredSlot]
+    icases Hentry with ⟨#Hcd, Hslot | Hdead⟩
+    · ihave Hslot' := nodeSlotSharedUpgrade $$ Hslot Hlock
+      icases Hslot' with ⟨Hslot, Hlock⟩
+      iframe Hlock Hcd
+      ileft
+      iframe
+    · iframe Hcd
+      iframe
+
+
+theorem sharedViewUpgrade (γ γP : GName) (M : H Data) (σ : Arr) :
+    ⊢@{IProp GF} sharedView γ γP M σ -∗ isRwLock γP mux .free ptr -∗ exclusiveView γ M σ ∗ isRwLock γP mux .free ptr := by
+  iintro Hshared Hlock
+  unfold sharedView exclusiveView
+  icases Hshared with ⟨Hghost, Hretired⟩
+
+  ihave Hghost' := isGhostUpgrade $$ Hghost Hlock
+  icases Hghost' with ⟨Hghost, Hlock⟩
+
+  ihave Hretired' := retiredNodesUpgrade $$ Hretired Hlock
+  icases Hretired' with ⟨Hretired, Hlock⟩
+
+  iframe
+def nodeSlotExclusiveDowngrad (d : Data) (C : Qp → IProp GF) (P : IProp GF) :
+    nodeSlotExclusive d C P ⊢@{IProp GF} nodeSlotShared γP d C P := by
+  unfold nodeSlotExclusive nodeSlotShared
+  iintro H
+  icases H with ⟨Harc, Hlock, HC, HP⟩
+  iframe
+  iexists .free
+  dsimp
+  iframe
+
+def exclusiveViewDowngrad : exclusiveView γ M σ ⊢@{IProp GF} sharedView γ γP M σ := by
+  unfold exclusiveView sharedView
+  iintro H
+  icases H with ⟨Hlive, Hretired⟩
+  isplitl [Hlive]
+  · unfold isGhost
+    induction σ.cells with
+    | nil =>
+      simp only [isGhostHelp]
+      itrivial
+    | cons cell cells ih =>
+      simp only [isGhostHelp]
+      icases Hlive with ⟨%d, Hd, Hmeta, Hslot, Hrest⟩
+      iexists d
+      iframe
+      isplitl [Hslot]
+      · iapply nodeSlotExclusiveDowngrad $$ Hslot
+      · apply ih
+  · unfold retiredNodes
+    iapply BigSepM.bigSepM_mono_of_forall $$ Hretired
+    iintro %x %y H
+    by_cases h : x ∈ σ.cells.map (·.1)
+    · simp [h]; itrivial
+    · simp only [h, if_false, retiredSlot]
+      icases H with ⟨#Hcd, Hlive | Hdead⟩
+      · iframe Hcd
+        ileft
+        iapply nodeSlotExclusiveDowngrad $$ Hlive
+      · iframe Hcd
+        iright
+        iframe
+
+omit [RwLockG GF] in
+theorem retiredNodesAccNotIn {M : H Data} {cells} {id}
+    (hl : get? M id = some d) (hnotin : id ∉ cells.map (·.1)) :
+    retiredNodes slot M cells ⊢@{IProp GF}
+      retiredSlot slot d ∗ (retiredSlot slot d -∗ retiredNodes slot M cells) := by
+  unfold retiredNodes
+  refine (BigSepM.bigSepM_lookup_acc
+    (Φ := fun k v => if k ∈ cells.map (·.1) then emp else retiredSlot slot v)
+    hl).1.trans ?_
+  rw [if_neg hnotin]
+  exact .rfl
+
+omit [RwLockG GF] in
+/-- Accessor for a **live** node, the mirror image of `retiredNodesAccNotIn`: that one
+    digs into the map big-op `retiredNodes`, this one into the list recursion
+    `isGhostHelp`.
+
+    Two things deserve note.  First, it hands out the *whole slot*, not the payload:
+    the payload lives only in the `.free` branch of `nodeSlotShared`, so a node that
+    somebody else currently holds write-locked has none.  Extracting it requires
+    learning `s = .free`, which only `RwLock.write_acquire`'s commit can tell you.
+    Second, `nxt` is existential — the successor is pinned by the `1/4` vs `3/4`
+    confrontation on `cellAlive`, not by this lemma. -/
+theorem isGhostHelpAccIn (γ : GName) (d : Data)
+    (slot : Slot GF)
+    (tail : Option Nat) (id : Nat) :
+    ∀ cells : List (Nat × Int), id ∈ cells.map (·.1) →
+    metaAt γ id d ⊢@{IProp GF} isGhostHelp slot γ tail cells -∗
+      ∃ nxt : Option Nat,
+        aliveSlot slot γ d nxt ∗
+        (aliveSlot slot γ d nxt -∗
+          isGhostHelp slot γ tail cells) := by
+  intro cells
+  induction cells with
+  | nil => intro h; exact absurd h (by simp)
+  | cons c cells ih =>
+    rcases c with ⟨id', x⟩
+    intro hin
+    iintro #Hmeta Hlist
+    simp only [isGhostHelp]
+    icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+    by_cases hhead : id' = id
+    · subst hhead
+      ihave %hd := metaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iexists (nextIdOr cells tail)
+      iframe Hslot
+      iintro Hslot
+      iexists d'
+      iframe Hmeta' Hslot Hrest
+      ipureintro
+      exact hval
+    · have hin' : id ∈ cells.map (·.1) := by
+        simp only [List.map_cons, List.mem_cons] at hin
+        rcases hin with h | h
+        · exact absurd h.symm hhead
+        · exact h
+      ihave Hacc := ih hin' $$ Hmeta Hrest
+      icases Hacc with ⟨%nxt, Hslot', Hback⟩
+      iexists nxt
+      iframe Hslot'
+      iintro Hslot'
+      ihave Hrest' := Hback $$ Hslot'
+      iexists d'
+      iframe Hmeta' Hslot Hrest'
+      ipureintro
+      exact hval
+
+omit [RwLockG GF] in
+/-- `isGhost` is `isGhostHelp` at `tail = none`. -/
+theorem isGhostAccIn (γ : GName) (d : Data)
+    (slot : Slot GF)
+    (id : Nat) (cells : List (Nat × Int)) (hin : id ∈ cells.map (·.1)) :
+    metaAt γ id d ⊢@{IProp GF} isGhost slot γ cells -∗
+      ∃ nxt : Option Nat,
+        aliveSlot slot γ d nxt ∗
+        (aliveSlot slot γ d nxt -∗
+          isGhost slot γ cells) :=
+  isGhostHelpAccIn γ d slot none id cells hin
+
+/-! ### Reading a node's status off the cell witness
+
+These two are the reason `cellDead` is hoisted out of `retiredSlot`: they turn a
+*resource* you happen to be holding into a *decision* about the current `σ`, at any
+lock state.  They are strictly stronger than carrying `⌜id ∈ σ.cells⌝` around in a
+spec, because they apply to every future `σ`, not to a snapshot. -/
+
+/-- Holding any share of the live witness proves the node is still in `σ`. -/
+theorem cellAlive_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d : Data)
+    (q : Qp) (nxt : Option Nat) (hl : get? M id = some d) :
+    ⊢@{IProp GF} metaAt γ id d -∗ cellAlive d.cell q nxt -∗ sharedView γ γp M σ -∗
+      ⌜id ∈ σ.cells.map (·.1)⌝ := by
+  iintro #Hmeta Halive Hview
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · ipureintro
+    exact hin
+  · unfold sharedView
+    icases Hview with ⟨-, Hretired⟩
+    ihave ⟨Hslot, -⟩ := retiredNodesAccNotIn hl hin $$ Hretired
+    iunfold retiredSlot at Hslot
+    icases Hslot with ⟨#Hcd, -⟩
+    iexfalso
+    iapply cellAlive_dead_False d.cell q nxt
+    isplitl [Halive] <;> iassumption
+
+/-- Dually, the persistent dead witness proves the node has left `σ`.  Here no
+    hoisting is needed: a *live* slot carries `cellAlive` in **every** lock state
+    (at `1` when free, at `1/4` when write-locked), so the refutation always lands. -/
+theorem cellDead_not_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d : Data) :
+    ⊢@{IProp GF} metaAt γ id d -∗ cellDead d.cell -∗ sharedView γ γp M σ -∗
+      ⌜id ∉ σ.cells.map (·.1)⌝ := by
+  iintro #Hmeta #Hcd Hview
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · unfold sharedView
+    icases Hview with ⟨Hghost, -⟩
+    ihave Hacc := isGhostAccIn γ d (nodeSlotShared γp) id σ.cells hin $$ Hmeta Hghost
+    icases Hacc with ⟨%nxt, Hslot, -⟩
+    iunfold nodeSlotShared at Hslot
+    icases Hslot with ⟨-, %s, -, Hstate⟩
+    iexfalso
+    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+    · icases Hstate with ⟨-, Halive⟩
+      iapply cellAlive_dead_False d.cell 1 nxt
+      isplitl [Halive] <;> iassumption
+    · iexact Hstate
+    · icases Hstate with ⟨-, Halive⟩
+      iapply cellAlive_dead_False d.cell q1_4 nxt
+      isplitl [Halive] <;> iassumption
+  · ipureintro
+    exact hin
+
+theorem sharedViewWriteAcquireSpec
+    (γ : Arrγ) (γp : GName) (d : Data) (id : Nat) (node : Val) :
+    ⊢@{IProp GF}
+      rwGuard γp .read -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      ⟪ ∀ σ, ∀ M, metaMap γ.l M ∗ sharedView γ.l γp M σ ⟫
+        hl(&RwLock.write_acquire &d.mux) @ ∅
+      ⟪ sharedView γ.l γp M σ ∗ rwGuard d.rw .write ∗ isArc d.arc node d.mux ∗
+          rwGuardFrac γp .read q1_2 ∗
+          ((∃ nxt, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d)
+        | RET hl_val(#d.ptr) ⟫ := by
+  iintro H #Hg HArc %Φ HAU
+  iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+  iauintro
+  iapply aacc_aupd_commit $$ HAU
+  simp
+  itele_reduce
+  iintro %σ %M ⟨HM, Hslot⟩
+  unfold sharedView
+  icases Hslot with ⟨Hghost, Hretired⟩
+  ihave %Hl := metaMap_lookup $$ HM Hg -- HM should not be consummed
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · ihave Hacc := isGhostAccIn γ.l d (nodeSlotShared γp) id σ.cells hin $$ Hg Hghost
+    icases Hacc with ⟨%nxt, Hslot, Hback⟩
+    iunfold nodeSlotShared at Hslot
+    icases Hslot with ⟨Harc, %s, Hlock, Hstate⟩
+    itele_reduce
+    iaaccintro' with Hlock
+    · -- ABORT: the CAS failed, so put the slot back in exactly the state we found it
+      iintro Hlock
+      imodintro
+      ihave Hslot :
+          aliveSlot (nodeSlotShared γp) γ.l d nxt
+          $$ [Harc Hlock Hstate]
+      · unfold aliveSlot nodeSlotShared
+        iframe Harc
+        iexists s
+        iframe Hlock Hstate
+      ihave Hghost := Hback $$ Hslot
+      iframe HM Hghost Hretired
+      iintro Hau
+      imodintro
+      iframe Hau HArc H Hg
+    · -- COMMIT: the CAS succeeded, so `s = .free` and the payload is ours
+      iintro %_ ⟨Hlock, Hguard, %hs⟩
+      subst hs
+      imodintro
+      dsimp
+      itele_reduce
+      iexists _
+      trivial
+      icases Hstate with ⟨HP, HC⟩
+      -- 1/4 stays behind in the invariant, 3/4 goes out with the caller
+      icases (cellAlive_split d.cell nxt).mp $$ HC with ⟨HC14, HC34⟩
+      -- half the platform read permit is parked in the slot, half stays with us
+      icases rwGuardHalve γp $$ H with ⟨Hdep, Hkeep⟩
+      ihave Hslot :
+          aliveSlot (nodeSlotShared γp) γ.l d nxt
+          $$ [Harc Hlock HC14 Hdep]
+      · unfold aliveSlot nodeSlotShared
+        iframe Harc
+        iexists .write
+        dsimp
+        iframe Hlock Hdep HC14
+      ihave Hghost := Hback $$ Hslot
+      iframe Hghost Hretired Hguard HArc Hkeep
+      isplitl [HC34 HP]
+      · ileft
+        iexists nxt
+        unfold alivePayload
+        iframe HC34 HP
+      · iintro Hau
+        imodintro
+        itrivial
+  · ihave ⟨Hslot, Hother⟩ := retiredNodesAccNotIn Hl hin $$ Hretired
+    iunfold retiredSlot at Hslot
+    icases Hslot with ⟨#Hcd, Hlive | Hdead⟩
+    iunfold nodeSlotShared at Hlive
+    icases Hlive with ⟨Harc, %s, Hlock, Hstate⟩
+    itele_reduce
+    iaaccintro' with Hlock
+    · iintro Hlock
+      imodintro
+      iframe
+      isplitl [Hother Harc Hstate Hlock]
+      iapply Hother
+      unfold retiredSlot
+      iframe Hcd
+      ileft
+      unfold nodeSlotShared
+      iframe
+      iexists s
+      iframe
+      iintro Hau
+      imodintro
+      iframe
+      iintuitionistic Hg
+      iexact Hg
+    · iintro %_  ⟨Hlock, Hguard, %hs⟩
+      subst hs
+      imodintro
+      dsimp
+      itele_reduce
+      iexists _
+      trivial
+      icases rwGuardHalve γp $$ H with ⟨Hdep, Hkeep⟩
+      iframe Hkeep
+      iframe
+      isplitl
+      · isplitl [Hother Harc Hlock Hdep]
+        iapply Hother
+        unfold retiredSlot
+        iframe Hcd
+        ileft
+        unfold nodeSlotShared
+        iframe
+        iexists .write
+        dsimp
+        iframe
+        iright
+        icases Hstate with ⟨HP, HC⟩
+        iframe
+      · iintro H
+        imodintro
+        itrivial
+    ihave Hfalso := arcNoStrong_isArc_False $$ [Hdead HArc]
+    iframe
+    iexfalso; itrivial
+
+
+/-- Releasing a node's write lock, the exact inverse of `sharedViewWriteAcquireSpec`.
+
+    You hand back whichever bundle you took out and reclaim the platform read guard
+    you deposited — the deposit is what stops anyone from leaving the platform read
+    lock while still holding a node write-locked.
+
+    There is no `⌜id ∈ σ.cells⌝` side condition: which case applies is decided by
+    *which resource you hold*, via `cellAlive_mem` / `cellDead_not_mem`.  That is
+    strictly stronger than a pure snapshot, since those lemmas speak about the `σ`
+    at *this* linearisation point, not the one where the lock was taken. -/
+theorem sharedViewWriteReleaseSpec
+    (γ : Arrγ) (γp : GName) (d : Data) (id : Nat) (node : Val) :
+    ⊢@{IProp GF}
+      metaAt γ.l id d -∗ isArc d.arc node d.mux -∗ rwGuard d.rw .write -∗
+      rwGuardFrac γp .read q1_2 -∗
+      ((∃ nxt : Option Nat, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d) -∗
+      ⟪ ∀ σ, ∀ M, metaMap γ.l M ∗ sharedView γ.l γp M σ ⟫
+        hl(&RwLock.write_release &d.mux) @ ∅
+      ⟪ metaMap γ.l M ∗ sharedView γ.l γp M σ ∗
+          isArc d.arc node d.mux ∗ rwGuard γp .read
+        | RET hl_val(#()) ⟫ := by
+  iintro #Hg HArc Hguard Hkeep Hpay %Φ HAU
+  iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
+  iauintro
+  iapply aacc_aupd_commit $$ HAU
+  simp
+  itele_reduce
+  iintro %σ %M ⟨HM, Hview⟩
+  ihave #Hl : ⌜get? M id = some d⌝ $$ [HM Hg]
+  · iapply metaMap_lookup γ.l M id d $$ HM Hg
+  icases Hl with %Hl
+  icases Hpay with ⟨⟨%nxt, Hcell, HP⟩ | Hrev⟩
+  · -- the node is still live: locate its slot inside `isGhost`
+    ihave #hin : ⌜id ∈ σ.cells.map (·.1)⌝ $$ [Hcell Hview Hg]
+    · iapply cellAlive_mem γ.l γp M σ id d q3_4 nxt Hl $$ Hg Hcell Hview
+    icases hin with %hin
+    unfold sharedView
+    icases Hview with ⟨Hghost, Hretired⟩
+    ihave Hacc := isGhostAccIn γ.l d (nodeSlotShared γp) id σ.cells hin $$ Hg Hghost
+    icases Hacc with ⟨%nxt', Hslot, Hback⟩
+    iunfold nodeSlotShared at Hslot
+    icases Hslot with ⟨Harc, %s, Hlock, Hstate⟩
+    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+    · -- `.free` is impossible: we are holding the payload out here
+      icases Hstate with ⟨HP', -⟩
+      iexfalso
+      ihave ⟨%v, Hp⟩ := livePayload_ptr γ.l d nxt $$ HP
+      ihave ⟨%v', Hp'⟩ := livePayload_ptr γ.l d nxt' $$ HP'
+      iapply pointsTo_twice_False d.ptr v v'
+      isplitl [Hp] <;> iassumption
+    · iexfalso
+      iexact Hstate
+    · icases Hstate with ⟨Hdep, Hcell14⟩
+      ihave #hnx : ⌜nxt = nxt'⌝ $$ [Hcell Hcell14]
+      · iapply cellAlive_agree d.cell q3_4 q1_4 nxt nxt'
+        isplitl [Hcell] <;> iassumption
+      icases hnx with %hnx
+      subst hnx
+      iaaccintro' with Hlock
+      · -- ABORT: nothing happened, park the slot back in `.write`
+        iintro Hlock
+        imodintro
+        ihave Hpay : ((∃ n : Option Nat, alivePayload γ.l d q3_4 n) ∨ revokedPayload d)
+            $$ [Hcell HP]
+        · ileft
+          iexists nxt
+          unfold alivePayload
+          iframe Hcell HP
+        ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d nxt $$ [Harc Hlock Hdep Hcell14]
+        · unfold aliveSlot nodeSlotShared
+          iframe Harc
+          iexists .write
+          dsimp
+          iframe Hlock Hdep Hcell14
+        ihave Hghost := Hback $$ Hslot
+        iframe HM Hghost Hretired Hpay
+        iintro Hau
+        imodintro
+        iframe
+        iintuitionistic Hg
+        iexact Hg
+      · -- COMMIT: the lock is free again, so the full cell and payload go back in
+        iintro %_ Hlock
+        imodintro
+        itele_reduce
+        iexists _
+        trivial
+        ihave Hfull := (cellAlive_split d.cell nxt).mpr $$ [Hcell14 Hcell]
+        · isplitl [Hcell14] <;> iassumption
+        ihave Hslot : aliveSlot (nodeSlotShared γp) γ.l d nxt $$ [Harc Hlock Hfull HP]
+        · unfold aliveSlot nodeSlotShared
+          iframe Harc
+          iexists .free
+          dsimp
+          iframe Hlock HP Hfull
+        ihave Hghost := Hback $$ Hslot
+        ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
+        iframe Hghost Hretired HM HArc Hfullguard
+        iintro Hau
+        imodintro
+        itrivial
+  · -- the node has been revoked: its slot lives in `retiredNodes`
+    iunfold revokedPayload at Hrev
+    icases Hrev with ⟨#Hcd, Hptr⟩
+    ihave #hnotin : ⌜id ∉ σ.cells.map (·.1)⌝ $$ [Hview Hg Hcd]
+    · iapply cellDead_not_mem γ.l γp M σ id d $$ Hg Hcd Hview
+    icases hnotin with %hnotin
+    unfold sharedView
+    icases Hview with ⟨Hghost, Hretired⟩
+    ihave ⟨Hslot, Hback⟩ := retiredNodesAccNotIn Hl hnotin $$ Hretired
+    iunfold retiredSlot at Hslot
+    icases Hslot with ⟨-, Hlive | Hdead⟩
+    · iunfold nodeSlotShared at Hlive
+      icases Hlive with ⟨Harc, %s, Hlock, Hstate⟩
+      rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp
+      · icases Hstate with ⟨HP', -⟩
+        iexfalso
+        ihave ⟨%v', Hp'⟩ := revokedPayload_ptr d $$ HP'
+        iapply pointsTo_twice_False d.ptr hl_val((#true, (#d.val, none()))) v'
+        isplitl [Hptr] <;> iassumption
+      · iexfalso
+        iexact Hstate
+      · icases Hstate with ⟨Hdep, -⟩
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          ihave Hslot : retiredSlot (nodeSlotShared γp) d $$ [Harc Hlock Hdep Hcd]
+          · unfold retiredSlot nodeSlotShared
+            iframe Hcd
+            ileft
+            iframe Harc
+            iexists .write
+            dsimp
+            iframe Hlock Hdep
+          ihave Hretired := Hback $$ Hslot
+          ihave Hpay : ((∃ n : Option Nat, alivePayload γ.l d q3_4 n) ∨ revokedPayload d)
+              $$ [Hptr Hcd]
+          · iright
+            unfold revokedPayload
+            iframe Hcd Hptr
+          iframe HM Hghost Hretired Hpay
+          iintro Hau
+          imodintro
+          iframe
+          iintuitionistic Hg
+          iexact Hg
+        · iintro %_ Hlock
+          imodintro
+          itele_reduce
+          iexists _
+          trivial
+          ihave Hslot : retiredSlot (nodeSlotShared γp) d $$ [Harc Hlock Hptr Hcd]
+          · unfold retiredSlot nodeSlotShared revokedPayload
+            iframe Hcd
+            ileft
+            iframe Harc
+            iexists .free
+            dsimp
+            iframe Hlock Hptr Hcd
+          ihave Hretired := Hback $$ Hslot
+          ihave Hfullguard := rwGuardUnhalve γp $$ Hdep Hkeep
+          iframe Hghost Hretired HM HArc Hfullguard
+          iintro Hau
+          imodintro
+          itrivial
+    · iexfalso
+      iapply arcNoStrong_isArc_False d.arc node d.mux
+      isplitl [Hdead] <;> iassumption
+
+
+theorem nodeSlotShared_write_acquire_spec (d : Data) (P : IProp GF) :
+    ⊢@{IProp GF}
+    rwGuard γ .read -∗
+      ⟪ nodeSlotShared γ d P ⟫
+        hl(&RwLock.write_acquire &d.mux) @ ∅
+      ⟪ nodeSlotShared γ d P ∗ rwGuard d.rw .write ∗ P
+        | RET hl_val(#d.ptr) ⟫ := by
+
+
+
+theorem nodeSlotShared_write_release_spec (d : Data) (P : IProp GF) :
+    ⊢@{IProp GF}
+      rwGuard d.rw .write -∗ P -∗
+      ⟪ arcHasStrong d.arc ∗
+          isRwLock d.rw d.mux .write hl_val(#d.ptr) ⟫
+        hl(&RwLock.write_release &d.mux) @ ∅
+      ⟪ nodeSlotShared d P | RET hl_val(#()) ⟫ := by
+  iintro Hguard HP %Φ HAU
+  iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨Hslot, Hclose⟩
+  icases Hslot with ⟨Harc, Hlock⟩
   imodintro
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      iframe HP
+      iapply Habort
+      iframe
+    · iintro Hlock
+      icases Hclose with ⟨-, Hcommit⟩
+      iapply Hcommit
+      iapply (nodeSlotShared_unfold d P).mpr
+      iexists .free
+      iframe
+
+
+
+theorem liveSegment_append (slot : Data → IProp GF → IProp GF)
+    (γ : GName) (M : H Data) (left right : List (Nat × Int)) (tail : Option Nat) :
+    liveSegment slot γ M tail (left ++ right) ⊣⊢
+      liveSegment slot γ M (Arr.nextIdOr right tail) left ∗
+      liveSegment slot γ M tail right := by
+  induction left with
+  | nil =>
+      simp only [List.nil_append, liveSegment]
+      exact (emp_sep (PROP := IProp GF)).symm
+  | cons cell left ih =>
+      rcases cell with ⟨id, x⟩
+      simp only [List.cons_append, liveSegment, Arr.nextIdOr_append]
+      isplit
+      · iintro H
+        icases H with ⟨%d, Hd, Hslot, Hrest⟩
+        icases ih.mp $$ Hrest with ⟨Hleft, Hright⟩
+        isplitr [Hright]
+        · iexists d
+          iframe
+        · iexact Hright
+      · iintro H
+        icases H with ⟨Hleft, Hright⟩
+        icases Hleft with ⟨%d, Hd, Hslot, Hleft⟩
+        iexists d
+        iframe
+        iapply ih.mpr
+        iframe
+
+
+theorem liveSpine_append (slot : Data → IProp GF → IProp GF)
+    (γ : GName) (M : H Data) (left right : List (Nat × Int)) :
+    liveSpine slot γ M (left ++ right) ⊣⊢
+      isGhostHelp slot γ M (Arr.nextId right) left ∗
+      isGhost slot γ M right := by
+  exact isGhostHelp_append slot γ M left right none
+
+
+theorem liveSpine_split_at (slot : Data → IProp GF → IProp GF)
+    (γ : GName) (M : H Data) (pre post : List (Nat × Int)) (id : Nat) (x : Int) :
+    liveSpine slot γ M (pre ++ (id, x) :: post) ⊣⊢
+      liveSegment slot γ M (some id) pre ∗
+      ∃ d : Data,
+        metaAt γ id d ∗
+        slot d (livePayload γ d x (Arr.nextId post)) ∗
+        liveSpine slot γ M post := by
+  simpa [Arr.nextId, Arr.nextIdOr, liveSpine, liveSegment] using
+    liveSpine_append slot γ M pre ((id, x) :: post)
+
+
+omit [ArrG GF H] in
+theorem retiredNodes_congr (slot : Data → IProp GF → IProp GF) (M : H Data)
+    (cells₁ cells₂ : List (Nat × Int))
+    (hmem : ∀ id, id ∈ cells₁.map (·.1) ↔ id ∈ cells₂.map (·.1)) :
+    retiredNodes slot M cells₁ ⊣⊢ retiredNodes slot M cells₂ := by
+  unfold retiredNodes
+  apply BI.equiv_iff.mp
+  apply BigSepM.bigSepM_eqv
+  intro id d _
+  by_cases h₁ : id ∈ cells₁.map (·.1)
+  · have h₂ := (hmem id).mp h₁
+    simp [h₁, h₂]
+  · have h₂ : id ∉ cells₂.map (·.1) := fun h => h₁ ((hmem id).mpr h)
+    simp [h₁, h₂]
+
+omit [ArrG GF H] in
+theorem retiredNodes_delete (slot : Data → IProp GF → IProp GF)
+    (M : H Data) (cells : List (Nat × Int)) (id : Nat) (d : Data)
+    (hlookup : get? M id = some d) (hretired : id ∉ cells.map (·.1)) :
+    retiredNodes slot M cells ⊣⊢
+      retiredSlot slot d ∗ retiredNodes slot (delete M id) cells := by
+  unfold retiredNodes
+  refine (BigSepM.bigSepM_delete
+    (Φ := fun id d => if id ∈ cells.map (·.1) then emp else retiredSlot slot d)
+    hlookup).trans ?_
+  rw [if_neg hretired]
+  exact .rfl
+
+omit [ArrG GF H] in
+theorem retiredNodes_delete_live (slot : Data → IProp GF → IProp GF)
+    (M : H Data) (cells : List (Nat × Int)) (id : Nat) (d : Data)
+    (hlookup : get? M id = some d) (hlive : id ∈ cells.map (·.1)) :
+    retiredNodes slot M cells ⊣⊢ retiredNodes slot (delete M id) cells := by
+  unfold retiredNodes
+  refine (BigSepM.bigSepM_delete
+    (Φ := fun id d => if id ∈ cells.map (·.1) then emp else retiredSlot slot d)
+    hlookup).trans ?_
+  rw [if_pos hlive]
+  exact (emp_sep (PROP := IProp GF))
+
+omit [ArrG GF H] in
+theorem retiredNodes_insert_live (slot : Data → IProp GF → IProp GF)
+    (M : H Data) (oldCells newCells : List (Nat × Int)) (id : Nat) (d : Data)
+    (fresh : get? M id = none) (hlive : id ∈ newCells.map (·.1))
+    (hsame : ∀ k v, get? M k = some v →
+      (k ∈ newCells.map (·.1) ↔ k ∈ oldCells.map (·.1))) :
+    retiredNodes slot (insert M id d) newCells ⊣⊢
+      retiredNodes slot M oldCells := by
+  unfold retiredNodes
+  refine (BigSepM.bigSepM_insert
+    (Φ := fun id d => if id ∈ newCells.map (·.1) then emp else retiredSlot slot d)
+    fresh).trans ?_
+  rw [if_pos hlive]
+  refine (emp_sep (PROP := IProp GF)).trans ?_
+  apply BI.equiv_iff.mp
+  apply BigSepM.bigSepM_eqv
+  intro k v hlookup
+  have hmem := hsame k v hlookup
+  by_cases hnew : k ∈ newCells.map (·.1)
+  · have hold := hmem.mp hnew
+    simp [hnew, hold]
+  · have hold : k ∉ oldCells.map (·.1) := fun h => hnew (hmem.mpr h)
+    simp [hnew, hold]
+
+
+
+
+
+
+
+
+theorem isPhysical_read_acquire_first (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
+    isPhysical γ γp M σ .free ⊢@{IProp GF} isPhysical γ γp M σ (.read 1) := by
+  simp only [isPhysical, arrContent, arrShared]
+  iintro H
+  icases H with ⟨⟨HM, %hwf, %hdom, Hview⟩, Hstate⟩
+  iframe
   isplit
-  · iintro ⟨%lk, %γlock, %ptr, %Hn, H⟩
-    iexists lk, γlock, ptr
-    isplit
-    · ipureintro; exact Hn
-    iapply SpinLock.is_lock_iff $$ H
-    iintro !> !>
-    irewrite [HEQ]
-    · exact ⟨fun _ _ _ h => wandIff_ne.ne (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => BI.sep_ne.ne .rfl (BI.or_ne.ne .rfl (exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL γI hl_val((&nlk, #loc))) .rfl)))))) .rfl⟩
-    · iapply equiv_wandIff; exact .rfl
-  · iintro ⟨%lk, %γlock, %ptr, %Hn, H⟩
-    iexists lk, γlock, ptr
-    isplit
-    · ipureintro; exact Hn
-    iapply SpinLock.is_lock_iff $$ H
-    iintro !> !>
-    irewrite [HEQ]
-    · exact ⟨fun _ _ _ h => wandIff_ne.ne .rfl (exists_ne (fun (x : Int) => exists_ne (fun (nlk : Val) => BI.sep_ne.ne .rfl (BI.or_ne.ne .rfl (exists_ne (fun (loc : Loc) => BI.sep_ne.ne (h γL γI hl_val((&nlk, #loc))) .rfl))))))⟩
-    · iapply equiv_wandIff; exact .rfl
+  · ipureintro; exact hwf
+  isplit
+  · ipureintro; exact hdom
+  iapply exclusiveViewDowngrad $$ Hview
+
+/-- Joining an already-read-locked platform changes nothing: `isPhysical` does not
+    look at the reader count, so this is definitional. -/
+theorem isPhysical_read_acquire_more (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) (n : Nat) :
+    isPhysical γ γp M σ (.read n) ⊢@{IProp GF} isPhysical γ γp M σ (.read (n + 1)) := .rfl
+
+/-- Leaving while other readers remain: same, definitional. -/
+theorem isPhysical_read_release_nonlast (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) (n : Nat) :
+    isPhysical γ γp M σ (.read (n + 1)) ⊢@{IProp GF} isPhysical γ γp M σ (.read n) := .rfl
+
+theorem isPhysical_read_release_last (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
+    ⊢@{IProp GF}
+      isPhysical γ γp M σ (.read 1) -∗ isRwLock γp mux .free ptr -∗
+        isPhysical γ γp M σ .free ∗ isRwLock γp mux .free ptr := by
+  simp only [isPhysical, arrContent, arrShared]
+  iintro H Hlock
+  icases H with ⟨⟨HM, %hwf, %hdom, Hview⟩, Hstate⟩
+  ihave Hview' := sharedViewUpgrade $$ Hview Hlock
+  icases Hview' with ⟨Hview, Hlock⟩
+  iframe
+  isplit
+  · ipureintro; exact hwf
+  ipureintro; exact hdom
 
 
-def isArrLockINV : GName → GName → Val → IProp GF := fixpoint isArrLockINV_pre
-
-theorem isArrLockINV_unfold (γL γI : GName) (v : Val) :
-    isArrLockINV γL γI v ⊣⊢@{IProp GF} isArrLockINV_pre isArrLockINV γL γI v :=
-    equiv_iff.mp (fixpoint_unfold
-      (f := Function.toContractiveHom (isArrLockINV_pre (GF := GF) (H := H) (H' := H'))) γL γI v)
-
-instance isArrLockINV.persistent (γL γI : GName) (v : Val) : Persistent (PROP := IProp GF) (isArrLockINV γL γI v) := by
-  have _hHH : (H, H') = (H, H') := rfl   -- pull phantom H, H' into local scope so `Contractive` can synthesize
-  have Hunf : isArrLockINV γL γI v ⊣⊢ isArrLockINV_pre isArrLockINV γL γI v :=
-    equiv_iff.mp (fixpoint_unfold
-      (f := Function.toContractiveHom (isArrLockINV_pre (GF := GF) (H := H) (H' := H'))) γL γI v)
-  have Hp : Persistent (PROP := IProp GF) (isArrLockINV_pre isArrLockINV γL γI v) := by
-    unfold isArrLockINV_pre; infer_instance
-  exact ⟨Hunf.mp.trans (Hp.persistent.trans (persistently_mono Hunf.mpr))⟩
-
-def contents (γL γI : GName) (v : Val) (ar : List (Nat × Int)) : IProp GF :=
-  match ar with
-  | [] => iprop(True)
-  | [(id, x)] => iprop%
-    ∃ (lk : Val) (ptr : Loc),
-      ⌜v = hl_val((&lk, #ptr))⌝ ∗
-      arrPointsto γL ptr x none (DFrac.own (Qp.half 1)) ∗
-      idPointsto γI ptr id (DFrac.own (Qp.half 1))
-  | (id, x) :: cs => iprop%
-    ∃ (lk : Val) (ptr : Loc) (nlk : Val) (next : Loc),
-      ⌜v = hl_val((&lk, #ptr))⌝ ∗
-      arrPointsto γL ptr x (some next) (DFrac.own (Qp.half 1)) ∗
-      idPointsto γI ptr id (DFrac.own (Qp.half 1)) ∗
-      contents γL γI hl_val((&nlk, #next)) cs
+theorem isPhysical_write_acquire (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
+    isPhysical γ γp M σ .free ⊢@{IProp GF}
+      (arrContent γ M σ ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write := by
+  simp only [isPhysical]
+  iintro H
+  icases H with ⟨Hview, Hstate⟩
+  icases (stateVar_split γ.s σ M).mp $$ Hstate with ⟨Hinv, Hout⟩
+  iframe
 
 
-def isArrINV (γL γI γA γH: GName) : IProp GF := iprop%
-  ∃ (v : Val) (m : H (Int × (Option Loc))) (n : H Nat) (h : H' Val),
-    arrMap γL m ∗ idMap γI n ∗ arrRoot γA v γL γI γH ∗ histAuth γH h ∗
-  ⌜ (∀ k, dom m k ↔ dom n k) ∧
-    (∀ p₁ p₂ i, get? n p₁ = some i → get? n p₂ = some i → p₁ = p₂) ∧
-    (∀ ptr id, get? n ptr = some id → ∃ lk, get? h id = some hl_val((&lk, #ptr))) ⌝
--- Requires a lot of work
+/-- Releasing the platform write lock is the linearisation point: the `3/4` share
+    the writer took out meets the `1/4` the invariant kept, and only together can
+    they advance the abstract state to whatever `f` actually built. -/
+theorem isPhysical_write_release (γ : Arrγ) (γp : GName)
+    (M M' : H Data) (σ σ' : Arr) :
+    (arrContent γ M' σ' ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write
+      ⊢@{IProp GF} |==> isPhysical γ γp M' σ' .free := by
+  simp only [isPhysical]
+  iintro H
+  icases H with ⟨⟨Hview, Hout⟩, Hinv⟩
+  ihave Hfull := (stateVar_split γ.s σ M).mpr $$ [Hinv Hout]
+  · isplitl [Hinv] <;> iassumption
+  ihave Hupd := stateVar_full_update γ.s σ σ' M M' $$ Hfull
+  imod Hupd with Hfull
+  imodintro
+  iframe
 
 
--- CORE PREDICATES
-def arrN : Namespace := ndot nroot "arr"
-def Arr.isArr (γ : GName) : IProp GF := iprop%
-  ∃ (v : Val) (γL γI γH : GName),
-    arrRoot γ v γL γI γH ∗
-    isArrLockINV γL γI v ∗
-    inv arrN (isArrINV γL γI γ γH)
--- AI: Prove the persistent
-instance Arr.isArr_persistent (γ : GName) : Persistent (PROP := IProp GF) (Arr.isArr γ) := by
-  unfold Arr.isArr; infer_instance
+/-- The `3/4` share is a *receipt* for the platform write lock: it proves the lock
+    is write-held and pins the abstract state the invariant still remembers. -/
+theorem isPhysical_write_pinned (γ : Arrγ) (γp : GName) (M M' : H Data)
+    (σ σ' : Arr) (s : RwLock.State) :
+    isPhysical γ γp M σ s ∗ stateVar γ.s q3_4 σ' M' ⊢@{IProp GF}
+      ⌜s = .write ∧ σ = σ' ∧ M = M'⌝ := by
+  cases s <;> simp only [isPhysical] <;> iintro ⟨Hphys, Hout⟩
+  · iexfalso
+    icases Hphys with ⟨-, Hstate⟩
+    iapply stateVar_full_exclusive γ.s q3_4 σ σ' M M'
+    isplitl [Hstate] <;> iassumption
+  · iexfalso
+    icases Hphys with ⟨-, Hstate⟩
+    iapply stateVar_full_exclusive γ.s q3_4 σ σ' M M'
+    isplitl [Hstate] <;> iassumption
+  · icases stateVar_agree γ.s q1_4 q3_4 σ σ' M M' $$ [Hphys Hout] with %h
+    · isplitl [Hphys] <;> iassumption
+    ipureintro
+    exact ⟨trivial, h.1, h.2⟩
+
+theorem platform_write_acquire_spec
+    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
+    ⊢@{IProp GF}
+      ⟪ ∀ s, isRwLock ρ gate s hl_val(#cell) ∗ isPhysical γ ρ M σ s ⟫
+        hl(&RwLock.write_acquire &gate) @ ∅
+      ⟪ (isRwLock ρ gate .write hl_val(#cell) ∗ isPhysical γ ρ M σ .write) ∗
+          (rwGuard ρ .write ∗ (arrContent γ M σ ∗ stateVar γ.s q3_4 σ M))
+        | RET hl_val(#cell) ⟫ := by
+  iintro %Φ HAU
+  iapply RwLock.write_acquire_spec ρ gate hl_val(#cell)
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨%s, Hpre, Hclose⟩
+  icases Hpre with ⟨Hlock, Hphys⟩
+  imodintro
+  iexists s
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      iapply Habort
+      iframe
+    · iintro Hpost
+      icases Hpost with ⟨Hlock, Hguard, %hs⟩
+      subst s
+      icases Hclose with ⟨-, Hcommit⟩
+      iapply Hcommit
+      icases isPhysical_write_acquire γ ρ M σ $$ Hphys with ⟨Hout, Hinv⟩
+      iframe
 
 
-def Arr.isContents (γ : GName) (σ : Arr) : IProp GF := iprop%
-  ∃ (v : Val) (γL γI γH : GName),
-    arrRoot γ v γL γI γH ∗
-    contents γL γI v σ.cells
+theorem platform_write_release_spec
+    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc)
+    (M M' : H Data) (σ σ' : Arr) :
+    ⊢@{IProp GF}
+      rwGuard ρ .write -∗ arrContent γ M' σ' -∗ stateVar γ.s q3_4 σ M -∗
+      ⟪ isRwLock ρ gate .write hl_val(#cell) ∗
+          isPhysical γ ρ M σ .write ⟫
+        hl(&RwLock.write_release &gate) @ ∅
+      ⟪ isRwLock ρ gate .free hl_val(#cell) ∗
+          isPhysical γ ρ M' σ' .free
+        | RET hl_val(#()) ⟫ := by
+  iintro Hguard Hview H %Φ HAU
+  iapply RwLock.write_release_spec ρ gate hl_val(#cell) $$ Hguard
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨Hpre, Hclose⟩
+  icases Hpre with ⟨Hlock, Hphys⟩
+  imodintro
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      iframe Hview H
+      iapply Habort
+      iframe
+    · iintro Hlock
+      icases Hclose with ⟨-, Hcommit⟩
+      ihave Hupd := isPhysical_write_release γ ρ M M' σ σ' $$ [Hview H Hphys]
+      · isplitl [Hview H]
+        · isplitl [Hview] <;> iassumption
+        · iassumption
+      imod Hupd with Hphys
+      iapply Hcommit
+      iframe
 
 
-def Arr.idRecord (γ : GName) (node : Val) (id : Nat) : IProp GF := iprop%
-  ∃ (v: Val) (γL γI γH : GName),
-    arrRoot γ v γL γI γH ∗ histView γH node id
+theorem platform_read_acquire_spec
+    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
+    ⊢@{IProp GF}
+      ⟪ ∃ s, isRwLock ρ gate s hl_val(#cell) ∗ isPhysical γ ρ M σ s ⟫
+        hl(&RwLock.read_acquire &gate) @ ∅
+      ⟪ (∃ n, isRwLock ρ gate (.read (n + 1)) hl_val(#cell) ∗
+            isPhysical γ ρ M σ (.read (n + 1))) ∗
+          rwGuard ρ .read
+        | RET hl_val(#cell) ⟫ := by
+  iintro %Φ HAU
+  iapply RwLock.read_acquire_spec ρ gate hl_val(#cell)
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨Hpre, Hclose⟩
+  icases Hpre with ⟨%s, Hlock, Hphys⟩
+  imodintro
+  iexists s
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      iapply Habort
+      iexists s
+      iframe
+    · iintro Hpost
+      icases Hpost with ⟨Hguard, Hcases⟩
+      icases Hclose with ⟨-, Hcommit⟩
+      iapply Hcommit
+      icases Hcases with (⟨Hlock, %hs⟩ | ⟨%n, Hlock, %hs⟩)
+      · subst s
+        isplitr [Hguard]
+        · iexists 0
+          iframe
+          iapply isPhysical_read_acquire_first γ ρ M σ
+          iexact Hphys
+        · iexact Hguard
+      · subst s
+        isplitr [Hguard]
+        · iexists n
+          iframe
+          iapply isPhysical_read_acquire_more γ ρ M σ n
+          iexact Hphys
+        · iexact Hguard
 
-instance Arr.idRecord_persistent (γ : GName) (n : Val) (id : Nat) :
-  Persistent (PROP := IProp GF) (Arr.idRecord γ n id) := by
-  unfold Arr.idRecord; infer_instance -- (was wrongly `unfold Arr.isContents`)
+
+theorem platform_read_release_spec
+    (γ : Arrγ) (ρ : GName) (gate : Val) (cell : Loc) (M : H Data) (σ : Arr) :
+    ⊢@{IProp GF}
+      rwGuard ρ .read -∗
+      ⟪ ∀ n, isRwLock ρ gate (.read (n + 1)) hl_val(#cell) ∗
+          isPhysical γ ρ M σ (.read (n + 1)) ⟫
+        hl(&RwLock.read_release &gate) @ ∅
+      ⟪ (isRwLock ρ gate .free hl_val(#cell) ∗
+            isPhysical γ ρ M σ .free ∗ ⌜n = 0⌝) ∨
+          (isRwLock ρ gate (.read n) hl_val(#cell) ∗
+            isPhysical γ ρ M σ (.read n) ∗ ⌜n > 0⌝)
+        | RET hl_val(#()) ⟫ := by
+  iintro Hguard %Φ HAU
+  iapply RwLock.read_release_spec ρ gate hl_val(#cell) $$ Hguard
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨%n, Hpre, Hclose⟩
+  icases Hpre with ⟨Hlock, Hphys⟩
+  imodintro
+  iexists n
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      iapply Habort
+      iframe
+    · iintro Hpost
+      icases Hclose with ⟨-, Hcommit⟩
+      iapply Hcommit
+      icases Hpost with (⟨Hlock, %hn⟩ | ⟨Hlock, %hn⟩)
+      · subst n
+        ileft
+        ihave Hres := isPhysical_read_release_last γ ρ M σ $$ Hphys Hlock
+        icases Hres with ⟨Hphys, Hlock⟩
+        iframe
+        ipureintro
+        rfl
+      · iright
+        iframe Hlock
+        isplitl [Hphys]
+        · iapply isPhysical_read_release_nonlast γ ρ M σ n
+          iexact Hphys
+        · ipureintro
+          exact hn
 
 
-theorem Impl.init_spec (x : Int) :
+
+theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
+    isPlatform ρ s platform ∗ rwGuard ρ .write ⊢@{IProp GF} ⌜s = .write⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuard_valid
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  cases Hvalid
+  ipureintro
+  rfl
+
+
+theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
+    isPlatform ρ s platform ∗ rwGuard ρ .read ⊢@{IProp GF}
+      ∃ n, ⌜s = .read (n + 1)⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .read⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuard_valid
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  cases Hvalid with
+  | read n =>
+      iexists n
+      ipureintro
+      rfl
+
+
+
+
+omit [RwLockG GF] in
+theorem Arr.isId_lookup (γ : Arrγ) (M : H Data) (node : Val) (id : Nat) :
+    metaMap γ.l M ∗ Arr.isId γ node id ⊢@{IProp GF}
+      metaMap γ.l M ∗
+      ∃ d : Data,
+        ⌜get? M id = some d⌝ ∗ metaAt γ.l id d ∗ isArc d.arc node d.mux := by
+  unfold Arr.isId
+  iintro H
+  icases H with ⟨HM, Hid⟩
+  icases Hid with ⟨%d, Hmeta, Harc⟩
+  ihave #Hlookup : ⌜get? M id = some d⌝ $$ [HM Hmeta]
+  · iapply metaMap_lookup γ.l M id d $$ HM Hmeta
+  icases Hlookup with %hlookup
+  isplitl [HM]
+  · iexact HM
+  · iexists d
+    iframe Hmeta Harc %hlookup
+
+end Resources
+
+axiom Arr.isList_bind
+    (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) :
+  ⊢@{IProp GF}
+    Arr.isList γ σ -∗
+    isPlatform γp .free platform -∗
+    Arr.isArr γ γp σ platform
+
+axiom Impl.init_spec (x : Int) :
   ⊢@{IProp GF}
     ⦃ True ⦄
       hl(&Impl.init #x)
-    ⦃ v, RET v; ∃ γ id, Arr.isArr γ ∗ Arr.isContents γ (Arr.init x) ∗ Arr.idRecord γ v id ⦄ := by
-  iintro %Φ - H
-  unfold Impl.init
-  wp_pures
-  wp_bind &newlock _
-  iapply newlock_spec
-  iintro %lk %γ Hlk
-  wp_pures
-  wp_bind ref(_)
-  iapply wp_alloc
-  iintro !> %ptr Hptr
+    ⦃ root, RET root;
+      ∃ γ, Arr.isList γ (Arr.init x) ∗ Arr.isId γ root 0 ⦄
+
+axiom Impl.platformNew_spec :
+  ⊢@{IProp GF}
+    ⦃ True ⦄
+      hl(&Impl.platformNew #())
+    ⦃ platform, RET platform;
+      ∃ γp, isPlatform γp .free platform ⦄
+
+/-! ### Sub-operation specs
+
+`Impl.new` / `Impl.dropLink` / `Impl.execute` are the four
+building blocks of `Impl.insert` and `Impl.revoke`.  Stated as axioms for now. -/
+
+/-- `Impl.new x next` allocates a fresh node.  Ownership of the successor link
+    (either the literal `none()`, or `some(&v)` **together with one strong
+    reference** to the successor node `i`) is *moved in*; what comes back is a
+    fresh, unlocked node holding the only strong reference to itself.
+
+    Note this spec is a plain Hoare triple: nothing here touches shared state, so
+    no atomic update has to be opened. -/
+axiom Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
+  ⊢@{IProp GF}
+    ⦃ match nxt with
+      | none => iprop% ⌜next = hl_val(none())⌝
+      | some i => iprop% ∃ v : Val, ⌜next = hl_val(some(&v))⌝ ∗ succRef γ v i ⦄
+      hl(&Impl.new #x &next)
+    ⦃ node, RET node;
+      ∃ d : Data,
+        ⌜x = d.val⌝ ∗
+        arcAuth d.arc 1 0 ∗
+        isArc d.arc node d.mux ∗
+        isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+        livePayload γ d nxt ⦄
+
+
+axiom Impl.dropLink_some_spec (γ : GName) (v : Val) (i : Nat) (d : Data) :
+  ⊢@{IProp GF}
+    metaAt γ i d -∗
+    succRef γ v i -∗
+    ⟪ ∀ n, ∀ m, arcAuth d.arc n m ∗ ⌜n > 1⌝ ⟫
+      hl(&Impl.dropLink (some(&v))) @ ∅
+    ⟪ arcAuth d.arc (n - 1) m | RET hl_val(#()) ⟫
+
+axiom Impl.dropLink_none_spec :
+  ⊢@{IProp GF}
+    ⦃ True ⦄
+      hl(&Impl.dropLink (none()))
+    ⦃ r, RET r; ⌜r = hl_val(#())⌝ ⦄
+
+
+axiom Impl.execute_shared_spec
+    (γ : Arrγ) (γP : GName) (platform f : Val) (Ψ : Arr → Val → IProp GF) :
+  ⊢@{IProp GF}
+    (rwGuard γP .read -∗
+       ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
+         hl(&f #()) @ ∅
+       ⟪ ∃ r, Ψ σ r ∗ rwGuard γP .read | RET r ⟫) -∗
+    ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
+      hl(&Impl.execute &platform #false &f) @ ∅
+    ⟪ ∃ r, Ψ σ r | RET r ⟫
+
+
+/-- Running `f` under the platform **write** lock.  `f` gets the whole content
+    sequentially — no atomic update, no lock, no ghost names — and hands back a
+    content at a possibly different abstract state plus its own result `Q`.
+
+    The linearisation point is `write_release`: while `f` runs, the invariant only
+    holds `stateVar γ.s ¼ σ M`, which pins `σ`, and the abstract state is advanced
+    only when the remaining `¾` comes back inside the atomic update. -/
+theorem Impl.execute_exclusive_spec
+    (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
+  ⊢@{IProp GF}
+    (∀ M σ,
+       ⦃ arrContent γ M σ ⦄
+         hl(&f #())
+       ⦃ r, RET r; ∃ M' σ', arrContent γ M' σ' ∗ Q σ σ' r ⦄) -∗
+    ⟪ ∀ σ, Arr.isArr γ γP σ platform ⟫
+      hl(&Impl.execute &platform #true &f) @ ∅
+    ⟪ ∃ r, ∃ σ', Arr.isArr γ γP σ' platform ∗ Q σ σ' r | RET r ⟫ := by
+  iintro Hf %Φ HAU
+  -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.  This is
+  -- an open/abort with no program step, hence `fupd_wp`.
   iapply fupd_wp
-  imod arrMap_alloc with ⟨%γL, HAm⟩
-  imod idMap_alloc with ⟨%γI, HIm⟩
-  imod histAuth_alloc with ⟨%γH, HAh⟩
-  imod arrMap_insert γL (∅ : H (Int × Option Loc)) ptr x none $$ HAm with ⟨HAm', Hpt⟩
-  sorry
-  -- icases Hpt with ⟨Hpt, Hpt'⟩
-  imod idMap_insert γI (∅ : H Nat) ptr 0 $$ HIm with ⟨HIm', Hpt2⟩
-  sorry
-  imod histAuth_insert γH (∅ : H' Val) hl_val((&lk, #ptr)) 0 $$ HAh with ⟨HAh', Hpt3⟩
-  sorry
-  icases Hpt with ⟨Hpt, Hpt'⟩
-  icases Hpt2 with ⟨Hpt2, Hpt2'⟩
-
-  imod arrRoot_alloc hl_val((&lk, #ptr)) γL γI γH with ⟨%γ, #Hroot⟩
-  -- allocate new ghost state
-  --
+  iauopen HAU with ⟨%σ0, Hpre, Hclose⟩
+  iunfold Arr.isArr at Hpre
+  icases Hpre with ⟨%s0, %M0, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α, %gate, %cell, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hshape : ⌜∃ ps pw p c : Loc, platform = hl_val(((#ps, #pw), (#p, #c)))⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α platform gate $$ Harc with ⟨⟨%ps, %pw, %hp⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate hl_val(#cell) s0 $$ Hlock with ⟨⟨%p, %hg⟩, -⟩
+    ipureintro
+    exact ⟨ps, pw, p, cell, by rw [hp, hg]⟩
+  ihave Hisarr : Arr.isArr γ γP σ0 platform $$ [Hphys Hstrong Harc Hlock Hcell]
+  · unfold Arr.isArr isPlatform
+    iexists s0, M0
+    isplitl [Hstrong Harc Hlock Hcell]
+    · iexists α, gate, cell
+      iframe
+    · iframe
+  icases Hclose with ⟨Habort, -⟩
+  imod Habort $$ Hisarr with HAU
   imodintro
+  icases hshape with ⟨%ps, %pw, %p, %c, %hplat⟩
+  subst hplat
+  unfold Impl.execute Arc.get
   wp_pures
+  -- `write_acquire`: open the update, abort (σ is untouched), and walk out with the
+  -- whole content plus the `3/4` share that will later license the state change.
+  wp_bind &RwLock.write_acquire _
+  iapply RwLock.write_acquire_spec γP hl_val((#p, #c)) hl_val(#c)
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨%σ1, Hpre, Hclose⟩
+  iunfold Arr.isArr at Hpre
+  icases Hpre with ⟨%s1, %M1, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α1, %gate1, %cell1, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hg1 : ⌜gate1 = hl_val((#p, #c)) ∧ cell1 = c⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc with ⟨⟨%q1, %q2, %hq⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%r1, %hr⟩, -⟩
+    ipureintro
+    simp only [Val.pair.injEq, Val.lit.injEq] at hq hr
+    grind
+  icases hg1 with ⟨%hg1a, %hg1b⟩
+  subst hg1a
+  subst cell1
   imodintro
-  iapply H
-  iexists γ, 0
-  rw [Arr.init]
-  rw [Arr.isContents]
-  unfold contents
-  isplitr
-  unfold Arr.isArr
-  iexists hl_val((&lk, #ptr)), γL, γI, γH
-  iframe Hroot
-  unfold isArrLockINV
-  sorry
-  isplitr
-  iexists hl_val((&lk, #ptr)), γL, γI, γH
-  iframe Hroot
-  iexists lk, ptr
-  isplitr
-  itrivial
-  sorry
-  sorry
+  iexists s1
+  isplitl [Hlock]
+  · iexact Hlock
+  · isplit
+    · iintro Hlock
+      icases Hclose with ⟨Habort, -⟩
+      ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
+        $$ [Hphys Hstrong Harc Hlock Hcell]
+      · unfold Arr.isArr isPlatform
+        iexists s1, M1
+        isplitl [Hstrong Harc Hlock Hcell]
+        · iexists α1, hl_val((#p, #c)), c
+          iframe
+        · iframe
+      imod Habort $$ Hisarr with HAU
+      imodintro
+      iframe
+    · iintro Hpost
+      icases Hpost with ⟨Hlock, Hguard, %hs1⟩
+      subst hs1
+      icases Hclose with ⟨Habort, -⟩
+      icases isPhysical_write_acquire γ γP M1 σ1 $$ Hphys with ⟨⟨Hcontent, Hout⟩, Hphys⟩
+      ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
+        $$ [Hphys Hstrong Harc Hlock Hcell]
+      · unfold Arr.isArr isPlatform
+        iexists RwLock.State.write, M1
+        isplitl [Hstrong Harc Hlock Hcell]
+        · iexists α1, hl_val((#p, #c)), c
+          iframe
+        · iframe
+      imod Habort $$ Hisarr with HAU
+      imodintro
+      wp_pures
+      -- `f` runs sequentially on the whole content; σ is pinned by the `1/4` share
+      -- the invariant kept, so nothing can be observed in between.
+      wp_bind &f _
+      iapply Hf $$ Hcontent
+      iintro %r !> Hres
+      icases Hres with ⟨%M2, %σ2, Hcontent2, HQ⟩
+      wp_pures
+      -- `write_release`: the linearisation point.
+      wp_bind &RwLock.write_release _
+      iapply RwLock.write_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
+      iauintro
+      simp only [atomicAcc]
+      iauopen HAU with ⟨%σ3, Hpre, Hclose⟩
+      iunfold Arr.isArr at Hpre
+      icases Hpre with ⟨%s3, %M3, Hplat, Hphys⟩
+      ihave #hw : ⌜s3 = .write ∧ σ3 = σ1 ∧ M3 = M1⌝ $$ [Hphys Hout]
+      · iapply isPhysical_write_pinned γ γP M3 M1 σ3 σ1 s3
+        isplitl [Hphys] <;> iassumption
+      icases hw with ⟨%hw1, %hw2, %hw3⟩
+      subst hw1
+      subst σ3
+      subst M3
+      iunfold isPlatform at Hplat
+      icases Hplat with ⟨%α3, %gate3, %cell3, Hstrong, Harc, Hlock, Hcell⟩
+      ihave #hg3 : ⌜gate3 = hl_val((#p, #c)) ∧ cell3 = c⌝ $$ [Harc Hlock]
+      · icases Arc.isArc_copyRuntime α3 hl_val(((#ps, #pw), (#p, #c))) gate3 $$ Harc
+          with ⟨⟨%u1, %u2, %hu⟩, -⟩
+        icases RwLock.isRwLock_copyRuntime γP gate3 hl_val(#cell3) .write $$ Hlock
+          with ⟨⟨%u3, %hv⟩, -⟩
+        ipureintro
+        simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
+        grind
+      icases hg3 with ⟨%hg3a, %hg3b⟩
+      subst hg3a
+      subst cell3
+      imodintro
+      isplitl [Hlock]
+      · iexact Hlock
+      · isplit
+        · iintro Hlock
+          icases Hclose with ⟨Habort, -⟩
+          ihave Hisarr : Arr.isArr γ γP σ1 hl_val(((#ps, #pw), (#p, #c)))
+            $$ [Hphys Hstrong Harc Hlock Hcell]
+          · unfold Arr.isArr isPlatform
+            iexists RwLock.State.write, M1
+            isplitl [Hstrong Harc Hlock Hcell]
+            · iexists α3, hl_val((#p, #c)), c
+              iframe
+            · iframe
+          imod Habort $$ Hisarr with HAU
+          imodintro
+          iframe
+        · iintro Hlock
+          icases Hclose with ⟨-, Hcommit⟩
+          ihave Hupd := isPhysical_write_release γ γP M1 M2 σ1 σ2 $$ [Hcontent2 Hout Hphys]
+          · isplitl [Hcontent2 Hout]
+            · isplitl [Hcontent2] <;> iassumption
+            · iassumption
+          imod Hupd with Hphys
+          ihave Hisarr : Arr.isArr γ γP σ2 hl_val(((#ps, #pw), (#p, #c)))
+            $$ [Hphys Hstrong Harc Hlock Hcell]
+          · unfold Arr.isArr isPlatform
+            iexists RwLock.State.free, M2
+            isplitl [Hstrong Harc Hlock Hcell]
+            · iexists α3, hl_val((#p, #c)), c
+              iframe
+            · iframe
+          ihave Hbeta : ∃ σ', Arr.isArr γ γP σ' hl_val(((#ps, #pw), (#p, #c))) ∗ Q σ1 σ' r
+            $$ [Hisarr HQ]
+          · iexists σ2
+            iframe
+          imod Hcommit $$ Hbeta with HΦ
+          imodintro
+          wp_pures
+          iexact HΦ
 
-theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
+axiom Impl.insert_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
-    Arr.isArr γ -∗ Arr.idRecord γ node id -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝ ⟫
-        hl(&Impl.insert &node #x) @ arrN
-      ⟪ ∃ nid, Arr.isContents γ (σ.insert id x) | ret, RET ret; Arr.idRecord γ ret nid ⟫ := by
-  iintro Harr Hnode %Φ HAU
-  unfold Impl.insert
-  wp_pures
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, Arr.isArr γ γp σ platform ⟫
+      hl(&Impl.insert &platform &node #x) @ ∅
+    ⟪ ∃ ret,
+        Arr.isArr γ γp (Arr.insert σ id x).1 platform ∗
+        Arr.isId γ node id ∗
+        match (Arr.insert σ id x).2 with
+        | none => iprop% ⌜ret = hl_val(none())⌝
+        | some nid => iprop%
+            ∃ newNode : Val,
+              ⌜ret = hl_val(some(&newNode))⌝ ∗
+              Arr.isId γ newNode nid
+      | RET ret
+    ⟫
 
-  sorry
-
-theorem Impl.remove_spec (γ : GName) (id : Nat) (node : Val) :
+axiom Impl.revoke_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
-    Arr.isArr γ -∗ Arr.idRecord γ node id -∗
-      ⟪ ∀ σ, Arr.isContents γ σ ∗ ⌜Arr.wellFormed σ⌝  ⟫
-        hl(&Impl.remove &node) @ arrN
-      ⟪ Arr.isContents γ (σ.remove id) | RET hl_val(#()) ⟫ := by sorry
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, Arr.isArr γ γp σ platform ⟫
+      hl(&Impl.revoke &platform &node) @ ∅
+    ⟪ Arr.isArr γ γp (Arr.revoke σ id).1 platform ∗ Arr.isId γ node id
+      | RET match (Arr.revoke σ id).2 with
+            | none => hl_val(none())
+            | some _ => hl_val(some(#()))
+    ⟫
 
 end Specs
 

@@ -462,7 +462,7 @@ theorem acquire_plock_spec (γ : GName) (l : Loc) :
   simp only [plock_is_lock]
   iintro #Hinv %Φ HAU
   -- 套加强版 physical acquire:它内部自己自旋,每次 CAS 都访问我们提供的 physical AU。
-  iapply acquire_atomic_spec'.{0, 0} l
+  iapply acquire_atomic_spec' l
   iauintro
   -- 在 accessor 内部打开 lock invariant(poor-man's `iInv`):
   iinv Hinv as Hbody
@@ -519,7 +519,7 @@ theorem release_plock_spec (γ : GName) (l : Loc) :
       ⟪ plock_state γ .Free | RET hl_val(#()) ⟫ := by
   simp only [plock_is_lock]
   iintro #Hinv %Φ HAU
-  iapply release_atomic_spec.{0, 0} l
+  iapply release_atomic_spec l
   iauintro
   -- open the lock invariant *inside* the accessor (`iinv` = poor-man's `iInv`):
   iinv Hinv as Hbody

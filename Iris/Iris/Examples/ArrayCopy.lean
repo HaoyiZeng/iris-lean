@@ -917,6 +917,7 @@ theorem Arr.idRecord_unfold (γ : GName) (node : Val) (id : Nat) :
         isArrLockINV γL id node := .rfl
 
 
+
 theorem Impl.init_spec (x : Int) :
   ⊢@{IProp GF}
     ⦃ True ⦄
@@ -997,6 +998,10 @@ theorem Impl.init_spec (x : Int) :
     · iexists x, none; iframe HDrec
     · iexact HlockINV
 
+set_option trace.profiler.output "/tmp/profile.json"
+set_option trace.profiler.output.pp true
+
+set_option trace.profiler true in
 set_option maxRecDepth 8000 in
 theorem Impl.insert_spec (γ : GName) (id : Nat) (node : Val) (x : Int) :
   ⊢@{IProp GF}

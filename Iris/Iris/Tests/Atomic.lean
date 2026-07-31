@@ -67,12 +67,50 @@ variable (α : Nat → IProp GF)
 variable (β : Nat → Bool → IProp GF)
 variable (POST : Nat → Bool → Val → IProp GF)
 variable (f : Nat → Bool → Val → Val)
+variable (α₂ : Nat → Bool → IProp GF)
+variable (β₂ : Nat → Bool → IProp GF)
+variable (f₂ : Nat → Bool → Val)
+variable (β₂out : Nat → Bool → Nat → IProp GF)
+variable (POST₂ : Nat → Bool → Nat → Val → IProp GF)
+variable (f₂out : Nat → Bool → Nat → Val → Val)
+variable (β₀out : Bool → IProp GF)
+variable (f₀out : Bool → Val)
+variable (fout : Nat → Bool → Val)
+variable (f₂pub : Nat → Bool → Nat → Val)
+
+class AtomicWpInterface (GF : BundledGFunctors) [IrisGS_gen hlc Expr GF] where
+  op : Expr
+  one_binder (α : Nat → IProp GF) (β : Nat → IProp GF) (f : Nat → Val) :
+    ⊢@{IProp GF} ⟪ ∀ n, α n ⟫ op @ ∅ ⟪ β n | RET f n ⟫
+  two_binders (α : Nat → Bool → IProp GF) (β : Nat → Bool → IProp GF)
+      (f : Nat → Bool → Val) :
+    ⊢@{IProp GF} ⟪ ∀ n, ∀ b, α n b ⟫ op @ ∅ ⟪ β n b | RET f n b ⟫
 
 /--
 info: ⟪∀ x, α x⟫ e @ E ⟪∃ y, β x y | z, RET f x y z; POST x y z⟫ : IProp GF
 -/
 #guard_msgs in
 #check (⟪ ∀ x, α x ⟫ e @ E ⟪ ∃ y, β x y | z, RET f x y z; POST x y z ⟫ : IProp GF)
+
+example : IProp GF :=
+  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ β₂ n m | RET f₂ n m ⟫
+
+example : IProp GF :=
+  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ ∃ y, β₂out n m y | z, RET f₂out n m y z; POST₂ n m y z ⟫
+
+example : IProp GF :=
+  ⟪ α 0 ⟫ e @ E
+  ⟪ ∃ y, β₀out y | RET f₀out y ⟫
+
+example : IProp GF :=
+  ⟪ ∀ n, α n ⟫ e @ E
+  ⟪ ∃ y, β n y | RET fout n y ⟫
+
+example : IProp GF :=
+  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ ∃ y, β₂out n m y | RET f₂pub n m y ⟫
 
 end AtomicWpNotation
 
