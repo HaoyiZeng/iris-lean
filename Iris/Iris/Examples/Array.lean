@@ -2495,7 +2495,21 @@ theorem Impl.execute_exclusive_spec (N : Namespace)
           wp_pures
           iexact HΦ
 
-axiom Impl.insert_spec (N : Namespace)
+/-- What `Impl.insert`'s body achieves, phrased as `Impl.execute_shared_spec` wants
+    it: the abstract state moves to `(Arr.insert σ id x).1` and the result reports
+    whether a node was actually created. -/
+def Impl.insertQ (γ : Arrγ) (node : Val) (id : Nat) (x : Int)
+    (σ σ' : Arr) (ret : Val) : IProp GF := iprop%
+  ⌜σ' = (Arr.insert σ id x).1⌝ ∗
+  Arr.isId γ node id ∗
+  match (Arr.insert σ id x).2 with
+  | none => iprop% ⌜ret = hl_val(none())⌝
+  | some nid => iprop%
+      ∃ newNode : Val,
+        ⌜ret = hl_val(some(&newNode))⌝ ∗
+        Arr.isId γ newNode nid
+
+theorem Impl.insert_spec (N : Namespace)
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
     isArrInv N γ γp platform -∗
@@ -2512,7 +2526,19 @@ axiom Impl.insert_spec (N : Namespace)
               ⌜ret = hl_val(some(&newNode))⌝ ∗
               Arr.isId γ newNode nid
       | RET ret
-    ⟫
+    ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold Impl.insert
+  wp_pures
+  iapply Impl.execute_shared_spec N γ γp platform _ (Impl.insertQ γ node id x) $$ Hinv
+  · sorry
+  · -- the abstract state `f` reports is exactly the one our own client expects
+    iapply aupd_mono_commit _ _ _ _ $$ HAU
+    rintro ⟨σ, ⟨⟩⟩ ⟨ret, ⟨⟩⟩
+    simp only [Tele.app, Impl.insertQ]
+    iintro ⟨%σ', Hfrag, %hσ', Hid, Hrest⟩
+    subst hσ'
+    iframe
 
 axiom Impl.revoke_spec (N : Namespace)
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :

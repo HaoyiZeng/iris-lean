@@ -309,6 +309,43 @@ theorem aupd_intro (Q : PROP) Eo Ei :
     · iexact HQ
   · iexact HQ
 
+/-- Weakening the *commit* condition of an atomic accessor.  Handing the holder a
+    harder obligation `β'` is sound as long as discharging it also discharges the
+    obligation `β` we owe ourselves. -/
+theorem atomicAcc_mono_commit (β' : TA → TB → PROP) Eo Ei
+    (h : ∀ x y, β' x y ⊢ β x y) :
+    atomicAcc Eo Ei α P β Φ ⊢ atomicAcc Eo Ei α P β' Φ := by
+  simp only [atomicAcc]
+  iintro Hacc
+  imod Hacc with ⟨%x, Hα, Hclose⟩
+  imodintro
+  iexists x
+  iframe Hα
+  isplit
+  · icases Hclose with ⟨Habort, -⟩
+    iexact Habort
+  · icases Hclose with ⟨-, Hcommit⟩
+    iintro %y Hβ'
+    ihave Hβ := h x y $$ Hβ'
+    iapply Hcommit $$ %y Hβ
+
+/-- Same, one level up: an atomic *update* whose commit condition is `β` can be used
+    wherever one with the harder commit condition `β'` is expected. -/
+theorem aupd_mono_commit (β' : TA → TB → PROP) Eo Ei
+    (h : ∀ x y, β' x y ⊢ β x y) :
+    atomicUpdate Eo Ei α β Φ ⊢ atomicUpdate Eo Ei α β' Φ := by
+  iintro HAU
+  iapply aupd_intro (α := α) (β := β') (Φ := Φ) (P := iprop(True))
+    (atomicUpdate Eo Ei α β Φ) Eo Ei inferInstance inferInstance ?_
+  · iintro HQ
+    icases HQ with ⟨-, HQ⟩
+    iapply atomicAcc_mono_commit (α := α) (β := β) (Φ := Φ)
+      (P := atomicUpdate Eo Ei α β Φ) β' Eo Ei h
+    iapply aupd_aacc $$ HQ
+  · isplit
+    · itrivial
+    · iexact HAU
+
 @[rocq_alias aacc_intro]
 theorem aacc_intro Eo Ei :
     Ei ⊆ Eo → ⊢@{PROP} ∀.. x, α x -∗
