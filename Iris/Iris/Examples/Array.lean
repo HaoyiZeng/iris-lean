@@ -1983,19 +1983,37 @@ theorem Arr.isList_bind (N : Namespace)
   iexists M
   iframe
 
-axiom Impl.init_spec (x : Int) :
-  ⊢@{IProp GF}
-    ⦃ True ⦄
-      hl(&Impl.init #x)
-    ⦃ root, RET root;
-      ∃ γ, Arr.isList γ (Arr.init x) ∗ Arr.isId γ root 0 ⦄
-
-axiom Impl.platformNew_spec :
+theorem Impl.platformNew_spec :
   ⊢@{IProp GF}
     ⦃ True ⦄
       hl(&Impl.platformNew #())
     ⦃ platform, RET platform;
-      ∃ γp, isPlatform γp .free platform ⦄
+      ∃ γp, isPlatform γp .free platform ⦄ := by
+  iintro %Φ - HΦ
+  unfold Impl.platformNew
+  wp_pures
+  wp_bind ref(_)
+  iapply wp_alloc
+  iintro !> %cell Hcell
+  wp_pures
+  wp_bind &RwLock.new _
+  iapply RwLock.new_spec hl_val(#cell)
+  · itrivial
+  iintro %gate !> ⟨%γrw, Hlock⟩
+  wp_pures
+  iapply Arc.new_spec gate
+  · itrivial
+  iintro %platform !> ⟨%α, Hauth, Harc⟩
+  iapply HΦ
+  iexists γrw
+  unfold isPlatform
+  iexists α, gate, cell
+  iframe Harc Hlock Hcell
+  unfold arcHasStrong
+  iexists 1, 0
+  iframe Hauth
+  ipureintro
+  omega
 
 /-! ### Sub-operation specs
 
@@ -2009,7 +2027,7 @@ building blocks of `Impl.insert` and `Impl.revoke`.  Stated as axioms for now. -
 
     Note this spec is a plain Hoare triple: nothing here touches shared state, so
     no atomic update has to be opened. -/
-axiom Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
+theorem Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
   ⊢@{IProp GF}
     ⦃ match nxt with
       | none => iprop% ⌜next = hl_val(none())⌝
@@ -2021,7 +2039,42 @@ axiom Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
         arcAuth d.arc 1 0 ∗
         isArc d.arc node d.mux ∗
         isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
-        livePayload γ d nxt ⦄
+        cellAlive d.cell 1 nxt ∗
+        livePayload γ d nxt ⦄ := by
+  iintro %Φ Hpre HΦ
+  iapply wp_fupd
+  unfold Impl.new
+  wp_pures
+  wp_bind ref(_)
+  iapply wp_alloc
+  iintro !> %p Hp
+  wp_pures
+  wp_bind &RwLock.new _
+  iapply RwLock.new_spec hl_val(#p)
+  · itrivial
+  iintro %l !> ⟨%γrw, Hlock⟩
+  wp_pures
+  iapply Arc.new_spec l
+  · itrivial
+  iintro %a !> ⟨%γarc, Hauth, Harc⟩
+  imod cellAlive_alloc nxt with ⟨%γcell, Hcell⟩
+  imodintro
+  iapply HΦ
+  iexists ⟨γarc, γrw, γcell, l, p, x⟩
+  isplit
+  · ipureintro; rfl
+  iframe Hauth Harc Hlock Hcell
+  unfold livePayload
+  cases nxt with
+  | none =>
+      icases Hpre with %hnext
+      subst hnext
+      iexact Hp
+  | some i =>
+      icases Hpre with ⟨%v, %hnext, Hsucc⟩
+      subst hnext
+      iexists v
+      iframe
 
 /-- Running `f` under the platform **read** lock.  `f` never sees the platform: it
     gets the persistent handle and a read permit, and its atomic update carries only
@@ -2031,6 +2084,69 @@ axiom Impl.new_spec (γ : GName) (x : Int) (next : Val) (nxt : Option Nat) :
     That the platform read lock can still be released *after* `f` has already
     committed is exactly what `isArrInv` being persistent buys: the invariant can be
     reopened, an atomic update cannot. -/
+theorem Impl.init_spec (x : Int) :
+  ⊢@{IProp GF}
+    ⦃ True ⦄
+      hl(&Impl.init #x)
+    ⦃ root, RET root;
+      ∃ γ, Arr.isList γ (Arr.init x) ∗ Arr.isId γ root 0 ⦄ := by
+  iintro %Φ - HΦ
+  iapply wp_fupd
+  unfold Impl.init
+  wp_pures
+  -- allocate the metadata map first: `new` needs a name to hang `succRef` on
+  imod metaMap_alloc with ⟨%γl, HM⟩
+  iapply Impl.new_spec γl x hl_val(none()) none
+  · ipureintro; rfl
+  iintro %root !> ⟨%d, %hval, Hauth, Harc, Hlock, Hcell, Hpay⟩
+  subst hval
+  imod metaMap_insert γl (∅ : H Data) 0 d (by simp [get?_empty]) $$ HM with ⟨HM, #Hat⟩
+  imod stateVar_alloc (Arr.init d.val) (Std.insert (∅ : H Data) 0 d) with ⟨%γs, Hstate⟩
+  imodintro
+  iapply HΦ
+  iexists ⟨γl, γs⟩
+  isplitl [HM Hstate Hauth Hlock Hcell Hpay]
+  · unfold Arr.isList arrContent exclusiveView Arr.init
+    iexists (Std.insert (∅ : H Data) 0 d)
+    isplitl [HM Hauth Hlock Hcell Hpay]
+    · iframe HM
+      isplit
+      · ipureintro; exact Arr.init_wellFormed d.val
+      isplit
+      · ipureintro
+        exact metaMap_insert_counter_dom (∅ : H Data) 0 d
+          (by intro id; unfold dom; simp [get?_empty])
+      isplitl [Hauth Hlock Hcell Hpay]
+      · unfold isGhost isGhostHelp
+        iexists d
+        isplit
+        · ipureintro; rfl
+        iframe Hat
+        isplitl [Hauth Hlock Hcell Hpay]
+        · unfold aliveSlot nodeSlotExclusive nextIdOr
+          iframe Hlock Hcell Hpay
+          unfold arcHasStrong
+          iexists 1, 0
+          iframe Hauth
+          ipureintro
+          omega
+        · unfold isGhostHelp
+          itrivial
+      · unfold retiredNodes
+        iapply (BigSepM.bigSepM_insert (h := by simp [get?_empty])).mpr
+        simp only [List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil]
+        rw [if_pos (by simp)]
+        isplit
+        · itrivial
+        iapply BigSepM.bigSepM_empty.mpr
+        itrivial
+    · iframe Hstate
+  · unfold Arr.isId
+    dsimp only []
+    iexists d
+    iframe
+    iexact Hat
+
 theorem Impl.execute_shared_spec (N : Namespace)
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
