@@ -3582,10 +3582,130 @@ theorem Impl.revoke_spec (N : Namespace)
           · iframe
           iintro !> Hsuffix
           wp_pures
-          trace_state
-          sorry
+          -- the abstract step: `id` keeps its value, everything after it is gone
+          obtain ⟨hpre, -⟩ := Arr.nodup_split_id pre post id xv (hsplit ▸ hwf.idUqi)
+          have hrev := Arr.revoke_eq_of_split σ pre post id xv hsplit hpre
+          have hnd0 : ((pre ++ (id, xv) :: post).map (·.1)).Nodup := hsplit ▸ hwf.idUqi
+          rw [List.map_append, List.map_cons, List.nodup_append, List.nodup_cons] at hnd0
+          obtain ⟨-, ⟨hidpost, hpostnd⟩, hdisj0⟩ := hnd0
+          -- put this node's slot back, now with an empty tail
+          ihave Hslot : aliveSlot nodeSlotExclusive γ.l d none $$ [Hstrong Hlock Hcell Hptr]
+          · unfold aliveSlot nodeSlotExclusive livePayload
+            iframe Hstrong Hlock Hcell
+            iexact Hptr
+          ihave Hghost := Hback $$ Hslot
+          -- file the retired suffix
+          ihave ⟨HM, Hsuffix⟩ := retireList_lookup γ.l nodeSlotExclusive M post
+            $$ HM Hsuffix
+          ihave Hretired := retiredNodes_retire nodeSlotExclusive (pre ++ [(id, xv)])
+            post M σ.cells
+            (by
+              intro k _ _
+              rw [hsplit]
+              simp [List.map_append, or_assoc])
+            (by
+              intro k hk hkp
+              rw [List.map_append] at hk
+              rcases List.mem_append.mp hk with h | h
+              · exact hdisj0 k h k (List.mem_cons_of_mem _ hkp) rfl
+              · have hki : k = id := by simpa using h
+                exact hidpost (hki ▸ hkp))
+            hpostnd $$ [Hretired Hsuffix]
+          · isplitl [Hretired] <;> iassumption
+          imodintro
+          iapply HΦ'
+          iexists M, { cells := pre ++ [(id, xv)], counter := σ.counter }
+          isplitl [HM Hghost Hretired]
+          · unfold arrContent exclusiveView isGhost
+            iframe HM Hghost Hretired
+            isplit
+            · ipureintro
+              have := Arr.revoke_wellFormed σ hwf id
+              rw [hrev] at this
+              exact this
+            · ipureintro
+              exact hdom
+          · unfold Impl.revokeQ Arr.isId
+            rw [hrev]
+            isplitl []
+            · itrivial
+            isplitl [Hat HArc]
+            · iexists d
+              iframe Hat HArc
+            · itrivial
     · -- already revoked: `Arr.revoke` is the identity here
-      sorry
+      have hrev := Arr.revoke_eq_none σ id hin
+      ihave ⟨Hslot, Hback⟩ := retiredNodesAccNotIn Hl hin $$ Hretired
+      iunfold retiredSlot at Hslot
+      icases Hslot with ⟨#Hcd, Hlive | Hdead⟩
+      · -- the node is still there, just flagged revoked
+        iunfold nodeSlotExclusive at Hlive
+        icases Hlive with ⟨Hstrong, Hlock, -, HP⟩
+        iunfold revokedPayload at HP
+        icases HP with ⟨-, Hptr⟩
+        wp_bind &RwLock.write_acquire _
+        iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+        iauintro
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          iframe
+          repeat' first | (imodintro; iassumption) | isplitl []
+        · itele_reduce
+          iintro Hpost'
+          icases Hpost' with ⟨Hlock, Hwguard, -⟩
+          imodintro
+          iframe
+          wp_pures
+          wp_bind !_
+          iapply wp_load $$ Hptr
+          iintro !> Hptr
+          wp_pures
+          wp_bind &RwLock.write_release _
+          iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+          iauintro
+          iaaccintro' with Hlock
+          · iintro Hlock
+            imodintro
+            iframe
+            repeat' first | (imodintro; iassumption) | isplitl []
+          · itele_reduce
+            iintro Hlock
+            imodintro
+            iframe
+            wp_pures
+            -- everything goes back exactly where it came from
+            ihave Hretired := Hback $$ [Hstrong Hlock Hptr]
+            · unfold retiredSlot nodeSlotExclusive revokedPayload
+              isplitl []
+              · iexact Hcd
+              ileft
+              iframe Hstrong Hlock Hptr
+              iexact Hcd
+            imodintro
+            iapply HΦ'
+            iexists M, σ
+            isplitl [HM Hghost Hretired]
+            · unfold arrContent exclusiveView
+              iframe HM Hghost Hretired
+              isplit
+              · ipureintro; exact hwf
+              · ipureintro; exact hdom
+            · unfold Impl.revokeQ Arr.isId
+              rw [hrev]
+              isplitl []
+              · itrivial
+              isplitl [Hat HArc]
+              · iexists d
+                iframe Hat HArc
+              · itrivial
+
+      · -- the arc handle we hold rules out the "no strong reference" case
+        -- the arc handle we hold rules out the "no strong reference" case
+        iexfalso
+        iapply arcNoStrong_isArc_False d.arc node d.mux $$ [Hdead HArc]
+        · iframe
+
   · -- our own update backs the one `execute` wants; the return value is computed
     -- from `σ`, so the telescopes differ and this has to be built by hand
     iauintro
