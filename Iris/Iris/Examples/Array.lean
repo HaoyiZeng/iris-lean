@@ -332,7 +332,7 @@ def Impl.dropLink : Val := hl_val%
   λ link,
     match link with
     | none() => #()
-    | some(node) => &Arc.drop(node)
+    | some(node) => &Arc.drop &RwLock.drop node
 
 def Impl.insert : Val := hl_val%
   λ platform node value,
@@ -398,7 +398,7 @@ def Impl.revokeSuffix : Val := hl_val%
       ptr ← (#true, (value, none()));
       &RwLock.write_release(lock);
       go next;
-      &Arc.drop(node)
+      &Arc.drop &RwLock.drop node
 
 def Impl.revoke : Val := hl_val%
   λ platform node,
@@ -766,6 +766,33 @@ abbrev alivePayload (γ : GName) (d : Data) (q : Qp) (nxt : Option Nat) : IProp 
 
 def revokedPayload (d : Data) : IProp GF := iprop%
    cellDead d.cell ∗ d.ptr ↦ hl_val((#true, (#d.val, none())))
+
+omit [RwLockG GF] in
+/-- Split a live payload into the raw cell and exactly `Impl.new`'s precondition:
+    whatever successor link the cell holds, in the shape the successor index says. -/
+theorem livePayload_split (γ : GName) (d : Data) (nx : Option Nat) :
+    livePayload (GF := GF) γ d nx ⊢
+      ∃ nv : Val, d.ptr ↦ hl_val((#false, (#d.val, &nv))) ∗
+        (match nx with
+         | none => iprop% ⌜nv = hl_val(none())⌝
+         | some j => iprop% ∃ u : Val, ⌜nv = hl_val(some(&u))⌝ ∗ succRef γ u j) := by
+  cases nx with
+  | none =>
+      iintro H
+      unfold livePayload
+      iexists hl_val(none())
+      iframe H
+      itrivial
+  | some j =>
+      iintro H
+      unfold livePayload
+      icases H with ⟨%u, Hp, Hs⟩
+      iexists hl_val(some(&u))
+      iframe Hp
+      iexists u
+      isplit
+      · ipureintro; rfl
+      iexact Hs
 
 omit [RwLockG GF] in
 theorem livePayload_ptr (γ : GName) (d : Data) (nxt : Option Nat) :
@@ -3074,6 +3101,121 @@ theorem Impl.insert_spec (N : Namespace)
     iintro ⟨%σ', Hfrag, %hσ', Hid, Hrest⟩
     subst hσ'
     iframe
+
+/-- Walking off the end of the list, retiring everything on the way.
+
+    Runs under the platform *write* lock, so every node slot is `.free` and owned
+    outright — no invariant, no atomic update, just a sequential induction on the
+    suffix.  The strong reference that the predecessor used to hold is what gets
+    handed in as `v`, and it is dropped once the recursion returns. -/
+theorem Impl.revokeSuffix_spec (γ : Arrγ) :
+    ∀ (suffix : List (Nat × Int)) (v : Val),
+    ⊢@{IProp GF}
+      ⦃ (match nextIdOr suffix none with
+         | none => iprop% ⌜v = hl_val(none())⌝
+         | some i => iprop% ∃ w : Val, ⌜v = hl_val(some(&w))⌝ ∗ succRef γ.l w i) ∗
+        isGhostHelp nodeSlotExclusive γ.l none suffix ⦄
+        hl(&Impl.revokeSuffix &v)
+      ⦃ RET hl_val(#());
+        [∗list] c ∈ suffix, ∃ d : Data,
+          metaAt γ.l c.1 d ∗ retiredSlot nodeSlotExclusive d ⦄ := by
+  intro suffix
+  induction suffix with
+  | nil =>
+      intro v
+      simp only [nextIdOr]
+      iintro %Φ Hpre HΦ
+      icases Hpre with ⟨%hv, -⟩
+      subst hv
+      unfold Impl.revokeSuffix
+      wp_rec
+      wp_pures
+      imodintro
+      iapply HΦ
+      iapply BigSepL.bigSepL_nil.mpr
+      itrivial
+  | cons c suffix ih =>
+      rcases c with ⟨i, xv⟩
+      intro v
+      simp only [nextIdOr]
+      iintro %Φ Hpre HΦ
+      icases Hpre with ⟨⟨%w, %hv, Hsucc⟩, Hlist⟩
+      subst hv
+      -- the reference we were handed and the head of the chain agree on the record
+      iunfold succRef at Hsucc
+      icases Hsucc with ⟨%dd, #Hat, HArc⟩
+      simp only [isGhostHelp]
+      icases Hlist with ⟨%d, %hxv, #Hat', Hslot, Hrest⟩
+      ihave %hdd := metaAt_agree $$ Hat Hat'
+      subst dd
+      unfold Impl.revokeSuffix
+      wp_rec
+      wp_pures
+      wp_bind &Arc.get _
+      iapply Arc.get_spec (γ := d.arc) w d.mux $$ HArc
+      iintro !> HArc
+      wp_pures
+      -- the slot is ours outright: platform write lock is held, so it is `.free`
+      iunfold aliveSlot at Hslot
+      iunfold nodeSlotExclusive at Hslot
+      icases Hslot with ⟨Hstrong, Hlock, Hcell, HP⟩
+      wp_bind &RwLock.write_acquire _
+      iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+      iauintro
+      iaaccintro' with Hlock
+      · iintro Hlock
+        imodintro
+        iframe
+        isplitl []
+        · imodintro; iexact Hat
+        · imodintro; iexact Hat
+      · itele_reduce
+        iintro Hpost
+        icases Hpost with ⟨Hlock, Hwguard, -⟩
+        imodintro
+        iframe
+        wp_pures
+        -- read the payload, mark the node revoked, hand the successor to the recursion
+        ihave Hsplit :
+            ∃ nv : Val, d.ptr ↦ hl_val((#false, (#d.val, &nv))) ∗
+              (match nextIdOr suffix none with
+               | none => iprop% ⌜nv = hl_val(none())⌝
+               | some j => iprop% ∃ u : Val, ⌜nv = hl_val(some(&u))⌝ ∗ succRef γ.l u j)
+            $$ [HP]
+        · iapply livePayload_split γ.l d (nextIdOr suffix none) $$ HP
+        icases Hsplit with ⟨%nv, Hptr, Hnext⟩
+        wp_bind !_
+        iapply wp_load $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        wp_bind (_ ← _)
+        iapply wp_store $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        -- the cell is now dead
+        icases (cellAlive_split d.cell (nextIdOr suffix none)).mp $$ Hcell
+          with ⟨Hc14, Hc34⟩
+        imod cellAlive_kill d.cell (nextIdOr suffix none) $$ [Hc14 Hc34] with #Hcd
+        · isplitl [Hc14] <;> iassumption
+        -- give the lock back
+        wp_bind &RwLock.write_release _
+        iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+        iauintro
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          iframe
+          isplitl []
+          · isplitl []
+            · imodintro; iexact Hat
+            · imodintro; iexact Hat
+          · imodintro; iexact Hcd
+        · itele_reduce
+          iintro Hlock
+          imodintro
+          iframe
+          -- recurse on the tail, then drop our reference
+          sorry
 
 /-- What `Impl.revoke`'s body achieves, in the shape `Impl.execute_exclusive_spec`
     wants.  Unlike insert this runs under the platform *write* lock, so the body is
