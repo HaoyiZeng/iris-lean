@@ -3215,7 +3215,82 @@ theorem Impl.revokeSuffix_spec (γ : Arrγ) :
           imodintro
           iframe
           -- recurse on the tail, then drop our reference
-          sorry
+          wp_pure
+          wp_pure
+          wp_bind &Impl.revokeSuffix _
+          unfold Impl.revokeSuffix at ih
+          iapply ih nv $$ [Hnext Hrest]
+          · iframe
+          iintro !> Hretired
+          wp_pures
+          -- drop our reference; whether it was the last one decides which side of
+          -- `retiredSlot` we can produce
+          iunfold arcHasStrong at Hstrong
+          icases Hstrong with ⟨%n, %m, Hauth, %hn⟩
+          ihave Hpd : (⦃ isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                          d.ptr ↦ hl_val((#true, (#d.val, none()))) ⦄
+                          hl(&RwLock.drop &d.mux)
+                        ⦃ RET hl_val(#()); True ⦄) $$ []
+          · iapply RwLock.ptr_drop_spec d.rw d.mux d.ptr
+              hl_val((#true, (#d.val, none())))
+          by_cases hn1 : n = 1
+          · -- ours was the last reference: the payload is freed and the arc dies
+            subst hn1
+            iapply Arc.drop_spec (γ := d.arc) RwLock.drop w d.mux 1 m
+              (iprop% isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                      d.ptr ↦ hl_val((#true, (#d.val, none())))) $$ Hpd
+              [HArc Hauth Hlock Hptr]
+            · iframe HArc Hauth
+              rw [if_pos rfl]
+              iframe Hlock Hptr
+            iintro !> Hauth
+            iapply HΦ
+            iapply BigSepL.bigSepL_cons.mpr
+            isplitl [Hauth]
+            · iexists d
+              isplitl []
+              · iexact Hat
+              unfold retiredSlot
+              isplitl []
+              · iexact Hcd
+              iright
+              unfold arcNoStrong
+              iexists m
+              iexact Hauth
+            · iexact Hretired
+          · -- somebody else still holds a reference: the slot survives, revoked
+            iapply Arc.drop_spec (γ := d.arc) RwLock.drop w d.mux n m
+              (iprop% isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                      d.ptr ↦ hl_val((#true, (#d.val, none())))) $$ Hpd
+              [HArc Hauth]
+            · iframe HArc Hauth
+              rw [if_neg hn1]
+              itrivial
+            iintro !> Hauth
+            iapply HΦ
+            iapply BigSepL.bigSepL_cons.mpr
+            isplitl [Hauth Hlock Hptr]
+            · iexists d
+              isplitl []
+              · iexact Hat
+              unfold retiredSlot
+              isplitl []
+              · iexact Hcd
+              ileft
+              unfold nodeSlotExclusive revokedPayload
+              isplitl [Hauth]
+              · unfold arcHasStrong
+                iexists (n - 1), m
+                iframe Hauth
+                ipureintro
+                omega
+              iframe Hlock
+              isplit
+              · itrivial
+              isplitl []
+              · iexact Hcd
+              · iexact Hptr
+            · iexact Hretired
 
 /-- What `Impl.revoke`'s body achieves, in the shape `Impl.execute_exclusive_spec`
     wants.  Unlike insert this runs under the platform *write* lock, so the body is
