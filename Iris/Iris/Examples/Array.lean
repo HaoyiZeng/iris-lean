@@ -1381,6 +1381,51 @@ theorem isGhostHelpAccInsert (γ : GName) (d : Data) (slot : Slot GF)
         | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
 
 
+omit [RwLockG GF] in
+/-- The mirror image, for revoke: hand out the slot at `id` *and* the whole chain
+    that follows it, and take back a chain that stops at `id`.  What comes out as
+    `isGhostHelp … post` is what `Impl.revokeSuffix` walks. -/
+theorem isGhostHelpAccTruncate (γ : GName) (d : Data) (slot : Slot GF)
+    (tail : Option Nat) (id : Nat) (x : Int) (post : List (Nat × Int)) :
+    ∀ pre : List (Nat × Int),
+    metaAt γ id d ⊢@{IProp GF}
+      isGhostHelp slot γ tail (pre ++ (id, x) :: post) -∗
+        aliveSlot slot γ d (nextIdOr post tail) ∗
+        isGhostHelp slot γ tail post ∗
+        (aliveSlot slot γ d tail -∗ isGhostHelp slot γ tail (pre ++ [(id, x)])) := by
+  intro pre
+  induction pre with
+  | nil =>
+      iintro #Hmeta Hlist
+      simp only [List.nil_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave %hd := metaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iframe Hslot Hrest
+      iintro Hd
+      simp only [nextIdOr]
+      iexists d'
+      isplit
+      · ipureintro; exact hval
+      iframe Hmeta' Hd
+  | cons c pre ih =>
+      rcases c with ⟨id', x'⟩
+      iintro #Hmeta Hlist
+      simp only [List.cons_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave Hacc := ih $$ Hmeta Hrest
+      icases Hacc with ⟨Hslot', Hpost, Hback⟩
+      iframe Hslot' Hpost
+      iintro Hd
+      ihave Hrest' := Hback $$ Hd
+      iexists d'
+      isplit
+      · ipureintro; exact hval
+      iframe Hmeta' Hrest'
+      cases pre with
+      | nil => simp only [List.nil_append, nextIdOr]; iexact Hslot
+      | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
+
 /-- Holding any share of the live witness proves the node is still in `σ`. -/
 theorem cellAlive_mem (γ γp : GName) (M : H Data) (σ : Arr) (id : Nat) (d : Data)
     (q : Qp) (nxt : Option Nat) (hl : get? M id = some d) :
@@ -1860,6 +1905,137 @@ theorem retiredNodes_delete_live (slot : Slot GF)
     hlookup).trans ?_
   rw [if_pos hlive]
   exact (emp_sep (PROP := IProp GF))
+
+omit [RwLockG GF] in
+/-- Two retired-node maps over the same `M` agree as soon as membership agrees on
+    the ids `M` actually has. -/
+theorem retiredNodes_congr_dom (slot : Slot GF) (M : H Data)
+    (c₁ c₂ : List (Nat × Int))
+    (h : ∀ k v, get? M k = some v → (k ∈ c₁.map (·.1) ↔ k ∈ c₂.map (·.1))) :
+    retiredNodes slot M c₁ ⊣⊢ retiredNodes slot M c₂ := by
+  unfold retiredNodes
+  apply BI.equiv_iff.mp
+  apply BigSepM.bigSepM_eqv
+  intro k v hlookup
+  by_cases hc : k ∈ c₁.map (·.1)
+  · rw [if_pos hc, if_pos ((h k v hlookup).mp hc)]
+    exact .rfl
+  · rw [if_neg hc, if_neg (fun hx => hc ((h k v hlookup).mpr hx))]
+    exact .rfl
+
+omit [RwLockG GF] in
+/-- Turn the `metaAt` witnesses `Impl.revokeSuffix` hands back into lookups in the
+    metadata map, so the retired slots can be filed by id. -/
+theorem retireList_lookup (γl : GName) (slot : Slot GF) (M : H Data) :
+    ∀ removed : List (Nat × Int),
+    ⊢@{IProp GF} metaMap γl M -∗
+      ([∗list] c ∈ removed, ∃ d : Data, metaAt γl c.1 d ∗ retiredSlot slot d) -∗
+      metaMap γl M ∗
+      ([∗list] c ∈ removed, ∃ d : Data, ⌜get? M c.1 = some d⌝ ∗ retiredSlot slot d) := by
+  intro removed
+  induction removed with
+  | nil =>
+      iintro HM -
+      iframe HM
+      simp only [BI.bigSepL, Algebra.bigOpL]
+      itrivial
+  | cons c removed ih =>
+      iintro HM Hlist
+      simp only [BI.bigSepL, Algebra.bigOpL] at *
+      icases Hlist with ⟨⟨%d, #Hat, Hslot⟩, Hrest⟩
+      ihave #Hl : ⌜get? M c.1 = some d⌝ $$ [HM Hat]
+      · iapply metaMap_lookup γl M c.1 d $$ HM Hat
+      icases Hl with %Hl
+      ihave ⟨HM, Hrest⟩ := ih $$ HM Hrest
+      iframe HM
+      isplitl [Hslot]
+      · iexists d
+        iframe Hslot
+        ipureintro
+        exact Hl
+      · iexact Hrest
+
+omit [RwLockG GF] in
+/-- Retire a single node: it leaves the live list, and its slot gets filed. -/
+theorem retiredNodes_retire_one (slot : Slot GF)
+    (M : H Data) (cells cells' : List (Nat × Int)) (i : Nat) (d : Data)
+    (hlookup : get? M i = some d) (hlive : i ∈ cells.map (·.1))
+    (hnot : i ∉ cells'.map (·.1))
+    (hdom : ∀ k v, get? M k = some v → k ≠ i →
+       (k ∈ cells.map (·.1) ↔ k ∈ cells'.map (·.1))) :
+    retiredNodes slot M cells ∗ retiredSlot slot d
+    ⊢@{IProp GF} retiredNodes slot M cells' := by
+  iintro ⟨Hold, Hslot⟩
+  ihave Hold := (retiredNodes_delete_live slot M cells i d hlookup hlive).mp $$ Hold
+  iapply (retiredNodes_delete slot M cells' i d hlookup hnot).mpr
+  iframe Hslot
+  iapply (retiredNodes_congr_dom slot (delete M i) cells cells' (by
+    intro k v hk
+    have hne : i ≠ k := by
+      intro h; subst h; rw [get?_delete_eq rfl] at hk; exact absurd hk (by simp)
+    rw [get?_delete_ne hne] at hk
+    exact hdom k v hk (Ne.symm hne))).mp
+  iexact Hold
+
+omit [RwLockG GF] in
+/-- File a batch of freshly retired nodes: the ids in `removed` leave the live set,
+    everything else stays put. -/
+theorem retiredNodes_retire (slot : Slot GF) (newCells : List (Nat × Int)) :
+    ∀ (removed : List (Nat × Int)) (M : H Data) (oldCells : List (Nat × Int)),
+    (∀ k v, get? M k = some v →
+       (k ∈ oldCells.map (·.1) ↔ k ∈ newCells.map (·.1) ∨ k ∈ removed.map (·.1))) →
+    (∀ k, k ∈ newCells.map (·.1) → k ∉ removed.map (·.1)) →
+    (removed.map (·.1)).Nodup →
+    retiredNodes slot M oldCells ∗
+      ([∗list] c ∈ removed, ∃ d : Data, ⌜get? M c.1 = some d⌝ ∗ retiredSlot slot d)
+    ⊢@{IProp GF} retiredNodes slot M newCells := by
+  intro removed
+  induction removed with
+  | nil =>
+      intro M oldCells hsub _ _
+      iintro ⟨Hold, -⟩
+      iapply (retiredNodes_congr_dom slot M oldCells newCells (by
+        intro k v hk
+        rw [hsub k v hk]
+        simp)).mp
+      iexact Hold
+  | cons c removed ih =>
+      rcases c with ⟨i, xc⟩
+      intro M oldCells hsub hdisj hnd
+      iintro ⟨Hold, Hlist⟩
+      simp only [BI.bigSepL, Algebra.bigOpL] at *
+      icases Hlist with ⟨⟨%d, %Hl, Hslot⟩, Hrest⟩
+      simp only [List.map_cons, List.nodup_cons] at hnd
+      obtain ⟨hnotin, hnd'⟩ := hnd
+      have hlive : i ∈ oldCells.map (·.1) := by
+        rw [hsub i d Hl]; right; simp
+      have hnot : i ∉ (newCells ++ removed).map (·.1) := by
+        simp only [List.map_append, List.mem_append]
+        rintro (h | h)
+        · exact hdisj i h (by simp)
+        · exact hnotin h
+      ihave Hold := retiredNodes_retire_one slot M oldCells (newCells ++ removed) i d
+        Hl hlive hnot (by
+          intro k v hk hne
+          rw [hsub k v hk]
+          simp only [List.map_append, List.mem_append, List.map_cons, List.mem_cons]
+          constructor
+          · rintro (h | h | h)
+            · exact Or.inl h
+            · exact absurd h hne
+            · exact Or.inr h
+          · rintro (h | h)
+            · exact Or.inl h
+            · exact Or.inr (Or.inr h)) $$ [Hold Hslot]
+      · isplitl [Hold] <;> iassumption
+      iapply ih M (newCells ++ removed)
+        (by
+          intro k v _
+          simp only [List.map_append, List.mem_append])
+        (fun k hk => fun hkm => hdisj k hk (by
+          simp only [List.map_cons, List.mem_cons]; exact Or.inr hkm))
+        hnd'
+      isplitl [Hold] <;> iassumption
 
 omit [RwLockG GF] in
 theorem retiredNodes_insert_live (slot : Slot GF)
@@ -3321,7 +3497,95 @@ theorem Impl.revoke_spec (N : Namespace)
   iapply Impl.execute_exclusive_spec N γ γp platform _ (Impl.revokeQ γ node id)
     $$ Hinv [Hid]
   · -- the body, running with exclusive access to the whole content
-    sorry
+    iintro %M %σ %Φ' Hcontent HΦ'
+    iunfold arrContent at Hcontent
+    icases Hcontent with ⟨HM, %hwf, %hdom, Hview⟩
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hat, HArc⟩
+    ihave #Hl : ⌜get? M id = some d⌝ $$ [HM Hat]
+    · iapply metaMap_lookup γ.l M id d $$ HM Hat
+    icases Hl with %Hl
+    wp_pures
+    wp_bind &Arc.get _
+    iapply Arc.get_spec (γ := d.arc) node d.mux $$ HArc
+    iintro !> HArc
+    wp_pures
+    -- locate this node's slot: live cells sit in `isGhost`, retired ones in `retiredNodes`
+    iunfold exclusiveView at Hview
+    icases Hview with ⟨Hghost, Hretired⟩
+    by_cases hin : id ∈ σ.cells.map (·.1)
+    · -- the node is live, so revoking it really does shrink the array
+      obtain ⟨pre, xv, post, hsplit⟩ := Arr.exists_split_id hin
+      ihave Hghost' : isGhostHelp nodeSlotExclusive γ.l none (pre ++ (id, xv) :: post)
+          $$ [Hghost]
+      · iunfold isGhost at Hghost
+        rw [← hsplit]
+        iexact Hghost
+      ihave Hacc := isGhostHelpAccTruncate γ.l d nodeSlotExclusive none id xv post pre
+                      $$ Hat Hghost'
+      icases Hacc with ⟨Hslot, Hpost, Hback⟩
+      iunfold aliveSlot at Hslot
+      iunfold nodeSlotExclusive at Hslot
+      icases Hslot with ⟨Hstrong, Hlock, Hcell, HP⟩
+      -- take the node's lock (we own it outright, the platform is write-locked)
+      wp_bind &RwLock.write_acquire _
+      iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+      iauintro
+      iaaccintro' with Hlock
+      · iintro Hlock
+        imodintro
+        iframe
+        isplitl []
+        · imodintro; iexact Hinv
+        · imodintro; iexact Hat
+      · itele_reduce
+        iintro Hpost'
+        icases Hpost' with ⟨Hlock, Hwguard, -⟩
+        imodintro
+        iframe
+        wp_pures
+        ihave Hsplit := livePayload_split γ.l d (nextIdOr post none) $$ HP
+        icases Hsplit with ⟨%nv, Hptr, Hnext⟩
+        wp_bind !_
+        iapply wp_load $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        -- cut the link: the node stays alive but loses its successor
+        wp_bind (_ ← _)
+        iapply wp_store $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        imod cellAlive_update d.cell (nextIdOr post none) none $$ [Hcell] with Hcell
+        · iapply (cellAlive_split d.cell (nextIdOr post none)).mp $$ Hcell
+        icases Hcell with ⟨Hc14, Hc34⟩
+        ihave Hcell := (cellAlive_split d.cell none).mpr $$ [Hc14 Hc34]
+        · isplitl [Hc14] <;> iassumption
+        wp_bind &RwLock.write_release _
+        iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+        iauintro
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          iframe
+          isplitl []
+          · imodintro; iexact Hinv
+          · imodintro; iexact Hat
+        · itele_reduce
+          iintro Hlock
+          imodintro
+          iframe
+          wp_pure
+          wp_pure
+          -- retire everything after this node
+          wp_bind &Impl.revokeSuffix _
+          iapply Impl.revokeSuffix_spec γ post nv $$ [Hnext Hpost]
+          · iframe
+          iintro !> Hsuffix
+          wp_pures
+          trace_state
+          sorry
+    · -- already revoked: `Arr.revoke` is the identity here
+      sorry
   · -- our own update backs the one `execute` wants; the return value is computed
     -- from `σ`, so the telescopes differ and this has to be built by hand
     iauintro
