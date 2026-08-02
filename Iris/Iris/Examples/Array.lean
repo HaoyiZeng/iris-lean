@@ -328,12 +328,6 @@ def Impl.new : Val := hl_val%
 def Impl.init : Val := hl_val%
   λ value, &new value (none())
 
-def Impl.dropLink : Val := hl_val%
-  λ link,
-    match link with
-    | none() => #()
-    | some(node) => &Arc.drop &RwLock.drop node
-
 def Impl.insert : Val := hl_val%
   λ platform node value,
     &execute platform #false (λ _,
@@ -967,9 +961,15 @@ def exclusiveView (γ : GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
 /-- The mutable *content* of the array: the metadata map, the two side conditions
     `Arr.isArr` carries, and exclusive access to every node.  This is exactly what a
     thread holding the platform write lock gets to play with. -/
-def arrContent (γ : Arrγ) (M : H Data) (σ : Arr) : IProp GF := iprop%
+def arrContentAt (γ : Arrγ) (M : H Data) (σ : Arr) : IProp GF := iprop%
   metaMap γ.l M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
   exclusiveView γ.l M σ
+
+/-- The same thing with the metadata map hidden: this is what a writing thread is
+    handed, and it must give one back — possibly over a *different* map, since the
+    body is allowed to allocate nodes. -/
+def arrContent (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
+  ∃ M : H Data, arrContentAt γ M σ
 
 /-- The same content, but only shared (read) access to the nodes. -/
 def arrShared (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) : IProp GF := iprop%
@@ -984,7 +984,7 @@ def isPhysical (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     RwLock.State → IProp GF
   | .write  => iprop% emp
   | .read _ => iprop% arrShared γ γp M σ ∗ /- Sync -/ stateVar γ.s q3_4 σ M
-  | .free   => iprop% arrContent γ M σ ∗ /- Sync -/ stateVar γ.s q3_4 σ M
+  | .free   => iprop% arrContentAt γ M σ ∗ /- Sync -/ stateVar γ.s q3_4 σ M
 
 def isPlatform (ρ : GName) (s : RwLock.State) (platform : Val) : IProp GF := iprop%
   ∃ α : GName, ∃ gate : Val, ∃ cell : Loc,
@@ -995,8 +995,10 @@ instance instSharedViewTimeless (γ γP : GName) (M : H Data) (σ : Arr) :
     Timeless (sharedView (GF := GF) γ γP M σ) := by unfold sharedView; infer_instance
 instance instExclusiveViewTimeless (γ : GName) (M : H Data) (σ : Arr) :
     Timeless (exclusiveView (GF := GF) γ M σ) := by unfold exclusiveView; infer_instance
-instance instArrContentTimeless (γ : Arrγ) (M : H Data) (σ : Arr) :
-    Timeless (arrContent (GF := GF) γ M σ) := by unfold arrContent; infer_instance
+instance instArrContentAtTimeless (γ : Arrγ) (M : H Data) (σ : Arr) :
+    Timeless (arrContentAt (GF := GF) γ M σ) := by unfold arrContentAt; infer_instance
+instance instArrContentTimeless (γ : Arrγ) (σ : Arr) :
+    Timeless (arrContent (GF := GF) γ σ) := by unfold arrContent; infer_instance
 instance instArrSharedTimeless (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     Timeless (arrShared (GF := GF) γ γp M σ) := by unfold arrShared; infer_instance
 instance instIsPhysicalTimeless (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr)
@@ -1051,7 +1053,7 @@ def Arr.isArr (N : Namespace) (γ : Arrγ) (γp : GName) (σ : Arr) (platform : 
     content, and the *undivided* abstract state.  Nothing is shared, so no invariant
     exists and there is nothing atomic about it. -/
 def Arr.isList (γ : Arrγ) (σ : Arr) : IProp GF := iprop%
-  ∃ M : H Data, arrContent γ M σ ∗ stateVar γ.s 1 σ M
+  ∃ M : H Data, arrContentAt γ M σ ∗ stateVar γ.s 1 σ M
 
 def Arr.isId (γ : Arrγ) (node : Val) (id : Nat) : IProp GF := iprop%
   ∃ d : Data, metaAt γ.l id d ∗ isArc d.arc node d.mux
@@ -2070,7 +2072,7 @@ theorem retiredNodes_insert_live (slot : Slot GF)
 
 theorem isPhysical_read_acquire_first (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     isPhysical γ γp M σ .free ⊢@{IProp GF} isPhysical γ γp M σ (.read 1) := by
-  simp only [isPhysical, arrContent, arrShared]
+  simp only [isPhysical, arrContentAt, arrShared]
   iintro H
   icases H with ⟨⟨HM, %hwf, %hdom, Hview⟩, Hstate⟩
   iframe
@@ -2093,7 +2095,7 @@ theorem isPhysical_read_release_last (γ : Arrγ) (γp : GName) (M : H Data) (σ
     ⊢@{IProp GF}
       isPhysical γ γp M σ (.read 1) -∗ isRwLock γp mux .free ptr -∗
         isPhysical γ γp M σ .free ∗ isRwLock γp mux .free ptr := by
-  simp only [isPhysical, arrContent, arrShared]
+  simp only [isPhysical, arrContentAt, arrShared]
   iintro H Hlock
   icases H with ⟨⟨HM, %hwf, %hdom, Hview⟩, Hstate⟩
   ihave Hview' := sharedViewUpgrade $$ Hview Hlock
@@ -2108,7 +2110,7 @@ theorem isPhysical_read_release_last (γ : Arrγ) (γp : GName) (M : H Data) (σ
     `3/4` receipt that goes with it, leave with the writing thread. -/
 theorem isPhysical_write_acquire (γ : Arrγ) (γp : GName) (M : H Data) (σ : Arr) :
     isPhysical γ γp M σ .free ⊢@{IProp GF}
-      (arrContent γ M σ ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write := by
+      (arrContentAt γ M σ ∗ stateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write := by
   simp only [isPhysical]
   iintro H
   iframe
@@ -2120,7 +2122,7 @@ theorem isPhysical_write_acquire (γ : Arrγ) (γp : GName) (M : H Data) (σ : A
 theorem isPhysical_write_release (γ : Arrγ) (γp : GName)
     (M M' : H Data) (σ σ' : Arr) :
     ⊢@{IProp GF}
-      arrContent γ M' σ' -∗ stateVar γ.s q3_4 σ M -∗ arrFrag γ σ ==∗
+      arrContentAt γ M' σ' -∗ stateVar γ.s q3_4 σ M -∗ arrFrag γ σ ==∗
         isPhysical γ γp M' σ' .free ∗ arrFrag γ σ' := by
   simp only [isPhysical]
   iintro Hview Hout Hfrag
@@ -2254,8 +2256,8 @@ theorem Impl.platformNew_spec :
 
 /-! ### Sub-operation specs
 
-`Impl.new` / `Impl.dropLink` / `Impl.execute` are the four
-building blocks of `Impl.insert` and `Impl.revoke`.  Stated as axioms for now. -/
+`Impl.new` and `Impl.execute` are the building blocks of `Impl.insert` and
+`Impl.revoke`. -/
 
 /-- `Impl.new x next` allocates a fresh node.  Ownership of the successor link
     (either the literal `none()`, or `some(&v)` **together with one strong
@@ -2343,7 +2345,7 @@ theorem Impl.init_spec (x : Int) :
   iapply HΦ
   iexists ⟨γl, γs⟩
   isplitl [HM Hstate Hauth Hlock Hcell Hpay]
-  · unfold Arr.isList arrContent exclusiveView Arr.init
+  · unfold Arr.isList arrContentAt exclusiveView Arr.init
     iexists (Std.insert (∅ : H Data) 0 d)
     isplitl [HM Hauth Hlock Hcell Hpay]
     · iframe HM
@@ -2606,10 +2608,10 @@ theorem Impl.execute_exclusive_spec (N : Namespace)
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
     isArrInv N γ γP platform -∗
-    (∀ M σ,
-       ⦃ arrContent γ M σ ⦄
+    (∀ σ,
+       ⦃ arrContent γ σ ⦄
          hl(&f #())
-       ⦃ r, RET r; ∃ M' σ', arrContent γ M' σ' ∗ Q σ σ' r ⦄) -∗
+       ⦃ r, RET r; ∃ σ', arrContent γ σ' ∗ Q σ σ' r ⦄) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&Impl.execute &platform #true &f) @ ↑N
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
@@ -2698,9 +2700,15 @@ theorem Impl.execute_exclusive_spec (N : Namespace)
       wp_pures
       -- `f` runs sequentially on the whole content
       wp_bind &f _
+      ihave Hcontent : arrContent γ σ1 $$ [Hcontent]
+      · unfold arrContent
+        iexists M1
+        iexact Hcontent
       iapply Hf $$ Hcontent
       iintro %r !> Hres
-      icases Hres with ⟨%M2, %σ2, Hcontent2, HQ⟩
+      icases Hres with ⟨%σ2, Hcontent2, HQ⟩
+      iunfold arrContent at Hcontent2
+      icases Hcontent2 with ⟨%M2, Hcontent2⟩
       wp_pures
       -- `write_release`: the linearisation point.  Invariant *and* atomic update.
       wp_bind &RwLock.write_release _
@@ -3497,8 +3505,10 @@ theorem Impl.revoke_spec (N : Namespace)
   iapply Impl.execute_exclusive_spec N γ γp platform _ (Impl.revokeQ γ node id)
     $$ Hinv [Hid]
   · -- the body, running with exclusive access to the whole content
-    iintro %M %σ %Φ' Hcontent HΦ'
+    iintro %σ %Φ' Hcontent HΦ'
     iunfold arrContent at Hcontent
+    icases Hcontent with ⟨%M, Hcontent⟩
+    iunfold arrContentAt at Hcontent
     icases Hcontent with ⟨HM, %hwf, %hdom, Hview⟩
     iunfold Arr.isId at Hid
     icases Hid with ⟨%d, #Hat, HArc⟩
@@ -3614,9 +3624,10 @@ theorem Impl.revoke_spec (N : Namespace)
           · isplitl [Hretired] <;> iassumption
           imodintro
           iapply HΦ'
-          iexists M, { cells := pre ++ [(id, xv)], counter := σ.counter }
+          iexists { cells := pre ++ [(id, xv)], counter := σ.counter }
           isplitl [HM Hghost Hretired]
-          · unfold arrContent exclusiveView isGhost
+          · unfold arrContent arrContentAt exclusiveView isGhost
+            iexists M
             iframe HM Hghost Hretired
             isplit
             · ipureintro
@@ -3684,9 +3695,10 @@ theorem Impl.revoke_spec (N : Namespace)
               iexact Hcd
             imodintro
             iapply HΦ'
-            iexists M, σ
+            iexists σ
             isplitl [HM Hghost Hretired]
-            · unfold arrContent exclusiveView
+            · unfold arrContent arrContentAt exclusiveView
+              iexists M
               iframe HM Hghost Hretired
               isplit
               · ipureintro; exact hwf

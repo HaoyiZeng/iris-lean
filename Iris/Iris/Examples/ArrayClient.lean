@@ -160,7 +160,7 @@ theorem Arr.isList_clone_head (γ : Arrγ) (id : Nat) (x : Int)
   iintro Hlist Hid
   iunfold Arr.isList at Hlist
   icases Hlist with ⟨%M, Hcontent, Hstate⟩
-  iunfold arrContent at Hcontent
+  iunfold arrContentAt at Hcontent
   icases Hcontent with ⟨HM, %hwf, %hdom, Hview⟩
   iunfold exclusiveView at Hview
   icases Hview with ⟨Hghost, Hretired⟩
@@ -188,7 +188,7 @@ theorem Arr.isList_clone_head (γ : Arrγ) (id : Nat) (x : Int)
     imodintro
     -- put the (now heavier) reference count back into the slot
     isplitl [HM Hauth Hlock Hcell HP Hrest Hretired Hstate]
-    · unfold Arr.isList arrContent exclusiveView isGhost
+    · unfold Arr.isList arrContentAt exclusiveView isGhost
       iexists M
       iframe HM Hstate Hretired
       isplitl []
@@ -313,13 +313,7 @@ theorem Impl.parInsert_spec (N : Namespace) (γ : Arrγ) (γp : GName)
               insertedNode γ v1 ∗ insertedNode γ v2 }} := by
   iintro #Hinv #Hcl Hid1 Hid2
   unfold Impl.parInsert
-  wp_pure
-  wp_pure
-  wp_pure
-  wp_pure
-  wp_pure
-  wp_pure
-  wp_pure
+  wp_pures
   iapply (Par.par_spec
     (fun v => iprop% Arr.isId γ node1 0 ∗ insertedNode γ v)
     (fun v => iprop% Arr.isId γ node2 0 ∗ insertedNode γ v) _ _) $$ [Hid1] [Hid2] []
