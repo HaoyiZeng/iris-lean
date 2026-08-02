@@ -1022,14 +1022,19 @@ def arrInvBody (γ : Arrγ) (γp : GName) (platform : Val) : IProp GF := iprop%
 instance instArrInvBodyTimeless (γ : Arrγ) (γp : GName) (platform : Val) :
     Timeless (arrInvBody (GF := GF) γ γp platform) := by unfold arrInvBody; infer_instance
 
+/-- The one namespace every array invariant lives in.  Fixing it here rather than
+    threading a parameter through every spec means a client only ever has to prove
+    one disjointness side condition, `↑clientN ## ↑arrN`. -/
+def arrN : Namespace := ndot nroot "arr"
+
 /-- Persistent handle to a well-formed concurrent array.  Because it is persistent
     it survives past a linearisation point, which is what lets an operation still
     release the platform lock after its atomic update has been committed. -/
-def isArrInv (N : Namespace) (γ : Arrγ) (γp : GName) (platform : Val) : IProp GF :=
-  inv N (arrInvBody γ γp platform)
+def isArrInv (γ : Arrγ) (γp : GName) (platform : Val) : IProp GF :=
+  inv arrN (arrInvBody γ γp platform)
 
-instance instIsArrInvPersistent (N : Namespace) (γ : Arrγ) (γp : GName) (platform : Val) :
-    Persistent (isArrInv (GF := GF) N γ γp platform) := by unfold isArrInv; infer_instance
+instance instIsArrInvPersistent (γ : Arrγ) (γp : GName) (platform : Val) :
+    Persistent (isArrInv (GF := GF) γ γp platform) := by unfold isArrInv; infer_instance
 
 /-- The client's view: just the abstract state.  This is the *only* thing that ever
     appears inside an atomic update. -/
@@ -1043,11 +1048,6 @@ instance instArrFragTimeless (γ : Arrγ) (σ : Arr) :
     without leaving a `▷`. -/
 example (γ : Arrγ) (γp : GName) (platform : Val) :
     Timeless (arrInvBody (GF := GF) γ γp platform) := inferInstance
-
-/-- What a client owns: a persistent handle plus the abstract state. -/
-def Arr.isArr (N : Namespace) (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) :
-    IProp GF := iprop%
-  isArrInv N γ γp platform ∗ arrFrag γ σ
 
 /-- A freshly built node chain that has not been handed to a platform yet: the whole
     content, and the *undivided* abstract state.  Nothing is shared, so no invariant
@@ -1530,10 +1530,10 @@ theorem arrInvBody_read (γ : Arrγ) (γp : GName) (platform : Val) (n : Nat)
     The read permit is what makes this possible at all: it rules out the platform
     lock being write-held, which is the only state in which the invariant holds no
     node slots.  Half of it is left behind in the slot as a deposit. -/
-theorem nodeWriteAcquireSpec (N : Namespace)
+theorem nodeWriteAcquireSpec
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (d : Data) :
     ⊢@{IProp GF}
-      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      isArrInv γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
       rwGuard γp .read -∗
       WP hl(&RwLock.write_acquire &d.mux)
         {{ v, ⌜v = hl_val(#d.ptr)⌝ ∗
@@ -1541,10 +1541,10 @@ theorem nodeWriteAcquireSpec (N : Namespace)
               rwGuardFrac γp .read q1_2 ∗
               ((∃ nxt, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d) }} := by
   iintro #Hinv #Hg HArc H
-  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  ihave #Hinvraw : inv arrN (arrInvBody γ γp platform) $$ [Hinv]
   · iunfold isArrInv at Hinv
     iexact Hinv
-  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
     fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
   iauintro
@@ -1692,19 +1692,19 @@ theorem nodeWriteAcquireSpec (N : Namespace)
     *which resource you hold*, via `cellAlive_mem` / `cellDead_not_mem`.  That is
     strictly stronger than a pure snapshot, since those lemmas speak about the `σ`
     at *this* linearisation point, not the one where the lock was taken. -/
-theorem nodeWriteReleaseSpec (N : Namespace)
+theorem nodeWriteReleaseSpec
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (d : Data) :
     ⊢@{IProp GF}
-      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      isArrInv γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
       rwGuard d.rw .write -∗ rwGuardFrac γp .read q1_2 -∗
       ((∃ nxt : Option Nat, alivePayload γ.l d q3_4 nxt) ∨ revokedPayload d) -∗
       WP hl(&RwLock.write_release &d.mux)
         {{ v, ⌜v = hl_val(#())⌝ ∗ isArc d.arc node d.mux ∗ rwGuard γp .read }} := by
   iintro #Hinv #Hg HArc Hguard Hkeep Hpay
-  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  ihave #Hinvraw : inv arrN (arrInvBody γ γp platform) $$ [Hinv]
   · iunfold isArrInv at Hinv
     iexact Hinv
-  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
     fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
   iauintro
@@ -2200,12 +2200,12 @@ end Resources
 
     Allocating an invariant is a ghost update, so unlike the old pure wand this has
     to be a fancy update. -/
-theorem Arr.isList_bind (N : Namespace)
+theorem Arr.isList_bind
     (γ : Arrγ) (γp : GName) (σ : Arr) (platform : Val) :
   ⊢@{IProp GF}
     Arr.isList γ σ -∗
     isPlatform γp .free platform ={⊤}=∗
-    Arr.isArr N γ γp σ platform := by
+    isArrInv γ γp platform ∗ arrFrag γ σ := by
   iintro Hlist Hplat
   unfold Arr.isList
   icases Hlist with ⟨%M, Hcontent, Hstate⟩
@@ -2215,9 +2215,9 @@ theorem Arr.isList_bind (N : Namespace)
     iexists RwLock.State.free, M, σ
     simp only [isPhysical]
     iframe
-  imod inv_alloc N ⊤ (arrInvBody γ γp platform) $$ Hbody with #Hinvariant
+  imod inv_alloc arrN ⊤ (arrInvBody γ γp platform) $$ Hbody with #Hinvariant
   imodintro
-  unfold Arr.isArr isArrInv arrFrag
+  unfold isArrInv arrFrag
   iframe Hinvariant
   iexists M
   iframe
@@ -2386,23 +2386,23 @@ theorem Impl.init_spec (x : Int) :
     iframe
     iexact Hat
 
-theorem Impl.execute_shared_spec (N : Namespace)
+theorem Impl.execute_shared_spec
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
-    isArrInv N γ γP platform -∗
-    (isArrInv N γ γP platform -∗ rwGuard γP .read -∗
+    isArrInv γ γP platform -∗
+    (isArrInv γ γP platform -∗ rwGuard γP .read -∗
        ⟪ ∀ σ, arrFrag γ σ ⟫
-         hl(&f #()) @ ↑N
+         hl(&f #()) @ ↑arrN
        ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
-      hl(&Impl.execute &platform #false &f) @ ↑N
+      hl(&Impl.execute &platform #false &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
   iintro #Hinv Hf %Φ HAU
-  ihave #Hinvraw : inv N (arrInvBody γ γP platform) $$ [Hinv]
+  ihave #Hinvraw : inv arrN (arrInvBody γ γP platform) $$ [Hinv]
   · iunfold isArrInv at Hinv
     iexact Hinv
-  have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
-  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
     fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.
   iapply fupd_wp
@@ -2604,21 +2604,21 @@ theorem Impl.execute_shared_spec (N : Namespace)
     exactly once, at `write_release`, which is the linearisation point.  While `f`
     runs the invariant is empty and the abstract state cannot move, because
     advancing it needs the writer's `3/4` receipt *and* the client's `1/4`. -/
-theorem Impl.execute_exclusive_spec (N : Namespace)
+theorem Impl.execute_exclusive_spec
     (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
-    isArrInv N γ γP platform -∗
+    isArrInv γ γP platform -∗
     (∀ σ,
        ⦃ arrContent γ σ ⦄
          hl(&f #())
        ⦃ r, RET r; ∃ σ', arrContent γ σ' ∗ Q σ σ' r ⦄) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
-      hl(&Impl.execute &platform #true &f) @ ↑N
+      hl(&Impl.execute &platform #true &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
   iintro #Hinv Hf %Φ HAU
   iunfold isArrInv at Hinv
-  have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
-  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
     fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   -- Peek at the runtime shape of `platform` so that `Arc.get` can reduce.  Opening
   -- and closing the invariant with no program step in between, hence `fupd_wp`.
@@ -2794,11 +2794,11 @@ theorem Impl.execute_exclusive_spec (N : Namespace)
     one is handed back to the caller) and the metadata record has not been registered
     yet.  Registering it is part of the linearisation point, because its id is
     `σ.counter`, which is only known once the update is open. -/
-theorem nodeWriteReleaseInsertSpec (N : Namespace)
+theorem nodeWriteReleaseInsertSpec
     (γ : Arrγ) (γp : GName) (platform node newNode : Val)
     (id : Nat) (x : Int) (d dNew : Data) (nxt : Option Nat) :
     ⊢@{IProp GF}
-      isArrInv N γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
+      isArrInv γ γp platform -∗ metaAt γ.l id d -∗ isArc d.arc node d.mux -∗
       rwGuard d.rw .write -∗ rwGuardFrac γp .read q1_2 -∗
       -- the predecessor: its `3/4` cell share still says `nxt`, but its payload has
       -- already been re-pointed at the new node
@@ -2813,7 +2813,7 @@ theorem nodeWriteReleaseInsertSpec (N : Namespace)
       cellAlive dNew.cell 1 nxt -∗
       livePayload γ.l dNew nxt -∗
       ⟪ ∀ σ, arrFrag γ σ ⟫
-        hl(&RwLock.write_release &d.mux) @ ↑N
+        hl(&RwLock.write_release &d.mux) @ ↑arrN
       ⟪ arrFrag γ (Arr.insert σ id x).1 ∗
           isArc d.arc node d.mux ∗ rwGuard γp .read ∗
           Arr.isId γ newNode σ.counter ∗
@@ -2821,10 +2821,10 @@ theorem nodeWriteReleaseInsertSpec (N : Namespace)
         | RET hl_val(#()) ⟫ := by
   iintro #Hinv #Hat HArc Hwguard Hkeep Hcell Hptr %hval HauthN HarcN HedgeN
          HlockN HcellN HpayN %Φ HAU
-  ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv]
+  ihave #Hinvraw : inv arrN (arrInvBody γ γp platform) $$ [Hinv]
   · iunfold isArrInv at Hinv
     iexact Hinv
-  have Hfull' : (↑N : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
     fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
   iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
   iauintro
@@ -3043,13 +3043,13 @@ def Impl.insertQ (γ : Arrγ) (node : Val) (id : Nat) (x : Int)
         ⌜ret = hl_val(some(&newNode))⌝ ∗
         Arr.isId γ newNode nid
 
-theorem Impl.insert_spec (N : Namespace)
+theorem Impl.insert_spec
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
-    isArrInv N γ γp platform -∗
+    isArrInv γ γp platform -∗
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
-      hl(&Impl.insert &platform &node #x) @ ↑N
+      hl(&Impl.insert &platform &node #x) @ ↑arrN
     ⟪ ∃ ret,
         arrFrag γ (Arr.insert σ id x).1 ∗
         Arr.isId γ node id ∗
@@ -3064,7 +3064,7 @@ theorem Impl.insert_spec (N : Namespace)
   iintro #Hinv Hid %Φ HAU
   unfold Impl.insert
   wp_pures
-  iapply Impl.execute_shared_spec N γ γp platform _ (Impl.insertQ γ node id x) $$ Hinv [Hid]
+  iapply Impl.execute_shared_spec γ γp platform _ (Impl.insertQ γ node id x) $$ Hinv [Hid]
   · -- the body, running under the platform read lock
     iintro #Hinv' Hguard %Φ' HAU'
     iunfold Arr.isId at Hid
@@ -3077,7 +3077,7 @@ theorem Impl.insert_spec (N : Namespace)
     -- take the node's write lock; the abstract state does not move here
     wp_bind &RwLock.write_acquire _
     iapply wp_wand $$ [Hinv' Hat HArc Hguard]
-    · iapply nodeWriteAcquireSpec N γ γp platform node id d $$ Hinv' Hat HArc Hguard
+    · iapply nodeWriteAcquireSpec γ γp platform node id d $$ Hinv' Hat HArc Hguard
     iintro %ptr ⟨%hptr, HArc, Hwguard, Hkeep, Hpay⟩
     subst hptr
     wp_pures
@@ -3144,7 +3144,7 @@ theorem Impl.insert_spec (N : Namespace)
         wp_pures
         -- and drop the predecessor's lock: this is the linearisation point
         wp_bind &RwLock.write_release _
-        iapply nodeWriteReleaseInsertSpec N γ γp platform node newNode id x d dNew nxt
+        iapply nodeWriteReleaseInsertSpec γ γp platform node newNode id x d dNew nxt
           $$ Hinv' Hat HArc Hwguard Hkeep Hcell Hptr %hval HauthN HisArcN HedgeN
              HlockN HcellN HpayN
         -- the linearisation point: our own update is what backs the one we hand over
@@ -3214,17 +3214,17 @@ theorem Impl.insert_spec (N : Namespace)
         iframe Hcd Hptr
       wp_bind &RwLock.write_release _
       iapply wp_wand $$ [Hinv' Hat HArc Hwguard Hkeep Hpay]
-      · iapply nodeWriteReleaseSpec N γ γp platform node id d
+      · iapply nodeWriteReleaseSpec γ γp platform node id d
           $$ Hinv' Hat HArc Hwguard Hkeep Hpay
       iintro %u ⟨%hu, HArc, Hguard⟩
       subst hu
       wp_pures
       -- linearise: nothing changed, and `id` is not in `σ` because the cell is dead.
       -- No program step is involved, so this is a plain fancy update.
-      ihave #Hinvraw : inv N (arrInvBody γ γp platform) $$ [Hinv']
+      ihave #Hinvraw : inv arrN (arrInvBody γ γp platform) $$ [Hinv']
       · iunfold isArrInv at Hinv'
         iexact Hinv'
-      have Hfull : (↑N : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+      have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
       imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
       iunfold arrInvBody at HI
       icases HI with ⟨%sp, %M, %σi, Hplat, Hphys⟩
@@ -3487,13 +3487,13 @@ def Impl.revokeQ (γ : Arrγ) (node : Val) (id : Nat)
          | none => hl_val(none())
          | some _ => hl_val(some(#()))⌝
 
-theorem Impl.revoke_spec (N : Namespace)
+theorem Impl.revoke_spec
     (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
-    isArrInv N γ γp platform -∗
+    isArrInv γ γp platform -∗
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
-      hl(&Impl.revoke &platform &node) @ ↑N
+      hl(&Impl.revoke &platform &node) @ ↑arrN
     ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
       | RET match (Arr.revoke σ id).2 with
             | none => hl_val(none())
@@ -3502,7 +3502,7 @@ theorem Impl.revoke_spec (N : Namespace)
   iintro #Hinv Hid %Φ HAU
   unfold Impl.revoke
   wp_pures
-  iapply Impl.execute_exclusive_spec N γ γp platform _ (Impl.revokeQ γ node id)
+  iapply Impl.execute_exclusive_spec γ γp platform _ (Impl.revokeQ γ node id)
     $$ Hinv [Hid]
   · -- the body, running with exclusive access to the whole content
     iintro %σ %Φ' Hcontent HΦ'

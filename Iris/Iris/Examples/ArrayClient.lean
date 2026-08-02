@@ -38,6 +38,15 @@ theorem Arr.insert_head_stable (σ : Arr) (id : Nat) (v x : Int)
 
 def clientN : Namespace := ndot nroot "arrclient"
 
+/-- The client's invariant is disjoint from the array's, so it may be opened inside
+    the mask an array operation leaves free. -/
+theorem clientN_sub_arrN : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ (↑arrN : CoPset)) := by
+  have hd : (↑clientN : CoPset) ## ↑arrN :=
+    ndot_ne_disjoint nroot (by decide : "arrclient" ≠ "arr")
+  intro y hy
+  rw [CoPset.in_diff]
+  exact ⟨CoPset.mem_full, fun hya => hd y ⟨hy, hya⟩⟩
+
 /-- What the two threads agree on: the array always starts with the root cell
     `(0, 1)`.  This is enough to know the root is live, hence every insert after
     it linearizes successfully. -/
@@ -53,11 +62,10 @@ omit [SpawnG GF] in
     the shared client invariant, which is opened only at the commit point.  Because
     the invariant pins the root at the head of the list, the insert is guaranteed to
     succeed — the thread gets a genuine node back. -/
-theorem Impl.insert_conc (N : Namespace) (γ : Arrγ) (γp : GName)
-    (platform node : Val) (x : Int)
-    (hsub : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ (↑N : CoPset))) :
+theorem Impl.insert_conc (γ : Arrγ) (γp : GName)
+    (platform node : Val) (x : Int) :
   ⊢@{IProp GF}
-    isArrInv N γ γp platform -∗
+    isArrInv γ γp platform -∗
     inv clientN (clientInv γ) -∗
     Arr.isId γ node 0 -∗
     WP hl(&Impl.insert &platform &node #x)
@@ -65,9 +73,9 @@ theorem Impl.insert_conc (N : Namespace) (γ : Arrγ) (γp : GName)
               ⌜v = hl_val(some(&node'))⌝ ∗
               Arr.isId γ node 0 ∗ Arr.isId γ node' nid }} := by
   iintro #Hinv #Hcl Hid
-  iapply Impl.insert_spec N γ γp platform node 0 x $$ Hinv Hid
+  iapply Impl.insert_spec γ γp platform node 0 x $$ Hinv Hid
   iauintro
-  iapply aacc_inv _ _ _ _ hsub $$ Hcl
+  iapply aacc_inv _ _ _ _ clientN_sub_arrN $$ Hcl
   iintro Hbody
   iunfold clientInv at Hbody
   icases Hbody with ⟨%σ, Hfrag, %hhd⟩
@@ -108,11 +116,10 @@ theorem Impl.insert_conc (N : Namespace) (γ : Arrγ) (γp : GName)
 
 /-- **Two threads inserting concurrently** after the same root node.  Each holds its
     own strong reference (`Arr.isId`), and both succeed. -/
-theorem Impl.parClient_spec (N : Namespace) (γ : Arrγ) (γp : GName)
-    (platform node1 node2 : Val)
-    (hsub : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ (↑N : CoPset))) :
+theorem Impl.parClient_spec (γ : Arrγ) (γp : GName)
+    (platform node1 node2 : Val) :
   ⊢@{IProp GF}
-    isArrInv N γ γp platform -∗
+    isArrInv γ γp platform -∗
     inv clientN (clientInv γ) -∗
     Arr.isId γ node1 0 -∗ Arr.isId γ node2 0 -∗
     WP hl(&Impl.insert &platform &node1 #2 ‖ &Impl.insert &platform &node2 #3)
@@ -125,8 +132,8 @@ theorem Impl.parClient_spec (N : Namespace) (γ : Arrγ) (γp : GName)
       Arr.isId γ node1 0 ∗ Arr.isId γ n' nid)
     (fun v => iprop% ∃ (nid : Nat) (n' : Val), ⌜v = hl_val(some(&n'))⌝ ∗
       Arr.isId γ node2 0 ∗ Arr.isId γ n' nid) _ _) $$ [Hid1] [Hid2] []
-  · iapply Impl.insert_conc N γ γp platform node1 2 hsub $$ Hinv Hcl Hid1
-  · iapply Impl.insert_conc N γ γp platform node2 3 hsub $$ Hinv Hcl Hid2
+  · iapply Impl.insert_conc γ γp platform node1 2 $$ Hinv Hcl Hid1
+  · iapply Impl.insert_conc γ γp platform node2 3 $$ Hinv Hcl Hid2
   · iintro %v1 %v2 ⟨⟨%nid1, %n1, %h1, -, Hn1⟩, ⟨%nid2, %n2, %h2, -, Hn2⟩⟩
     inext
     iexists v1, v2
@@ -227,14 +234,14 @@ def Impl.clientSetup : Val := hl_val%
     (p, (root, root2))
 
 omit [SpawnG GF] in
-theorem Impl.clientSetup_spec (N : Namespace) :
+theorem Impl.clientSetup_spec :
   ⊢@{IProp GF}
     ⦃ True ⦄
       hl(&Impl.clientSetup #())
     ⦃ v, RET v;
       ∃ (γ : Arrγ) (γp : GName) (p n1 n2 : Val),
         ⌜v = hl_val((&p, (&n1, &n2)))⌝ ∗
-        isArrInv N γ γp p ∗ inv clientN (clientInv γ) ∗
+        isArrInv γ γp p ∗ inv clientN (clientInv γ) ∗
         Arr.isId γ n1 0 ∗ Arr.isId γ n2 0 ⦄ := by
   iintro %Φ - HΦ
   iapply wp_fupd
@@ -257,10 +264,8 @@ theorem Impl.clientSetup_spec (N : Namespace) :
   iintro %root2 ⟨Hlist, Hid1, Hid2⟩
   wp_pures
   -- publish the array, then publish the client's own view of it
-  imod Arr.isList_bind N γ γp { cells := [(0, 1)], counter := 1 } p $$ Hlist Hplat
-    with Harr
-  iunfold Arr.isArr at Harr
-  icases Harr with ⟨#Hinv, Hfrag⟩
+  imod Arr.isList_bind γ γp { cells := [(0, 1)], counter := 1 } p $$ Hlist Hplat
+    with ⟨#Hinv, Hfrag⟩
   ihave Hbody : clientInv γ $$ [Hfrag]
   · unfold clientInv
     iexists { cells := [(0, 1)], counter := 1 }
@@ -301,11 +306,10 @@ def Impl.client : Val := hl_val%
 def insertedNode (γ : Arrγ) (v : Val) : IProp GF := iprop%
   ∃ (nid : Nat) (n' : Val), ⌜v = hl_val(some(&n'))⌝ ∗ Arr.isId γ n' nid
 
-theorem Impl.parInsert_spec (N : Namespace) (γ : Arrγ) (γp : GName)
-    (platform node1 node2 : Val)
-    (hsub : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ (↑N : CoPset))) :
+theorem Impl.parInsert_spec (γ : Arrγ) (γp : GName)
+    (platform node1 node2 : Val) :
   ⊢@{IProp GF}
-    isArrInv N γ γp platform -∗
+    isArrInv γ γp platform -∗
     inv clientN (clientInv γ) -∗
     Arr.isId γ node1 0 -∗ Arr.isId γ node2 0 -∗
     WP hl(&Impl.parInsert &platform &node1 &node2)
@@ -318,7 +322,7 @@ theorem Impl.parInsert_spec (N : Namespace) (γ : Arrγ) (γp : GName)
     (fun v => iprop% Arr.isId γ node1 0 ∗ insertedNode γ v)
     (fun v => iprop% Arr.isId γ node2 0 ∗ insertedNode γ v) _ _) $$ [Hid1] [Hid2] []
   · wp_pures
-    ihave Hw := Impl.insert_conc N γ γp platform node1 2 hsub $$ Hinv Hcl Hid1
+    ihave Hw := Impl.insert_conc γ γp platform node1 2 $$ Hinv Hcl Hid1
     iapply wp_wand $$ Hw
     iintro %v ⟨%nid, %n', %hv, Hid, Hn⟩
     unfold insertedNode
@@ -327,7 +331,7 @@ theorem Impl.parInsert_spec (N : Namespace) (γ : Arrγ) (γp : GName)
     iframe Hn
     ipureintro; exact hv
   · wp_pures
-    ihave Hw := Impl.insert_conc N γ γp platform node2 3 hsub $$ Hinv Hcl Hid2
+    ihave Hw := Impl.insert_conc γ γp platform node2 3 $$ Hinv Hcl Hid2
     iapply wp_wand $$ Hw
     iintro %v ⟨%nid, %n', %hv, Hid, Hn⟩
     unfold insertedNode
@@ -343,16 +347,6 @@ theorem Impl.parInsert_spec (N : Namespace) (γ : Arrγ) (γp : GName)
     iframe Hn1 Hn2
     ipureintro; rfl
 
-/-- Concrete namespaces: the array's invariant and the client's are disjoint. -/
-def arrN : Namespace := ndot nroot "arr"
-
-theorem clientN_sub_arrN : (↑clientN : CoPset) ⊆ ((⊤ : CoPset) \ (↑arrN : CoPset)) := by
-  have hd : (↑clientN : CoPset) ## ↑arrN :=
-    ndot_ne_disjoint nroot (by decide : "arrclient" ≠ "arr")
-  intro y hy
-  rw [CoPset.in_diff]
-  exact ⟨CoPset.mem_full, fun hya => hd y ⟨hy, hya⟩⟩
-
 /-- **End to end.**  Allocating a one-element array and running two concurrent
     inserts after its root: both threads come back with a fresh, live node. -/
 theorem Impl.client_spec :
@@ -366,12 +360,12 @@ theorem Impl.client_spec :
   unfold Impl.client
   wp_pures
   wp_bind &Impl.clientSetup _
-  iapply Impl.clientSetup_spec arrN
+  iapply Impl.clientSetup_spec
   · itrivial
   iintro %ps !> ⟨%γ, %γp, %p, %n1, %n2, %hps, #Hinv, #Hcl, Hid1, Hid2⟩
   subst hps
   wp_pures
-  ihave Hpar := Impl.parInsert_spec arrN γ γp p n1 n2 clientN_sub_arrN
+  ihave Hpar := Impl.parInsert_spec γ γp p n1 n2
     $$ Hinv Hcl Hid1 Hid2
   iapply wp_wand $$ Hpar
   iintro %v ⟨%v1, %v2, %hv, Hn1, Hn2⟩
