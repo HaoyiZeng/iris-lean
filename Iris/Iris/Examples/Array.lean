@@ -413,6 +413,24 @@ def Impl.revoke : Val := hl_val%
          &revokeSuffix next;
          some(#())))
 
+/-- Release a client's handle on a cell.  A handle to a cell that is still part of
+    the array cannot be released — the array itself holds no reference to its head,
+    so dropping the last handle to a live cell would free memory the array still
+    owns.  The revocation flag decides at run time, and the handle comes back
+    untouched when the cell turns out to still be live. -/
+def Impl.dispose : Val := hl_val%
+  λ platform node,
+    &execute platform #true (λ _,
+      let lock := &Arc.get(node);
+      let ptr := &RwLock.write_acquire(lock);
+      let contents := !ptr;
+      let revoked := fst(contents);
+      &RwLock.write_release(lock);
+      if revoked then
+        (&Arc.drop &RwLock.drop node;
+         #true)
+      else #false)
+
 
 section Specs
 
@@ -580,10 +598,9 @@ theorem metaMap_lookup_lt (γ : GName) (M : H Data) (counter id : Nat) (d : Data
   exact (hdom id).mp (by simp [dom, hlookup])
 
 theorem q1_4_add_q3_4 : q1_4 + q3_4 = 1 := by
-  unfold q1_4 q3_4 Qp.half; apply Subtype.ext; native_decide
+  unfold q1_4 q3_4; apply Subtype.ext; simp; grind
 
-theorem q1_2_add_q1_2 : q1_2 + q1_2 = 1 := by
-  unfold q1_2 Qp.half; apply Subtype.ext; native_decide
+theorem q1_2_add_q1_2 : q1_2 + q1_2 = 1 := Qp.half_add_half 1
 
 instance cellDead_persistent (γ : GName) : Persistent (cellDead (GF := GF) γ) := by
   unfold cellDead FracAgree.mk; infer_instance
@@ -681,8 +698,7 @@ theorem stateVar_frac_valid (γ : GName) (q₁ q₂ : Qp) (σ₁ σ₂ : Arr) (M
   exact (FracAgree.Frac.op_valid_L.mp Hvalid).1
 
 theorem q3_4_add_q3_4_invalid : ¬ ((q3_4 + q3_4).val ≤ 1) := by
-  unfold q3_4 Qp.half
-  native_decide
+  unfold q3_4; simp; grind
 
 /-- The `1/4` (invariant side) / `3/4` (writer side) split, mirroring `cellAlive`. -/
 theorem stateVar_split (γ : GName) (σ : Arr) (M : H Data) :
@@ -787,6 +803,29 @@ theorem livePayload_split (γ : GName) (d : Data) (nx : Option Nat) :
       isplit
       · ipureintro; rfl
       iexact Hs
+
+omit [RwLockG GF] in
+/-- The converse of `livePayload_split`: hand back the cell and the successor
+    evidence and get the payload again.  Needed by any operation that reads a
+    cell's contents without changing them. -/
+theorem livePayload_join (γ : GName) (d : Data) (nx : Option Nat) (nv : Val) :
+    d.ptr ↦ hl_val((#false, (#d.val, &nv))) ∗
+      (match nx with
+       | none => iprop% ⌜nv = hl_val(none())⌝
+       | some j => iprop% ∃ u : Val, ⌜nv = hl_val(some(&u))⌝ ∗ succRef γ u j)
+    ⊢@{IProp GF} livePayload γ d nx := by
+  cases nx with
+  | none =>
+      iintro ⟨Hp, %hnv⟩
+      subst hnv
+      unfold livePayload
+      iexact Hp
+  | some j =>
+      iintro ⟨Hp, %u, %hnv, Hs⟩
+      subst hnv
+      unfold livePayload
+      iexists u
+      iframe Hp Hs
 
 omit [RwLockG GF] in
 theorem livePayload_ptr (γ : GName) (d : Data) (nxt : Option Nat) :
@@ -3299,10 +3338,12 @@ theorem Impl.revokeSuffix_spec (γ : Arrγ) :
          | none => iprop% ⌜v = hl_val(none())⌝
          | some i => iprop% ∃ w : Val, ⌜v = hl_val(some(&w))⌝ ∗ succRef γ.l w i) ∗
         isGhostHelp nodeSlotExclusive γ.l none suffix ⦄
-        hl(&Impl.revokeSuffix &v)
+      hl(&Impl.revokeSuffix &v)
       ⦃ RET hl_val(#());
-        [∗list] c ∈ suffix, ∃ d : Data,
-          metaAt γ.l c.1 d ∗ retiredSlot nodeSlotExclusive d ⦄ := by
+        [∗list] c ∈ suffix,
+          ∃ d : Data,
+            metaAt γ.l c.1 d ∗
+            retiredSlot nodeSlotExclusive d ⦄ := by
   intro suffix
   induction suffix with
   | nil =>
@@ -3494,11 +3535,11 @@ theorem Impl.revoke_spec
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&Impl.revoke &platform &node) @ ↑arrN
-    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
+    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗
+      Arr.isId γ node id
       | RET match (Arr.revoke σ id).2 with
             | none => hl_val(none())
-            | some _ => hl_val(some(#()))
-    ⟫ := by
+            | some _ => hl_val(some(#())) ⟫ := by
   iintro #Hinv Hid %Φ HAU
   unfold Impl.revoke
   wp_pures
@@ -3746,6 +3787,281 @@ theorem Impl.revoke_spec
             $$ [Hfrag' Hid]
         · iframe
         imod Hcommit $$ Hb with HΦ
+        imodintro
+        iexact HΦ
+
+/-! ### Releasing a handle
+
+This is what makes `Arr.isId` a genuinely *linear* resource: without it no client
+can ever give a handle back, every cell keeps at least one strong reference for
+ever, and the deallocating branch of `Arc.drop` is unreachable — the program would
+be correct but would never free anything. -/
+
+/-- What `Impl.dispose`'s body achieves.  `σ` never moves; the return value says
+    whether the handle was consumed. -/
+def Impl.disposeQ (γ : Arrγ) (node : Val) (id : Nat)
+    (σ σ' : Arr) (r : Val) : IProp GF := iprop%
+  ⌜σ' = σ⌝ ∗
+  ((⌜r = hl_val(#true)⌝ ∗ ⌜id ∉ σ.cells.map (·.1)⌝) ∨
+   (⌜r = hl_val(#false)⌝ ∗ ⌜id ∈ σ.cells.map (·.1)⌝ ∗ Arr.isId γ node id))
+
+theorem Impl.dispose_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γp platform -∗
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&Impl.dispose &platform &node) @ ↑arrN
+    ⟪ ∃ r,
+        arrFrag γ σ ∗
+        ((⌜r = hl_val(#true)⌝ ∗ ⌜id ∉ σ.cells.map (·.1)⌝) ∨
+         (⌜r = hl_val(#false)⌝ ∗ ⌜id ∈ σ.cells.map (·.1)⌝ ∗ Arr.isId γ node id))
+      | RET r ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold Impl.dispose
+  wp_pures
+  iapply Impl.execute_exclusive_spec γ γp platform _ (Impl.disposeQ γ node id)
+    $$ Hinv [Hid]
+  · -- the body, running with exclusive access to the whole content
+    iintro %σ %Φ' Hcontent HΦ'
+    iunfold arrContent at Hcontent
+    icases Hcontent with ⟨%M, Hcontent⟩
+    iunfold arrContentAt at Hcontent
+    icases Hcontent with ⟨HM, %hwf, %hdom, Hview⟩
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hat, HArc⟩
+    ihave #Hl : ⌜get? M id = some d⌝ $$ [HM Hat]
+    · iapply metaMap_lookup γ.l M id d $$ HM Hat
+    icases Hl with %Hl
+    wp_pures
+    wp_bind &Arc.get _
+    iapply Arc.get_spec (γ := d.arc) node d.mux $$ HArc
+    iintro !> HArc
+    wp_pures
+    iunfold exclusiveView at Hview
+    icases Hview with ⟨Hghost, Hretired⟩
+    by_cases hin : id ∈ σ.cells.map (·.1)
+    · -- the cell is still in the array: the flag reads `false` and we keep the handle
+      ihave Hacc := isGhostAccIn γ.l d nodeSlotExclusive id σ.cells hin $$ Hat Hghost
+      icases Hacc with ⟨%nxt, Hslot, Hback⟩
+      iunfold nodeSlotExclusive at Hslot
+      icases Hslot with ⟨Hstrong, Hlock, Hcell, HP⟩
+      ihave Hsplit := livePayload_split γ.l d nxt $$ HP
+      icases Hsplit with ⟨%nv, Hptr, Hnext⟩
+      wp_bind &RwLock.write_acquire _
+      iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+      iauintro
+      iaaccintro' with Hlock
+      · iintro Hlock
+        imodintro
+        iframe
+        repeat' first | (imodintro; iassumption) | isplitl []
+      · itele_reduce
+        iintro Hpost'
+        icases Hpost' with ⟨Hlock, Hwguard, -⟩
+        imodintro
+        iframe
+        wp_pures
+        wp_bind !_
+        iapply wp_load $$ Hptr
+        iintro !> Hptr
+        wp_pures
+        wp_bind &RwLock.write_release _
+        iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+        iauintro
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          iframe
+          repeat' first | (imodintro; iassumption) | isplitl []
+        · itele_reduce
+          iintro Hlock
+          imodintro
+          iframe
+          wp_pures
+          -- nothing was dropped; put the cell back exactly as we found it
+          ihave HP := livePayload_join γ.l d nxt nv $$ [Hptr Hnext]
+          · iframe
+          ihave Hghost := Hback $$ [Hstrong Hlock Hcell HP]
+          · unfold aliveSlot nodeSlotExclusive
+            iframe
+          imodintro
+          iapply HΦ'
+          iexists σ
+          isplitl [HM Hghost Hretired]
+          · unfold arrContent arrContentAt exclusiveView
+            iexists M
+            iframe HM Hghost Hretired
+            isplit
+            · ipureintro; exact hwf
+            · ipureintro; exact hdom
+          · unfold Impl.disposeQ Arr.isId
+            isplitl []
+            · itrivial
+            iright
+            isplitl []
+            · itrivial
+            isplitl []
+            · ipureintro; exact hin
+            · iexists d
+              iframe HArc
+              iexact Hat
+    · -- the cell has been revoked: our handle may well be the last one
+      ihave ⟨Hslot, Hback⟩ := retiredNodesAccNotIn Hl hin $$ Hretired
+      iunfold retiredSlot at Hslot
+      icases Hslot with ⟨#Hcd, Hlive | Hdead⟩
+      · iunfold nodeSlotExclusive at Hlive
+        icases Hlive with ⟨Hstrong, Hlock, -, HP⟩
+        iunfold revokedPayload at HP
+        icases HP with ⟨-, Hptr⟩
+        wp_bind &RwLock.write_acquire _
+        iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+        iauintro
+        iaaccintro' with Hlock
+        · iintro Hlock
+          imodintro
+          iframe
+          repeat' first | (imodintro; iassumption) | isplitl []
+        · itele_reduce
+          iintro Hpost'
+          icases Hpost' with ⟨Hlock, Hwguard, -⟩
+          imodintro
+          iframe
+          wp_pures
+          wp_bind !_
+          iapply wp_load $$ Hptr
+          iintro !> Hptr
+          wp_pures
+          wp_bind &RwLock.write_release _
+          iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+          iauintro
+          iaaccintro' with Hlock
+          · iintro Hlock
+            imodintro
+            iframe
+            repeat' first | (imodintro; iassumption) | isplitl []
+          · itele_reduce
+            iintro Hlock
+            imodintro
+            iframe
+            wp_pures
+            -- drop our reference; whether it was the last one decides which side
+            -- of `retiredSlot` we can give back
+            iunfold arcHasStrong at Hstrong
+            icases Hstrong with ⟨%n, %m, Hauth, %hn⟩
+            ihave Hpd : (⦃ isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                            d.ptr ↦ hl_val((#true, (#d.val, none()))) ⦄
+                            hl(&RwLock.drop &d.mux)
+                          ⦃ RET hl_val(#()); True ⦄) $$ []
+            · iapply RwLock.ptr_drop_spec d.rw d.mux d.ptr
+                hl_val((#true, (#d.val, none())))
+            wp_bind (&Arc.drop _ _)
+            by_cases hn1 : n = 1
+            · -- ours was the last reference: the payload is freed and the arc dies
+              subst hn1
+              iapply Arc.drop_spec (γ := d.arc) RwLock.drop node d.mux 1 m
+                (iprop% isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                        d.ptr ↦ hl_val((#true, (#d.val, none())))) $$ Hpd
+                [HArc Hauth Hlock Hptr]
+              · iframe HArc Hauth
+                rw [if_pos rfl]
+                iframe Hlock Hptr
+              iintro !> Hauth
+              wp_pures
+              ihave Hretired := Hback $$ [Hauth]
+              · unfold retiredSlot
+                isplitl []
+                · iexact Hcd
+                iright
+                unfold arcNoStrong
+                iexists m
+                iexact Hauth
+              imodintro
+              iapply HΦ'
+              iexists σ
+              isplitl [HM Hghost Hretired]
+              · unfold arrContent arrContentAt exclusiveView
+                iexists M
+                iframe HM Hghost Hretired
+                isplit
+                · ipureintro; exact hwf
+                · ipureintro; exact hdom
+              · unfold Impl.disposeQ
+                isplitl []
+                · itrivial
+                ileft
+                isplitl []
+                · itrivial
+                · ipureintro; exact hin
+            · -- somebody else still holds a reference: the cell survives, revoked
+              iapply Arc.drop_spec (γ := d.arc) RwLock.drop node d.mux n m
+                (iprop% isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
+                        d.ptr ↦ hl_val((#true, (#d.val, none())))) $$ Hpd
+                [HArc Hauth]
+              · iframe HArc Hauth
+                rw [if_neg hn1]
+                itrivial
+              iintro !> Hauth
+              wp_pures
+              ihave Hretired := Hback $$ [Hauth Hlock Hptr]
+              · unfold retiredSlot nodeSlotExclusive revokedPayload
+                isplitl []
+                · iexact Hcd
+                ileft
+                isplitl [Hauth]
+                · unfold arcHasStrong
+                  iexists (n - 1), m
+                  iframe Hauth
+                  ipureintro
+                  omega
+                iframe Hlock Hptr
+                iexact Hcd
+              imodintro
+              iapply HΦ'
+              iexists σ
+              isplitl [HM Hghost Hretired]
+              · unfold arrContent arrContentAt exclusiveView
+                iexists M
+                iframe HM Hghost Hretired
+                isplit
+                · ipureintro; exact hwf
+                · ipureintro; exact hdom
+              · unfold Impl.disposeQ
+                isplitl []
+                · itrivial
+                ileft
+                isplitl []
+                · itrivial
+                · ipureintro; exact hin
+      · -- the handle we hold rules out the "no strong reference" case
+        iexfalso
+        iapply arcNoStrong_isArc_False d.arc node d.mux $$ [Hdead HArc]
+        · iframe
+  · -- the linearisation point: `σ` does not move, so this is pure plumbing
+    iauintro
+    simp only [atomicAcc]
+    iauopen HAU with ⟨%σ, Hfrag, Hclose⟩
+    imodintro
+    iexists σ
+    isplitl [Hfrag]
+    · iexact Hfrag
+    · isplit
+      · iintro Hfrag
+        icases Hclose with ⟨Habort, -⟩
+        imod Habort $$ Hfrag with HAU
+        imodintro
+        iframe
+        imodintro
+        iexact Hinv
+      · itele_reduce
+        iintro %r Hbeta
+        icases Hbeta with ⟨%σ', Hfrag', Hq⟩
+        iunfold Impl.disposeQ at Hq
+        icases Hq with ⟨%hσ', Hres⟩
+        subst hσ'
+        icases Hclose with ⟨-, Hcommit⟩
+        imod Hcommit $$ %r [Hfrag' Hres] with HΦ
+        · iframe
         imodintro
         iexact HΦ
 
