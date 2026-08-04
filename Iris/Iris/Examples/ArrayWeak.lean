@@ -692,6 +692,47 @@ theorem deadNodes_insert_live (M : H WData) (cells : List (Nat × Int))
   rw [if_pos hlive]
   exact (emp_sep (PROP := IProp GF)).mpr
 
+/-- Persistent knowledge that the cell named `i` has been retired. -/
+def cellDeadAt (γ : GName) (i : Nat) : IProp GF := iprop%
+  ∃ d : WData, wMetaAt γ i d ∗ cellDead d.cell
+
+instance instCellDeadAtPersistent (γ : GName) (i : Nat) :
+    Persistent (cellDeadAt (GF := GF) (H := H) γ i) := by
+  unfold cellDeadAt; infer_instance
+
+/-- Shrinking the live set by one cell, which the caller has just retired.  This is
+    how the tombstones a revocation collects turn back into the array invariant's own
+    record of which cells are gone. -/
+theorem deadNodes_kill (M : H WData) (rest : List (Nat × Int)) (i : Nat) (x : Int)
+    (d : WData) (hlookup : get? M i = some d) (hi : i ∉ rest.map (·.1)) :
+    deadNodes (GF := GF) M ((i, x) :: rest) ∗ cellDead d.cell ⊢ deadNodes M rest := by
+  unfold deadNodes
+  refine .trans (sep_mono_left (BigSepM.bigSepM_delete (M := H)
+    (Φ := fun (k : Nat) (e : WData) =>
+      iprop% if k ∈ ((i, x) :: rest).map (·.1) then emp else cellDead (GF := GF) e.cell)
+    hlookup).mp) ?_
+  refine .trans ?_ (BigSepM.bigSepM_delete (M := H)
+    (Φ := fun (k : Nat) (e : WData) =>
+      iprop% if k ∈ rest.map (·.1) then emp else cellDead (GF := GF) e.cell)
+    hlookup).mpr
+  rw [if_pos (by simp), if_neg hi]
+  iintro ⟨⟨-, Hrest⟩, Hcd⟩
+  iframe Hcd
+  iapply BigSepM.bigSepM_mono (M := H) ?_ $$ Hrest
+  intro k e hk
+  have hne : k ≠ i := by
+    intro h
+    subst h
+    exact absurd (get?_delete_eq (m := M) (k := k)) (by rw [hk]; simp)
+  have hmem : (k ∈ ((i, x) :: rest).map (·.1)) ↔ (k ∈ rest.map (·.1)) := by
+    simp only [List.map_cons, List.mem_cons]
+    exact ⟨fun h => h.resolve_left hne, Or.inr⟩
+  by_cases h : k ∈ rest.map (·.1)
+  · rw [if_pos h, if_pos (hmem.mpr h)]
+    exact .rfl
+  · rw [if_neg h, if_neg (fun hc => h (hmem.mp hc))]
+    exact .rfl
+
 theorem deadNodes_lookup (M : H WData) (cells : List (Nat × Int)) (id : Nat) (d : WData)
     (hlookup : get? M id = some d) (hgone : id ∉ cells.map (·.1)) :
     deadNodes (GF := GF) M cells ⊢ cellDead d.cell := by
@@ -3968,28 +4009,39 @@ set_option maxRecDepth 8000 in
     goes back.  The write permit is threaded through unchanged: it is what proves,
     at every step, that no reader can be holding a reference to the cell about to be
     freed. -/
-theorem revokeSuffix_spec (γ : WArrγ) (γP : GName) (platform : Val) :
+theorem revokeSuffix_spec (γ : WArrγ) (γP : GName) (platform : Val)
+    (M : H WData) (keep : List (Nat × Int)) :
   ∀ (cells : List (Nat × Int)) (cur : Val),
+  (∀ i, i ∈ cells.map (·.1) → i ∉ keep.map (·.1)) →
+  ((cells.map (·.1)).Nodup) →
   ⊢@{IProp GF}
     isArrInv γ γP platform -∗
     ⦃ isGhostHelp nodeSlotExclusive γ.l none cells ∗ chainHead γ.l cells cur ∗
-      rwGuardFrac γP RwLock.Mode.write q1_2 ⦄
+      rwGuardFrac γP RwLock.Mode.write q1_2 ∗
+      wMetaMap γ.l q1_2 M ∗ deadNodes M (cells ++ keep) ⦄
       hl(&revokeSuffix &cur)
-    ⦃ RET hl_val(#()); rwGuardFrac γP RwLock.Mode.write q1_2 ⦄ := by
+    ⦃ RET hl_val(#()); rwGuardFrac γP RwLock.Mode.write q1_2 ∗
+      wMetaMap γ.l q1_2 M ∗ deadNodes M keep ⦄ := by
   intro cells
   induction cells with
   | nil =>
-      iintro %cur #Hinv %Φ ⟨-, Hhead, Hwq⟩ HΦ
+      intro cur _ _
+      iintro #Hinv %Φ ⟨-, Hhead, Hwq, HM, Hdead⟩ HΦ
       simp only [chainHead] at *
       icases Hhead with %hcur
       subst hcur
       unfold revokeSuffix
       wp_rec
       wp_pures
-      iapply HΦ $$ Hwq
+      iapply fupd_intro
+      iapply HΦ
+      iframe Hwq HM
+      rw [show ([] : List (Nat × Int)) ++ keep = keep from rfl] at *
+      iexact Hdead
   | cons c cells ih =>
       rcases c with ⟨i, xv⟩
-      iintro %cur #Hinv %Φ ⟨Hghost, Hhead, Hwq⟩ HΦ
+      intro cur hkeep hnd
+      iintro #Hinv %Φ ⟨Hghost, Hhead, Hwq, HM, Hdead⟩ HΦ
       simp only [isGhostHelp, chainHead]
       icases Hghost with ⟨%d, -, #Hmeta, Hslot, Hrest⟩
       icases Hhead with ⟨%v, %hcur, Hsucc0⟩
@@ -4058,10 +4110,26 @@ theorem revokeSuffix_spec (γ : WArrγ) (γP : GName) (platform : Val) :
         $$ [Hnoded Harc Hchain Hlock Hptr Hwq]
       · iapply drop_last_spec γ γP platform v i d (nextIdOr cells none)
           hl_val((#d.val, none())) $$ Hinv Hnoded Harc Hchain Hlock Hptr Hwq
-      iintro %u ⟨-, Hwq⟩
+      iintro %u ⟨#Hcd, Hwq⟩
+      -- the freed cell joins the invariant's record of what is gone
+      ihave #hlk : ⌜get? M i = some d⌝ $$ [HM Hmeta]
+      · iapply wMetaMap_lookup γ.l q1_2 M i d $$ HM Hmeta
+      icases hlk with %hlk
+      ihave Hdead : deadNodes M (cells ++ keep) $$ [Hdead Hcd]
+      · iapply deadNodes_kill M (cells ++ keep) i xv d hlk
+          (by
+            simp only [List.map_append, List.mem_append]
+            simp only [List.map_cons, List.nodup_cons] at hnd
+            rintro (h | h)
+            · exact hnd.1 h
+            · exact hkeep i (by simp) h)
+        simp only [List.cons_append]
+        iframe Hdead Hcd
       wp_pure
       wp_pure
-      iapply (ih nv) $$ Hinv [Hrest Hnext Hwq] [HΦ]
+      iapply (ih nv (fun j hj => hkeep j (by simp [hj]))
+        (by simp only [List.map_cons, List.nodup_cons] at hnd; exact hnd.2))
+        $$ Hinv [Hrest Hnext Hwq HM Hdead] [HΦ]
       · iframe
       · iexact HΦ
 
