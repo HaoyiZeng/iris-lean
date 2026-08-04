@@ -132,7 +132,19 @@ def revoke : Val := hl_val%
         &Arc.drop &RwLock.drop strong;
         some(#()))
 
-/-- A weak handle on the successor, if there is one. -/
+/-- A weak handle on the successor, if there is one.
+
+    **Divergence from the Rust.**  `clist_weak.rs` takes the node's *read* lock here,
+    since the operation only reads.  This model takes the write lock instead, and so
+    verifies a program that locks strictly more — sound, but weaker than what the
+    Rust deserves.
+
+    Closing the gap is not a matter of changing this definition: `nodeSlotSharedBody`
+    sends a node's `.read` state to `False`, so in this model a node's own lock is
+    never read-held.  Supporting that state means deciding what a cell's payload looks
+    like while several readers share it, which is a real extension of the invariant
+    rather than a proof-script change.  Every other operation here does write, so
+    nothing else is affected. -/
 def getChild : Val := hl_val%
   λ platform node,
     &execute platform #false (λ _,
