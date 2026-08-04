@@ -201,6 +201,8 @@ class API (GF : BundledGFunctors) [HeapLangGS hlc GF] where
   weak_clone : Val
   weak_drop : Val
   weak_upgrade : Val
+  /-- Rust's `Weak::upgrade(&self)`: the handle is *borrowed*, not consumed. -/
+  weak_tryUpgrade : Val
 
   name : Type
   [name_inhabited : Inhabited name]
@@ -292,6 +294,18 @@ class API (GF : BundledGFunctors) [HeapLangGS hlc GF] where
           (⌜n = 0⌝ ∗ ⌜r = hl_val(none())⌝ ∗ arcAuth γ 0 (m - 1)) ∨
           (⌜n > 0⌝ ∗ ⌜r = hl_val(some(&w))⌝ ∗
             arcAuth γ (n + 1) (m - 1) ∗ isArc γ w x) ⦄
+  /-- The borrowing counterpart of `weak_upgrade_spec`, and the one that matches
+      Rust: the weak handle survives and the weak count is untouched.  A client
+      whose only handle on a node is weak needs this, since consuming the handle
+      to look at the node would leave it with nothing. -/
+  weak_tryUpgrade_spec (γ : name) (w x : Val) (n m : Nat) :
+    ⊢@{IProp GF}
+      ⦃ isWeak γ w x ∗ arcAuth γ n m ⦄
+        hl(&weak_tryUpgrade &w)
+      ⦃ r, RET r;
+          (⌜n = 0⌝ ∗ ⌜r = hl_val(none())⌝ ∗ isWeak γ w x ∗ arcAuth γ n m) ∨
+          (⌜n > 0⌝ ∗ ⌜r = hl_val(some(&w))⌝ ∗
+            isWeak γ w x ∗ arcAuth γ (n + 1) m ∗ isArc γ w x) ⦄
 
 instance instAPINameInhabited [HeapLangGS hlc GF] [api : API GF] :
     Inhabited api.name :=
@@ -2411,7 +2425,7 @@ private theorem dropWeak_spec (w x : Val) (n m : Nat) :
     iintro Hβ
     iapply HΦ $$ Hβ
 
-private theorem tryUpgrade_spec (w x : Val) (n m : Nat) :
+theorem tryUpgrade_spec (w x : Val) (n m : Nat) :
     ⊢@{IProp GF}
       ⦃ isWeak γ w x ∗ arcAuth γ n m ⦄
         hl(&tryUpgrade &w)
@@ -2760,6 +2774,7 @@ noncomputable def instAPI [HeapLangGS hlc GF] [ArcG GF] : API GF where
   weak_clone := Weak.clone
   weak_drop := Weak.drop
   weak_upgrade := Weak.upgrade
+  weak_tryUpgrade := Weak.tryUpgrade
   name := GName
   arcAuth := Iris.Examples.HeapLang.arcAuth
   isArc := Iris.Examples.HeapLang.isArc
@@ -2791,6 +2806,7 @@ noncomputable def instAPI [HeapLangGS hlc GF] [ArcG GF] : API GF where
   weak_clone_spec γ w x := Weak.clone_spec (γ := γ) w x
   weak_drop_spec γ w x := Weak.drop_spec (γ := γ) w x
   weak_upgrade_spec γ w x n m := Weak.upgrade_spec (γ := γ) w x n m
+  weak_tryUpgrade_spec γ w x n m := Weak.tryUpgrade_spec (γ := γ) w x n m
 
 end Arc
 
