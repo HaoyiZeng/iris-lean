@@ -2922,13 +2922,21 @@ theorem revoke_spec
     ⟫ := by
   sorry
 
-/-- A handle on the successor.  Reading the list does not move it, so `σ` is
-    unchanged; the outer `option` distinguishes "the handle was stale" from "there is
-    no successor", and the successor is read off `σ.cells` by `Arr.succOf`.
+/-- What `getChild`'s body achieves, in the shape `execute_shared_spec` wants. -/
+def getChildQ (γ : WArrγ) (node : Val) (id : Nat)
+    (σ σ' : Arr) (ret : Val) : IProp GF := iprop%
+  ⌜σ' = σ⌝ ∗ Arr.isId γ node id ∗
+  ((⌜ret = hl_val(none())⌝ ∗ ⌜id ∉ σ.cells.map (·.1)⌝) ∨
+   ⌜ret = hl_val(some(none()))⌝ ∨
+   (∃ (w : Val) (cid : Nat), ⌜ret = hl_val(some(some(&w)))⌝ ∗ Arr.isId γ w cid))
 
-    The stale case is the interesting one, and it is where the weak handle shows its
-    hand: `Array` would have to return a live-but-revoked cell here, whereas the
-    answer "your handle names nothing" is exactly `id ∉ σ.cells`. -/
+/-- A handle on the successor.  Reading the list does not move it, so `σ` does not
+    change; the outer `option` distinguishes "the handle was stale" from "there is no
+    successor".
+
+    The stale case is where the weak handle shows its hand: `Array` would have to
+    hand back a live-but-revoked cell, whereas here the answer is exactly
+    `id ∉ σ.cells`. -/
 theorem getChild_spec
     (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
@@ -2936,15 +2944,62 @@ theorem getChild_spec
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&getChild &platform &node) @ ↑arrN
-    ⟪ ∃ ret,
-        arrFrag γ σ ∗ Arr.isId γ node id ∗
-        ((⌜ret = hl_val(none())⌝ ∗ ⌜id ∉ σ.cells.map (·.1)⌝) ∨
-         (⌜ret = hl_val(some(none()))⌝ ∗ ⌜Arr.succOf σ.cells id = none⌝) ∨
-         (∃ (w : Val) (cid : Nat),
-            ⌜ret = hl_val(some(some(&w)))⌝ ∗
-            ⌜Arr.succOf σ.cells id = some cid⌝ ∗ Arr.isId γ w cid))
-      | RET ret ⟫ := by
-  sorry
+    ⟪ ∃ ret, ∃ σ', arrFrag γ σ' ∗ getChildQ γ node id σ σ' ret | RET ret ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold getChild
+  wp_pures
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  iapply execute_shared_spec γ γP platform _ (getChildQ γ node id) $$ Hinv [Hid]
+  · iintro #Hinv' Hguard %Φ' HAU'
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hnode, Hweak⟩
+    wp_pures
+    icases rwGuard_split3 γP $$ Hguard with ⟨Hdep, Hpay, Hkeep⟩
+    wp_bind &Weak.tryUpgrade _
+    iapply wp_wand $$ [Hnode Hweak Hdep Hkeep]
+    · iapply borrow_read_spec γ γP platform node id d $$ Hinv' Hnode Hweak Hdep Hkeep
+    iintro %r ⟨Hkeep, Hweak, Hcases⟩
+    icases Hcases with (⟨%hr, #Hcd, Hdep⟩ | ⟨%hr, Harc, Hmine⟩)
+    · -- the handle was stale: the cell has left the list, so commit at once
+      subst hr
+      wp_pures
+      ihave #Hinvraw : inv arrN (arrInvBody γ γP platform) $$ [Hinv']
+      · iunfold isArrInv at Hinv'
+        iexact Hinv'
+      imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
+      iunfold arrInvBody at HI
+      icases HI with ⟨Hpart, Hphys⟩
+      iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+      icases arrPhysPart_frag_dead γ γP platform σc d id q1_4
+          $$ Hphys Hfrag Hnode Hcd Hkeep with ⟨%hnin, Hphys, Hfrag, Hkeep⟩
+      icases Hclose with ⟨-, Hcommit⟩
+      ihave Hbeta : (∃ σ', arrFrag γ σ' ∗ getChildQ γ node id σc σ' hl_val(none()) ∗
+          rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep]
+      · iexists σc
+        iframe Hfrag
+        isplitl [Hweak]
+        · unfold getChildQ
+          isplit
+          · ipureintro; rfl
+          isplitl [Hweak]
+          · unfold Arr.isId
+            iexists d
+            iframe Hweak
+            iexact Hnode
+          · ileft
+            isplit
+            · ipureintro; rfl
+            · ipureintro; exact hnin
+        · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+      imod Hcommit $$ Hbeta with HΦ
+      imod Hcl $$ [Hpart Hphys] with -
+      · unfold arrInvBody
+        iframe
+      imodintro
+      iexact HΦ
+
+    · sorry
+  · iexact HAU
 
 /-- Duplicating a handle: no platform lock, because the reference counts are not
     under it.  This is what `Array` cannot offer — there `arcAuth` lives under the
