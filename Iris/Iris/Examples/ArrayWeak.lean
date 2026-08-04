@@ -2737,6 +2737,114 @@ theorem borrow_dead_spec
         ipureintro; exact hr
     · exact absurd hpos (Nat.lt_irrefl 0)
 
+/-- Take a temporary strong reference while holding the platform exclusively.
+
+    A read permit is impossible here, so the receipt is a quarter of the cell's live
+    witness instead — which the caller can afford precisely because it holds the
+    whole chain, and which is therefore unforgeable for any *other* cell.  The
+    upgrade cannot fail: holding a share of the live witness already rules out the
+    tombstone. -/
+theorem borrow_write_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData)
+    (nxt : Option Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isWeak d.arc node d.mux -∗
+    rwGuardFrac γP RwLock.Mode.write q1_2 -∗
+    cellAlive d.cell q3_4 nxt -∗
+    WP hl(&Weak.tryUpgrade &node)
+      {{ r, ⌜r = hl_val(some(&node))⌝ ∗ isWeak d.arc node d.mux ∗
+            isArc d.arc node d.mux ∗ refTok d ∗ cellAlive d.cell q1_2 nxt }} := by
+  iintro #Hinv #Hnode Hweak Hwq Hchain
+  iapply Weak.tryUpgrade_atomic_spec (γ := d.arc) node d.mux $$ Hweak
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  ihave #hsw : ⌜s = RwLock.State.write⌝ $$ [Hplat Hwq]
+  · iapply isPlatform_write_frac_valid γP s platform q1_2
+    isplitl [Hplat] <;> iassumption
+  icases hsw with %hsw
+  subst hsw
+  -- exclusive mode pins the count to one, so this borrow takes it to two
+  icases arcCell_write_last γP d n platform nxt $$ [Hplat Hcnt Hled Hchain]
+    with ⟨%hle, Hplat, Hcnt, Hled, Hchain⟩
+  · isplitl [Hplat]
+    · iassumption
+    · isplitl [Hcnt]
+      · iassumption
+      · isplitl [Hled]
+        · iassumption
+        · iassumption
+  icases arcLedger_alive_pos γP d n q3_4 nxt $$ [Hcnt Hled Hchain]
+    with ⟨%hpos, Hcnt, Hled, Hchain⟩
+  · isplitl [Hcnt]
+    · iassumption
+    · isplitl [Hled]
+      · iassumption
+      · iassumption
+  have hn1 : n = 1 := by omega
+  subst hn1
+  iaaccintro' with Hauth
+  · iintro Hauth
+    imodintro
+    isplitl [Hauth Hcnt Hled Hback Hplat Hrest]
+    · unfold arrInvBody arrPhysPart
+      isplitl [Hback Hauth Hcnt Hled]
+      · iapply Hback
+        iapply arcCell_pack γP d 1 m
+        iframe
+      · iexists RwLock.State.write, M, σ
+        iframe
+    · iframe Hwq Hchain
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro %r ⟨Hweak, Hcases⟩
+    icases Hcases with (⟨%hz, -, -⟩ | ⟨-, %hr, Hauth, Harc⟩)
+    · exact absurd hz (by omega)
+    · -- pay the receipt: a quarter of the live witness and half the write permit
+      ihave ⟨Hq4, Hkeep2⟩ : (cellAlive d.cell q1_4 nxt ∗ cellAlive d.cell q1_2 nxt)
+          $$ [Hchain]
+      · iapply (cellAlive_split_gen d.cell q1_4 q1_2 nxt).mp
+        rw [q1_4_add_q1_2]
+        iexact Hchain
+      iunfold arcLedger at Hled
+      icases Hled with (⟨Htok, -, %nxtL, Hq⟩ | ⟨-, %hn2, -, -⟩ | ⟨-, %hz2⟩)
+      · ihave %heqL := cellAlive_agree d.cell q1_4 q1_4 nxt nxtL $$ [Hq4 Hq]
+        · isplitl [Hq4] <;> iassumption
+        subst heqL
+        ihave Hledger2 : cellAlive d.cell q1_2 nxt $$ [Hq Hq4]
+        · rw [← q1_4_add_q1_4]
+          iapply (cellAlive_split_gen d.cell q1_4 q1_4 nxt).mpr
+          iframe
+        imod refAuth_take d 1 $$ Hcnt with ⟨Hcnt, Hmine⟩
+        imodintro
+        isplitl [Hauth Hcnt Hledger2 Hwq Htok Hback Hplat Hrest]
+        · unfold arrInvBody arrPhysPart
+          isplitl [Hback Hauth Hcnt Hledger2 Hwq Htok]
+          · iapply Hback
+            iapply arcCell_pack γP d 2 m
+            iframe Hauth Hcnt
+            unfold arcLedger arcAliveTok
+            iright; ileft
+            iframe Hwq Htok
+            isplit
+            · ipureintro; rfl
+            · iexists nxt
+              iexact Hledger2
+          · iexists RwLock.State.write, M, σ
+            iframe
+        · iframe Harc Hmine Hweak Hkeep2
+          ipureintro; exact hr
+      · exact absurd hn2 (by omega)
+      · exact absurd hz2 (by omega)
+
 set_option maxRecDepth 8000 in
 /-- **Dropping the last reference to a cell really frees it.**
 
