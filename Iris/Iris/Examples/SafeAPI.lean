@@ -2917,6 +2917,25 @@ private theorem dropStrong_seq_spec (a x : Val) (n m : Nat) :
     iintro Hβ
     iapply HΦ $$ Hβ
 
+/-- Sequential view of `downgrade_spec`, for a client that owns the authority
+    outright — a freshly allocated cell, say, whose counts have not been published
+    to an invariant yet. -/
+theorem downgrade_seq_spec (a x : Val) (n m : Nat) :
+    ⊢@{IProp GF}
+      ⦃ isArc γ a x ∗ arcAuth γ n m ⦄
+        hl(&downgrade &a)
+      ⦃ RET a; arcAuth γ n (m + 1) ∗ isArc γ a x ∗ isWeak γ a x ⦄ := by
+  iintro %Φ ⟨Harc, Hauth⟩ HΦ
+  ihave Hspec := (downgrade_spec (γ := γ) a x) $$ Harc
+  iapply atomicWP_seq_step _ _ _ _ _ _ (by rfl) $$ Hspec %Φ %(⟨n, m, ⟨⟩⟩)
+    [Hauth] [HΦ]
+  · itele_reduce
+    iframe Hauth
+  · inext
+    itele_reduce
+    iintro Hβ
+    iapply HΦ $$ Hβ
+
 /-- **Dropping a non-last strong reference is logically atomic.**
 
     `drop` is `dropStrong; if last then closeLastStrong else ()`, so in general it
