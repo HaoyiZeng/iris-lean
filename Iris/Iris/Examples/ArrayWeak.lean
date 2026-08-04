@@ -2797,9 +2797,9 @@ theorem node_release_spec
     thing: a cell leaves the list exactly by being freed.  So the postcondition is
     still indexed by `Arr.insert` alone, with no extra failure case. -/
 theorem insert_spec
-    (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
-    isArrInv γ γp platform -∗
+    isArrInv γ γP platform -∗
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&insert &platform &node #x) @ ↑arrN
@@ -2821,9 +2821,9 @@ theorem insert_spec
     Unlike `Array`'s, this postcondition says nothing about surviving cells, because
     there are none: the handles a client holds on the revoked suffix all go stale. -/
 theorem revoke_spec
-    (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) :
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
-    isArrInv γ γp platform -∗
+    isArrInv γ γP platform -∗
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&revoke &platform &node) @ ↑arrN
@@ -2835,19 +2835,26 @@ theorem revoke_spec
   sorry
 
 /-- A handle on the successor.  Reading the list does not move it, so `σ` is
-    unchanged and the result is read off `σ.cells` directly. -/
+    unchanged; the outer `option` distinguishes "the handle was stale" from "there is
+    no successor", and the successor is read off `σ.cells` by `Arr.succOf`.
+
+    The stale case is the interesting one, and it is where the weak handle shows its
+    hand: `Array` would have to return a live-but-revoked cell here, whereas the
+    answer "your handle names nothing" is exactly `id ∉ σ.cells`. -/
 theorem getChild_spec
-    (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) :
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
-    isArrInv γ γp platform -∗
+    isArrInv γ γP platform -∗
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&getChild &platform &node) @ ↑arrN
     ⟪ ∃ ret,
         arrFrag γ σ ∗ Arr.isId γ node id ∗
-        (⌜ret = hl_val(none())⌝ ∨
-         ∃ (w : Val) (cid : Nat),
-           ⌜ret = hl_val(some(&w))⌝ ∗ Arr.isId γ w cid)
+        ((⌜ret = hl_val(none())⌝ ∗ ⌜id ∉ σ.cells.map (·.1)⌝) ∨
+         (⌜ret = hl_val(some(none()))⌝ ∗ ⌜Arr.succOf σ.cells id = none⌝) ∨
+         (∃ (w : Val) (cid : Nat),
+            ⌜ret = hl_val(some(some(&w)))⌝ ∗
+            ⌜Arr.succOf σ.cells id = some cid⌝ ∗ Arr.isId γ w cid))
       | RET ret ⟫ := by
   sorry
 
