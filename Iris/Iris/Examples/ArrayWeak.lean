@@ -1856,8 +1856,19 @@ theorem Arr.isId_lookup (γ : WArrγ) (q : Qp) (M : H WData) (node : Val) (id : 
     iframe Hweak %hlookup
     iexact Hnode
 
-/-- Run `f` under the platform read lock.  Identical to `Array`'s, except that
-    there is no retired-cell view to carry along. -/
+/-- Run `f` under the platform read lock.
+
+    The read permit is *not* part of `f`'s atomic postcondition; it is the separate,
+    non-atomic `POST`.  That is forced by the deposit: at `f`'s linearisation point
+    half the permit is still sitting in a cell's ledger, backing a strong reference
+    that has not been dropped yet, so `f` simply does not have the whole permit to
+    hand over there.  It gets it back once the borrow is returned, which is strictly
+    after the linearisation point.
+
+    `Array` never notices this, because it has no deposit: its only parked fraction
+    belongs to a locked cell and comes back at exactly the release which *is* its
+    linearisation point.  The deposit is the price of keeping reference counts
+    outside the platform lock, and this is where that price is paid. -/
 theorem execute_shared_spec
     (γ : WArrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
@@ -1865,7 +1876,8 @@ theorem execute_shared_spec
     (isArrInv γ γP platform -∗ rwGuard γP .read -∗
        ⟪ ∀ σ, arrFrag γ σ ⟫
          hl(&f #()) @ ↑arrN
-       ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫) -∗
+       ⟪ ∃ r, (∃ σ', arrFrag γ σ' ∗ Q σ σ' r)
+         | z, RET z; rwGuard γP RwLock.Mode.read ∗ ⌜z = r⌝ ⟫) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&execute &platform #false &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
@@ -1990,13 +2002,17 @@ theorem execute_shared_spec
           · imodintro; iexact Hinvraw
         · itele_reduce
           iintro %r Hbeta
-          icases Hbeta with ⟨%σ', Hfrag', HQ, Hguard⟩
+          icases Hbeta with ⟨%σ', Hfrag', HQ⟩
           icases Hclose with ⟨-, Hcommit⟩
           ihave Hbeta : ∃ σ'', arrFrag γ σ'' ∗ Q σc σ'' r $$ [Hfrag' HQ]
           · iexists σ'
             iframe
           imod Hcommit $$ Hbeta with HΦ
           imodintro
+          iintro %z
+          simp only [wandM]
+          iintro ⟨Hguard, %hz⟩
+          subst hz
           wp_pures
           wp_bind &RwLock.read_release _
           iapply RwLock.read_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
@@ -2932,21 +2948,22 @@ that share can only be moved with the invariant open.  At that step half the rea
 permit is still sitting in the ledger, backing a strong reference that is only
 dropped later, so the thread does *not* hold the whole permit there.
 
-`execute_shared_spec` currently demands it, because its body's postcondition reads
-
-    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫
-
-and everything in an atomic postcondition has to be produced at the linearisation
-point.  The permit is not shared state; it is the caller's private receipt, and
-`atomicWP` already has a slot for exactly that — the non-atomic `POST` of
-`⟪ β | RET v; POST ⟫`.  Moving `rwGuard` there is what unblocks both proofs:
-
-    ⟪ ∃ r, (∃ σ', arrFrag γ σ' ∗ Q σ σ' r) | z, RET z; rwGuard γP .read ∗ ⌜z = r⌝ ⟫
+That is why `execute_shared_spec` above hands the permit back through the *non-atomic*
+`POST` of `⟪ β | z, RET z; POST ⟫` rather than through `β`: everything in an atomic
+postcondition has to be produced at the linearisation point, and the permit is not
+shared state — it is the caller's private receipt.
 
 `Array` never runs into this, and the reason is instructive: it has no deposit at
 all.  Its only parked fraction belongs to a locked cell and comes back at exactly
 the release that *is* its linearisation point.  The deposit is the price of keeping
-reference counts outside the platform lock, and this is where that price is paid. -/
+reference counts outside the platform lock, and this is where that price is paid.
+
+What remains for the two specifications below is then the ordinary work: `insert`
+has to grow `M` (both halves of `wMetaMap` are inside the invariant under a read
+lock, so one opening suffices), splice with `isGhostHelpAccInsert`, and advance the
+abstract state at the store; `revoke` has to truncate with `isGhostHelpAccTruncate`
+and, because it frees cells, needs a placeholder in `arcNodes` so that the freeing
+thread can take `arcAuth` out of the invariant across the non-atomic `Arc.drop`. -/
 
 /-- Splice a cell in after `node`.
 
@@ -3045,30 +3062,32 @@ theorem getChild_spec
       icases arrPhysPart_frag_dead γ γP platform σc d id q1_4
           $$ Hphys Hfrag Hnode Hcd Hkeep with ⟨%hnin, Hphys, Hfrag, Hkeep⟩
       icases Hclose with ⟨-, Hcommit⟩
-      ihave Hbeta : (∃ σ', arrFrag γ σ' ∗ getChildQ γ node id σc σ' hl_val(none()) ∗
-          rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep]
+      ihave Hbeta : (∃ σ', arrFrag γ σ' ∗ getChildQ γ node id σc σ' hl_val(none()))
+          $$ [Hfrag Hweak]
       · iexists σc
         iframe Hfrag
+        unfold getChildQ
+        isplit
+        · ipureintro; rfl
         isplitl [Hweak]
-        · unfold getChildQ
+        · unfold Arr.isId
+          iexists d
+          iframe Hweak
+          iexact Hnode
+        · ileft
           isplit
           · ipureintro; rfl
-          isplitl [Hweak]
-          · unfold Arr.isId
-            iexists d
-            iframe Hweak
-            iexact Hnode
-          · ileft
-            isplit
-            · ipureintro; rfl
-            · ipureintro; exact hnin
-        · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+          · ipureintro; exact hnin
       imod Hcommit $$ Hbeta with HΦ
       imod Hcl $$ [Hpart Hphys] with -
       · unfold arrInvBody
         iframe
       imodintro
-      iexact HΦ
+      simp only [wandM]
+      iapply HΦ
+      isplitl [Hdep Hpay Hkeep]
+      · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+      · ipureintro; rfl
     · -- the handle was live: read the successor link out under the cell's own lock
       subst hr
       wp_pures
@@ -3108,25 +3127,26 @@ theorem getChild_spec
           iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
           icases Hclose with ⟨-, Hcommit⟩
           ihave Hbeta : (∃ σ', arrFrag γ σ' ∗
-              getChildQ γ node id σc σ' hl_val(some(none())) ∗
-              rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep]
+              getChildQ γ node id σc σ' hl_val(some(none()))) $$ [Hfrag Hweak]
           · iexists σc
             iframe Hfrag
+            unfold getChildQ
+            isplit
+            · ipureintro; rfl
             isplitl [Hweak]
-            · unfold getChildQ
-              isplit
-              · ipureintro; rfl
-              isplitl [Hweak]
-              · unfold Arr.isId
-                iexists d
-                iframe Hweak
-                iexact Hnode
-              · iright; ileft
-                ipureintro; rfl
-            · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+            · unfold Arr.isId
+              iexists d
+              iframe Hweak
+              iexact Hnode
+            · iright; ileft
+              ipureintro; rfl
           imod Hcommit $$ Hbeta with HΦ
           imodintro
-          iexact HΦ
+          simp only [wandM]
+          iapply HΦ
+          isplitl [Hdep Hpay Hkeep]
+          · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+          · ipureintro; rfl
       | some cid =>
           iunfold wSuccRef at Hpayload
           icases Hpayload with ⟨%child, Hptr, %d', #Hmeta, Harcc⟩
@@ -3166,31 +3186,32 @@ theorem getChild_spec
           iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
           icases Hclose with ⟨-, Hcommit⟩
           ihave Hbeta : (∃ σ', arrFrag γ σ' ∗
-              getChildQ γ node id σc σ' hl_val(some(some(&w))) ∗
-              rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep Hweakc Hmeta]
+              getChildQ γ node id σc σ' hl_val(some(some(&w)))) $$ [Hfrag Hweak Hweakc]
           · iexists σc
             iframe Hfrag
-            isplitl [Hweak Hweakc Hmeta]
-            · unfold getChildQ
+            unfold getChildQ
+            isplit
+            · ipureintro; rfl
+            isplitl [Hweak]
+            · unfold Arr.isId
+              iexists d
+              iframe Hweak
+              iexact Hnode
+            · iright; iright
+              iexists w, cid
               isplit
               · ipureintro; rfl
-              isplitl [Hweak]
-              · unfold Arr.isId
-                iexists d
-                iframe Hweak
-                iexact Hnode
-              · iright; iright
-                iexists w, cid
-                isplit
-                · ipureintro; rfl
-                unfold Arr.isId
-                iexists d'
-                iframe Hweakc
-                iexact Hnodec
-            · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+              unfold Arr.isId
+              iexists d'
+              iframe Hweakc
+              iexact Hnodec
           imod Hcommit $$ Hbeta with HΦ
           imodintro
-          iexact HΦ
+          simp only [wandM]
+          iapply HΦ
+          isplitl [Hdep Hpay Hkeep]
+          · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+          · ipureintro; rfl
   · iexact HAU
 
 /-- Duplicating a handle: no platform lock, because the reference counts are not
