@@ -2348,6 +2348,61 @@ theorem isArc_mem (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) (node : V
     · isplitl [Hauth] <;> iassumption
     exact absurd h (Nat.lt_irrefl 0)
 
+/-- Open the invariant body under a platform read lock.
+
+    A quarter of the read permit is enough to pin the lock state, which is what makes
+    the shared view available; it is handed straight back, so this costs nothing.
+    Both `insert` and `revoke` do this repeatedly, so it is worth naming. -/
+theorem arrInvOpenRead (γ : WArrγ) (γP : GName) (platform : Val) :
+  ⊢@{IProp GF}
+    arrInvBody γ γP platform -∗ rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+      ∃ (np : Nat) (M : H WData) (σ : Arr),
+        ⌜σ.wellFormed⌝ ∗ ⌜∀ i, dom M i ↔ i < σ.counter⌝ ∗
+        arcPart γ γP ∗ isPlatform γP (.read (np + 1)) platform ∗
+        wMetaMap γ.l q1_2 M ∗ deadNodes M σ.cells ∗
+        isGhost (nodeSlotShared γP) γ.l σ.cells ∗ wStateVar γ.s q3_4 σ M ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 := by
+  iintro HI Hkeep
+  iunfold arrInvBody at HI
+  icases HI with ⟨Hpart, Hphys⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  icases isPlatform_read_guard_valid γP s platform q1_4 $$ [Hplat Hkeep] with %hs
+  · isplitl [Hplat] <;> iassumption
+  rcases hs with ⟨np, hsr⟩
+  subst hsr
+  simp only [isPhysical] at *
+  icases Hrest with ⟨Hshared, Hstate⟩
+  iunfold arrShared at Hshared
+  icases Hshared with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  iexists np, M, σ
+  iframe Hpart Hplat HM Hdead Hghost Hstate Hkeep
+  isplit
+  · ipureintro; exact hwf
+  · ipureintro; exact hdom
+
+/-- …and close it again, possibly at a different abstract state. -/
+theorem arrInvCloseRead (γ : WArrγ) (γP : GName) (platform : Val) (np : Nat)
+    (M : H WData) (σ : Arr) (hwf : σ.wellFormed)
+    (hdom : ∀ i, dom M i ↔ i < σ.counter) :
+  ⊢@{IProp GF}
+    arcPart γ γP -∗ isPlatform γP (.read (np + 1)) platform -∗
+    wMetaMap γ.l q1_2 M -∗ deadNodes M σ.cells -∗
+    isGhost (nodeSlotShared γP) γ.l σ.cells -∗ wStateVar γ.s q3_4 σ M -∗
+      arrInvBody γ γP platform := by
+  iintro Hpart Hplat HM #Hdead Hghost Hstate
+  unfold arrInvBody arrPhysPart
+  iframe Hpart
+  iexists (RwLock.State.read (np + 1)), M, σ
+  iframe Hplat
+  simp only [isPhysical]
+  iframe Hstate
+  unfold arrShared
+  iframe HM Hdead Hghost
+  isplit
+  · ipureintro; exact hwf
+  · ipureintro; exact hdom
+
 /-- A stale handle names nothing.
 
     This is the payoff of the whole design, and the one statement `Array` cannot
