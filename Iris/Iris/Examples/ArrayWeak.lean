@@ -3832,6 +3832,116 @@ theorem insert_spec
         · ipureintro; rfl
   · iexact HAU
 
+/-- The link value that points at the head of `cells`. -/
+def chainHead (γ : GName) : List (Nat × Int) → Val → IProp GF
+  | [], cur => iprop% ⌜cur = hl_val(none())⌝
+  | (i, _) :: _, cur => iprop% ∃ v : Val, ⌜cur = hl_val(some(&v))⌝ ∗ wSuccRef γ v i
+
+set_option maxRecDepth 8000 in
+/-- **Free a detached chain.**
+
+    Each cell's own link is taken out before the cell is dropped, so the drop is
+    always the last reference — and by `drop_last_spec` that means the memory really
+    goes back.  The write permit is threaded through unchanged: it is what proves,
+    at every step, that no reader can be holding a reference to the cell about to be
+    freed. -/
+theorem revokeSuffix_spec (γ : WArrγ) (γP : GName) (platform : Val) :
+  ∀ (cells : List (Nat × Int)) (cur : Val),
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    ⦃ isGhostHelp nodeSlotExclusive γ.l none cells ∗ chainHead γ.l cells cur ∗
+      rwGuardFrac γP RwLock.Mode.write q1_2 ⦄
+      hl(&revokeSuffix &cur)
+    ⦃ RET hl_val(#()); rwGuardFrac γP RwLock.Mode.write q1_2 ⦄ := by
+  intro cells
+  induction cells with
+  | nil =>
+      iintro %cur #Hinv %Φ ⟨-, Hhead, Hwq⟩ HΦ
+      simp only [chainHead] at *
+      icases Hhead with %hcur
+      subst hcur
+      unfold revokeSuffix
+      wp_rec
+      wp_pures
+      iapply HΦ $$ Hwq
+  | cons c cells ih =>
+      rcases c with ⟨i, xv⟩
+      iintro %cur #Hinv %Φ ⟨Hghost, Hhead, Hwq⟩ HΦ
+      simp only [isGhostHelp, chainHead]
+      icases Hghost with ⟨%d, -, #Hmeta, Hslot, Hrest⟩
+      icases Hhead with ⟨%v, %hcur, Hsucc0⟩
+      subst hcur
+      iunfold wSuccRef at Hsucc0
+      icases Hsucc0 with ⟨%d', #Hmeta', Harc⟩
+      ihave %hd := wMetaAt_agree γ.l i d d' $$ Hmeta Hmeta'
+      subst hd
+      iunfold aliveSlot at Hslot
+      iunfold nodeSlotExclusive at Hslot
+      icases Hslot with ⟨Hlock, Hchain, Hpayload⟩
+      ihave #Hnoded : Arr.isNode γ i d $$ [Hmeta]
+      · unfold Arr.isNode
+        iexact Hmeta
+      wp_rec
+      wp_pures
+      wp_bind &Arc.get _
+      iapply Arc.get_spec (γ := d.arc) v d.mux $$ Harc
+      iintro !> Harc
+      wp_pures
+      wp_bind &RwLock.write_acquire _
+      iapply RwLock.write_acquire_owned_spec d.rw d.mux hl_val(#d.ptr) $$ Hlock
+      iintro !> ⟨Hlock, Hwguard⟩
+      wp_pures
+      -- split the payload: the raw cell stays, the successor link is handed on
+      ihave ⟨%nv, Hptr, Hnext⟩ :
+          (∃ nv : Val, d.ptr ↦ hl_val((#d.val, &nv)) ∗ chainHead γ.l cells nv)
+          $$ [Hpayload]
+      · cases cells with
+        | nil =>
+            simp only [nextIdOr]
+            iunfold payload at Hpayload
+            iexists hl_val(none())
+            iframe Hpayload
+            simp only [chainHead]
+            itrivial
+        | cons c' cs' =>
+            rcases c' with ⟨i', x'⟩
+            simp only [nextIdOr]
+            iunfold payload at Hpayload
+            icases Hpayload with ⟨%w, Hp, Hsucc⟩
+            iexists hl_val(some(&w))
+            iframe Hp
+            simp only [chainHead]
+            iexists w
+            iframe Hsucc
+            itrivial
+      wp_bind !_
+      iapply wp_load $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      wp_bind (_ ← _)
+      iapply wp_store $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      wp_bind &RwLock.write_release _
+      iapply RwLock.write_release_owned_spec d.rw d.mux hl_val(#d.ptr)
+        $$ [Hlock Hwguard]
+      · iframe
+      iintro !> Hlock
+      wp_pures
+      -- the drop is the last reference, so the cell is actually reclaimed
+      wp_bind &Arc.drop _ _
+      iapply (wp_wand (Φ := fun _r => iprop%
+        cellDead d.cell ∗ rwGuardFrac γP RwLock.Mode.write q1_2))
+        $$ [Hnoded Harc Hchain Hlock Hptr Hwq]
+      · iapply drop_last_spec γ γP platform v i d (nextIdOr cells none)
+          hl_val((#d.val, none())) $$ Hinv Hnoded Harc Hchain Hlock Hptr Hwq
+      iintro %u ⟨-, Hwq⟩
+      wp_pure
+      wp_pure
+      iapply (ih nv) $$ Hinv [Hrest Hnext Hwq] [HΦ]
+      · iframe
+      · iexact HΦ
+
 omit [RwLockG GF] [ArcG GF] in
 /-- A handle that fails to upgrade names a cell that is not in the list, and the
     abstract revoke on such an `id` is a no-op. -/
