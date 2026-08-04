@@ -3112,7 +3112,60 @@ theorem insert_spec
       isplitl [Hdep Hpay Hkeep]
       · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
       · ipureintro; rfl
-    · sorry
+    · -- the handle was live: allocate, link, and splice at the release
+      subst hr
+      wp_pures
+      wp_bind &Arc.get _
+      iapply Arc.get_spec (γ := d.arc) node d.mux $$ Harc
+      iintro !> Harc
+      wp_pures
+      wp_bind &RwLock.write_acquire _
+      iapply wp_wand $$ [Hnode Harc Hpay Hkeep]
+      · iapply node_acquire_spec γ γP platform node id d $$ Hinv' Hnode Harc Hpay Hkeep
+      iintro %ptr ⟨%hptr, Hkeep, Harc, Hwguard, %nxt, Hcell, Hpayload⟩
+      subst hptr
+      wp_pures
+      -- split the payload into the raw cell and exactly `new`'s precondition
+      ihave ⟨%nv, Hptr, Hpre⟩ :
+          (∃ nv : Val, d.ptr ↦ hl_val((#d.val, &nv)) ∗
+            (match nxt with
+             | none => iprop% ⌜nv = hl_val(none())⌝
+             | some i => iprop% ∃ v : Val, ⌜nv = hl_val(some(&v))⌝ ∗ wSuccRef γ.l v i))
+          $$ [Hpayload]
+      · cases nxt with
+        | none =>
+            iunfold payload at Hpayload
+            iexists hl_val(none())
+            iframe Hpayload
+            itrivial
+        | some i =>
+            iunfold payload at Hpayload
+            icases Hpayload with ⟨%v, Hp, Hsucc⟩
+            iexists hl_val(some(&v))
+            iframe Hp
+            iexists v
+            iframe Hsucc
+            itrivial
+      wp_bind !_
+      iapply wp_load $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      wp_bind &new _ _
+      iapply new_spec γ.l γP x nv nxt $$ Hpre
+      iintro %newNode !> ⟨%dNew, %hxval, HcellNew, HarcNew, HlockNew, HaliveNew, HpayNew⟩
+      wp_pures
+      wp_bind &Arc.downgrade _
+      icases arcCell_unpack γP dNew $$ HcellNew with ⟨%nN, %mN, HauthN, HcntN, HledN⟩
+      iapply Arc.downgrade_seq_spec (γ := dNew.arc) newNode dNew.mux nN mN
+        $$ [HarcNew HauthN]
+      · iframe
+      iintro !> ⟨HauthN, HarcNew, HweakNew⟩
+      wp_pures
+      wp_bind (_ ← _)
+      iapply wp_store $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      sorry
   · iexact HAU
 
 /-- Detach and free everything strictly after `node`.
