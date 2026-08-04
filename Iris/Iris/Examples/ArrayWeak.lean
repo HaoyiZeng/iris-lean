@@ -476,6 +476,12 @@ theorem cellAlive_split_gen (γ : GName) (q₁ q₂ : Qp) (n : Option Nat) :
   rw [h]
   exact iOwn_op (F := CellRF)
 
+theorem q1_4_add_q1_4 : q1_4 + q1_4 = q1_2 := by
+  apply Subtype.ext
+  show (q1_4 : Qp).val + (q1_4 : Qp).val = (q1_2 : Qp).val
+  simp [q1_4, q1_2, Qp.half]
+  grind
+
 theorem q1_4_add_q1_2 : q1_4 + q1_2 = q3_4 := by
   apply Subtype.ext
   show (q1_4 : Qp).val + (q1_2 : Qp).val = (q3_4 : Qp).val
@@ -1093,6 +1099,22 @@ theorem arcPart_acc (γ : WArrγ) (γP : GName) (id : Nat) (d : WData) :
   iframe HM
   iapply Hback $$ Hcell
 
+/-- Under a read lock both halves of the metadata map are inside the invariant, so a
+    thread that has opened it can register a new cell.  This is why the map is
+    fractional: the ledger and the chain cannot disagree about which cells exist. -/
+theorem arcPart_unpackMap (γ : WArrγ) (γP : GName) (M : H WData) :
+  ⊢@{IProp GF}
+    arcPart γ γP -∗ wMetaMap γ.l q1_2 M -∗
+      wMetaMap γ.l 1 M ∗ arcNodes γP M := by
+  iintro Hpart HM
+  iunfold arcPart at Hpart
+  icases Hpart with ⟨%M', HM', Hnodes⟩
+  ihave %hM := wMetaMap_agree γ.l q1_2 q1_2 M' M $$ HM' HM
+  subst hM
+  iframe Hnodes
+  iapply (wMetaMap_split γ.l M').mpr
+  iframe
+
 /-- Reassemble the invariant body from its two halves. -/
 theorem arrInvBody_intro (γ : WArrγ) (γP : GName) (platform : Val) :
   ⊢@{IProp GF}
@@ -1672,6 +1694,50 @@ theorem arcLedger_dead_zero (γP : GName) (d : WData) (n : Nat) :
     isplitl []
     · iexact Hcd
     · ipureintro; exact hz
+
+/-- Borrow the ledger's share of the live witness — the piece a rewiring thread needs
+    in order to reach full ownership — leaving a hole to be filled back in.  The
+    caller's own share rules out the tombstone case. -/
+theorem arcLedger_takeAlive (γP : GName) (d : WData) (n : Nat) (q : Qp)
+    (m : Option Nat) :
+  ⊢@{IProp GF}
+    arcLedger γP d n -∗ cellAlive d.cell q m -∗
+      cellAlive d.cell q m ∗ ∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt ∗
+        (∀ nxt' : Option Nat, cellAlive d.cell q1_4 nxt' -∗ arcLedger γP d n) := by
+  unfold arcLedger arcAliveTok
+  iintro Hled Hmine
+  icases Hled with (⟨Htok, Hdep, %nxt, Hq⟩ | ⟨Htok, %hn, ⟨%nxt, Hq⟩, Hw⟩ | ⟨#Hcd, %hz⟩)
+  · iframe Hmine
+    iexists nxt
+    iframe Hq
+    iintro %nxt' Hq'
+    ileft
+    iframe Htok Hdep
+    iexists nxt'
+    iexact Hq'
+  · -- the exclusive-mode receipt is half: hand a quarter over and keep a quarter
+    ihave ⟨Hq1, Hq2⟩ : (cellAlive d.cell q1_4 nxt ∗ cellAlive d.cell q1_4 nxt) $$ [Hq]
+    · iapply (cellAlive_split_gen d.cell q1_4 q1_4 nxt).mp
+      rw [q1_4_add_q1_4]
+      iexact Hq
+    iframe Hmine
+    iexists nxt
+    iframe Hq1
+    iintro %nxt' Hq'
+    ihave %heq := cellAlive_agree d.cell q1_4 q1_4 nxt' nxt $$ [Hq' Hq2]
+    · isplitl [Hq'] <;> iassumption
+    subst heq
+    iright; ileft
+    iframe Htok Hw
+    isplit
+    · ipureintro; exact hn
+    iexists nxt'
+    rw [← q1_4_add_q1_4]
+    iapply (cellAlive_split_gen d.cell q1_4 q1_4 nxt').mpr
+    iframe
+  · iexfalso
+    iapply cellAlive_dead_False d.cell q m
+    isplitl [Hmine] <;> iassumption
 
 /-- **Gap 2.**  A thread that has upgraded a weak handle holds a `refTok` of its own,
     so the ledger's copy proves the count is at least two and its own drop is not the
@@ -3246,7 +3312,162 @@ theorem insert_spec
         iframe HIb HAU' Harc Hmine Hweak Hcell Hptr Hkeep
         iframe HauthN HcntN HledN HarcNew HweakNew HlockNew HaliveNew HpayNew
         repeat' first | (imodintro; iassumption) | isplitl []
-      · sorry
+      · -- COMMIT: the cell is now linked, so the abstract list grows here
+        itele_reduce
+        iintro Hlock
+        iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+        ihave #hac : ⌜σc = σ⌝ $$ [Hfrag Hstate]
+        · iapply arrFrag_agree γ σc σ M
+          isplitl [Hfrag] <;> iassumption
+        icases hac with %hac
+        subst hac
+        -- what the abstract insert does to the list, spelled out
+        obtain ⟨hpre, hpost⟩ := Arr.nodup_split_id pre post id xv (hsplit ▸ hwf.idUqi)
+        have hins : Arr.insert σc id x =
+            ({ cells := pre ++ (id, xv) :: (σc.counter, x) :: post,
+               counter := σc.counter + 1 }, some σc.counter) :=
+          Arr.insert_eq_of_split σc pre post id xv x hsplit hpre hpost
+        have hfresh : get? M σc.counter = none := wMetaMap_counter_fresh M σc.counter hdom
+        -- register the new cell: both halves of the map are inside the invariant
+        icases arcPart_unpackMap γ γP M $$ Hpart HM with ⟨HMfull, Hnodes⟩
+        imod wMetaMap_insert γ.l M σc.counter dNew hfresh $$ HMfull with ⟨HMfull, #HatN⟩
+        icases (wMetaMap_split γ.l (Std.insert M σc.counter dNew)).mp $$ HMfull
+          with ⟨HM1, HM2⟩
+        ihave Hnodes : arcNodes γP (Std.insert M σc.counter dNew)
+            $$ [Hnodes HauthN HcntN HledN]
+        · iapply arcNodes_insert γP M σc.counter dNew hfresh
+          isplitl [Hnodes]
+          · iexact Hnodes
+          · iapply arcCell_pack γP dNew nN (mN + 1)
+            iframe
+        ihave Hpart : arcPart γ γP $$ [HM1 Hnodes]
+        · unfold arcPart
+          iexists (Std.insert M σc.counter dNew)
+          iframe
+        -- retarget the predecessor's live witness: chain 3/4 + ledger 1/4 = whole
+        icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcelld, Hbackd⟩
+        icases arcCell_unpack γP d $$ Hcelld with ⟨%nd, %md, Hauthd, Hcntd, Hledd⟩
+        icases arcLedger_takeAlive γP d nd q1_2 (nextIdOr post none) $$ Hledd Hcell
+          with ⟨Hcell, %nxtL, Hledger4, Hledd⟩
+        ihave Hallive : cellAlive d.cell 1 (nextIdOr post none)
+            $$ [Hcell Hq4 Hledger4]
+        · ihave %heqL := cellAlive_agree d.cell q1_4 q1_4 nxtL (nextIdOr post none)
+            $$ [Hledger4 Hq4]
+          · isplitl [Hledger4] <;> iassumption
+          subst heqL
+          rw [show (1 : Qp) = q1_2 + (q1_4 + q1_4) from q1_2_add_q1_4_add_q1_4.symm]
+          iapply (cellAlive_split_gen d.cell q1_2 (q1_4 + q1_4) (nextIdOr post none)).mpr
+          iframe Hcell
+          iapply (cellAlive_split_gen d.cell q1_4 q1_4 (nextIdOr post none)).mpr
+          iframe
+        imod cellAlive_full_update d.cell (nextIdOr post none) (some σc.counter)
+          $$ Hallive with Hallive
+        ihave Hallive : cellAlive d.cell (q1_4 + q3_4) (some σc.counter) $$ [Hallive]
+        · rw [q1_4_add_q3_4]
+          iexact Hallive
+        icases (cellAlive_split_gen d.cell q1_4 q3_4 (some σc.counter)).mp $$ Hallive
+          with ⟨Hledger4, Hchain34⟩
+        ihave Hpart := Hbackd $$ [Hauthd Hcntd Hledd Hledger4]
+        · iapply arcCell_pack γP d nd md
+          iframe Hauthd Hcntd
+          iapply Hledd
+          iexact Hledger4
+        -- splice: the predecessor now points at the new cell, which slots in behind
+        ihave Hsucc : payload γ.l d (some σc.counter) $$ [Hptr HarcNew]
+        · unfold payload wSuccRef
+          iexists newNode
+          iframe Hptr
+          iexists dNew
+          iframe HarcNew
+          iexact HatN
+        icases Hback with ⟨-, Hsplice⟩
+        ihave Hghost := Hsplice $$ %σc.counter %x %dNew %hxval HatN
+          [Hlock Hchain34 Hsucc] [HlockNew HaliveNew HpayNew]
+        · unfold aliveSlot nodeSlotShared
+          iexists RwLock.State.free
+          iframe Hlock
+          dsimp only [nodeSlotSharedBody]
+          iframe Hsucc
+          iexact Hchain34
+        · unfold aliveSlot nodeSlotShared
+          iexists RwLock.State.free
+          iframe HlockNew
+          dsimp only [nodeSlotSharedBody]
+          iframe HpayNew HaliveNew
+        -- advance the abstract state: 3/4 from the invariant, 1/4 from the client
+        iunfold arrFrag at Hfrag
+        icases Hfrag with ⟨%M₀, Hfrag⟩
+        ihave #hag : ⌜σc = σc ∧ M₀ = M⌝ $$ [Hfrag Hstate]
+        · iapply wStateVar_agree γ.s q1_4 q3_4 σc σc M₀ M
+          isplitl [Hfrag] <;> iassumption
+        icases hag with ⟨-, %hM⟩
+        subst hM
+        ihave Hfull := (wStateVar_split γ.s σc M₀).mpr $$ [Hfrag Hstate]
+        · isplitl [Hfrag] <;> iassumption
+        imod wStateVar_full_update γ.s σc (Arr.insert σc id x).1 M₀
+          (Std.insert M₀ σc.counter dNew) $$ Hfull with Hfull
+        icases (wStateVar_split γ.s (Arr.insert σc id x).1
+          (Std.insert M₀ σc.counter dNew)).mp $$ Hfull with ⟨Hfrag, Hstate⟩
+        icases Hclose with ⟨-, Hcommit⟩
+        ihave Hbeta : (∃ σ', arrFrag γ σ' ∗
+            insertQ γ node id x σc σ' hl_val(some(&newNode)))
+            $$ [Hfrag Hweak HweakNew]
+        · iexists (Arr.insert σc id x).1
+          isplitl [Hfrag]
+          · unfold arrFrag
+            iexists (Std.insert M₀ σc.counter dNew)
+            iexact Hfrag
+          unfold insertQ
+          rw [hins]
+          isplit
+          · ipureintro; rfl
+          isplitl [Hweak]
+          · unfold Arr.isId
+            iexists d
+            iframe Hweak
+            iexact Hnode
+          · iexists newNode
+            isplit
+            · ipureintro; rfl
+            unfold Arr.isId Arr.isNode
+            iexists dNew
+            iframe HweakNew
+            iexact HatN
+        imod Hcommit $$ Hbeta with HΦ
+        imodintro
+        -- close the invariant at the new abstract state
+        ihave Hghost : isGhost (nodeSlotShared γP) γ.l (Arr.insert σc id x).1.cells
+            $$ [Hghost]
+        · unfold isGhost
+          rw [hins]
+          iexact Hghost
+        ihave Hdead' : deadNodes (Std.insert M₀ σc.counter dNew)
+            (Arr.insert σc id x).1.cells $$ [Hdead]
+        · iapply deadNodes_insert_live M₀ (Arr.insert σc id x).1.cells σc.counter dNew
+            hfresh (by rw [hins]; simp)
+          iapply deadNodes_grow M₀ σc.cells (Arr.insert σc id x).1.cells
+            (by rw [hins, hsplit]; simp; grind)
+          iexact Hdead
+        ihave HIb := arrInvCloseRead γ γP platform np (Std.insert M₀ σc.counter dNew)
+          (Arr.insert σc id x).1 (Arr.insert_wellFormed σc hwf id x)
+          (by rw [hins]; exact wMetaMap_insert_counter_dom M₀ σc.counter dNew hdom)
+          $$ Hpart Hplat HM2 Hdead' Hghost Hstate
+        iframe HIb
+        itele_reduce
+        wp_pures
+        -- give the borrowed reference back; the whole permit is in hand afterwards
+        wp_bind &Arc.drop _ _
+        iapply wp_wand $$ [Hnode Harc Hmine Hkeep]
+        · iapply return_read_spec γ γP platform node id d
+            $$ Hinv' Hnode Harc Hmine Hkeep
+        iintro %u2 ⟨Hdep, Hkeep⟩
+        wp_pures
+        iapply fupd_intro
+        simp only [wandM]
+        iapply HΦ
+        isplitl [Hdep Hpark Hkeep]
+        · iapply rwGuard_join3 γP $$ Hdep Hpark Hkeep
+        · ipureintro; rfl
   · iexact HAU
 
 /-- Detach and free everything strictly after `node`.
