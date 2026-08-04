@@ -2639,6 +2639,55 @@ theorem borrow_read_spec
         iframe Harc Hmine
         ipureintro; exact hr
 
+/-- Upgrading a handle on a retired cell fails.  No lock and no permit are involved:
+    the tombstone alone forces the count to zero, which is the whole content of
+    `arcLedger_dead_zero`. -/
+theorem borrow_dead_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isWeak d.arc node d.mux -∗
+    cellDead d.cell -∗
+    WP hl(&Weak.tryUpgrade &node)
+      {{ r, ⌜r = hl_val(none())⌝ ∗ isWeak d.arc node d.mux }} := by
+  iintro #Hinv #Hnode Hweak #Hcd
+  iapply Weak.tryUpgrade_atomic_spec (γ := d.arc) node d.mux $$ Hweak
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  icases arcLedger_dead_zero γP d n $$ [Hcd Hled] with ⟨%hz, Hled⟩
+  · isplitl []
+    · iexact Hcd
+    · iassumption
+  subst hz
+  iaaccintro' with Hauth
+  · iintro Hauth
+    imodintro
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      iapply arcCell_pack γP d 0 m
+      iframe
+    · iframe
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro %r ⟨Hweak, Hcases⟩
+    icases Hcases with (⟨-, %hr, Hauth⟩ | ⟨%hpos, -, -, -⟩)
+    · imodintro
+      isplitl [Hauth Hcnt Hled Hback Hphys]
+      · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+        iapply Hback
+        iapply arcCell_pack γP d 0 m
+        iframe
+      · iframe Hweak
+        ipureintro; exact hr
+    · exact absurd hpos (Nat.lt_irrefl 0)
+
 /-- Give the temporary reference back and recover the half permit.  The drop is
     never the last one, so no cell is freed here. -/
 theorem return_read_spec
@@ -3470,10 +3519,33 @@ theorem insert_spec
         · ipureintro; rfl
   · iexact HAU
 
+omit [RwLockG GF] [ArcG GF] in
+/-- A handle that fails to upgrade names a cell that is not in the list, and the
+    abstract revoke on such an `id` is a no-op. -/
+theorem Arr.revoke_of_not_mem (σ : Arr) (id : Nat)
+    (h : id ∉ σ.cells.map (·.1)) : Arr.revoke σ id = (σ, none) := by
+  unfold Arr.revoke
+  rw [if_neg]
+  intro hany
+  rw [List.any_eq_true] at hany
+  obtain ⟨p, hp, hpid⟩ := hany
+  exact h (List.mem_map.mpr ⟨p, hp, of_decide_eq_true hpid⟩)
+
+/-- What `revoke`'s body achieves, in the shape `execute_exclusive_spec` wants. -/
+def revokeQ (γ : WArrγ) (node : Val) (id : Nat)
+    (σ σ' : Arr) (ret : Val) : IProp GF := iprop%
+  ⌜σ' = (Arr.revoke σ id).1⌝ ∗ Arr.isId γ node id ∗
+  ⌜ret = match (Arr.revoke σ id).2 with
+         | none => hl_val(none())
+         | some _ => hl_val(some(#()))⌝
+
+set_option maxRecDepth 8000 in
 /-- Detach and free everything strictly after `node`.
 
     Unlike `Array`'s, this postcondition says nothing about surviving cells, because
-    there are none: the handles a client holds on the revoked suffix all go stale. -/
+    there are none: every handle a client holds on the revoked suffix goes stale, and
+    a stale handle is indistinguishable from one naming a cell that was never in the
+    list.  That is what makes the revoked state disappear from the model. -/
 theorem revoke_spec
     (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
@@ -3481,12 +3553,60 @@ theorem revoke_spec
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&revoke &platform &node) @ ↑arrN
-    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
-      | RET match (Arr.revoke σ id).2 with
-            | none => hl_val(none())
-            | some _ => hl_val(some(#()))
-    ⟫ := by
-  sorry
+    ⟪ ∃ ret, ∃ σ', arrFrag γ σ' ∗ revokeQ γ node id σ σ' ret | RET ret ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold revoke
+  wp_pures
+  iapply execute_exclusive_spec γ γP platform _ (revokeQ γ node id) $$ Hinv [Hid]
+  · iintro %σ %Φ' ⟨Hcontent, Hwguard⟩ HΦ'
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hnode, Hweak⟩
+    iunfold arrContent at Hcontent
+    icases Hcontent with ⟨%M, Hcontent⟩
+    iunfold arrContentAt at Hcontent
+    icases Hcontent with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+    ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+    · iunfold Arr.isNode at Hnode
+      iexact Hnode
+    ihave #hlookup : ⌜get? M id = some d⌝ $$ [HM Hmeta]
+    · iapply wMetaMap_lookup γ.l q1_2 M id d $$ HM Hmeta
+    icases hlookup with %hlookup
+    wp_pures
+    by_cases hin : id ∈ σ.cells.map (·.1)
+    · sorry
+    · -- the handle is stale: the cell has left the list, so the revoke is a no-op
+      ihave #Hcd : cellDead d.cell $$ [Hdead]
+      · iapply deadNodes_lookup M σ.cells id d hlookup hin
+        iexact Hdead
+      wp_bind &Weak.tryUpgrade _
+      iapply wp_wand $$ [Hnode Hweak Hcd]
+      · iapply borrow_dead_spec γ γP platform node id d $$ Hinv Hnode Hweak Hcd
+      iintro %r ⟨%hr, Hweak⟩
+      subst hr
+      wp_pures
+      iapply fupd_intro
+      iapply HΦ'
+      have hrev := Arr.revoke_of_not_mem σ id hin
+      iexists σ
+      isplitl [HM Hghost]
+      · unfold arrContent arrContentAt
+        iexists M
+        iframe HM Hdead Hghost
+        isplit
+        · ipureintro; exact hwf
+        · ipureintro; exact hdom
+      iframe Hwguard
+      unfold revokeQ
+      rw [hrev]
+      isplit
+      · ipureintro; rfl
+      isplitl [Hweak]
+      · unfold Arr.isId
+        iexists d
+        iframe Hweak
+        iexact Hnode
+      · ipureintro; rfl
+  · iexact HAU
 
 /-- What `getChild`'s body achieves, in the shape `execute_shared_spec` wants. -/
 def getChildQ (γ : WArrγ) (node : Val) (id : Nat)
