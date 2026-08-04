@@ -1630,6 +1630,23 @@ theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform :
   cases Hvalid
   rfl
 
+/-- Any share of the write permit identifies the lock state. -/
+theorem isPlatform_write_frac_valid (ρ : GName) (s : RwLock.State) (platform : Val)
+    (q : Qp) :
+    isPlatform (GF := GF) ρ s platform ∗ rwGuardFrac ρ RwLock.Mode.write q ⊢
+      ⌜s = .write⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuardFrac_valid _ _ _ _ _ q
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  ipureintro
+  cases Hvalid
+  rfl
+
 theorem rwGuard_toFrac (γ : GName) :
     ⊢@{IProp GF} rwGuard γ RwLock.Mode.read -∗ rwGuardFrac γ RwLock.Mode.read 1 := by
   iintro H
@@ -1735,6 +1752,31 @@ theorem arcLedger_takeAlive (γP : GName) (d : WData) (n : Nat) (q : Qp)
     rw [← q1_4_add_q1_4]
     iapply (cellAlive_split_gen d.cell q1_4 q1_4 nxt').mpr
     iframe
+  · iexfalso
+    iapply cellAlive_dead_False d.cell q m
+    isplitl [Hmine] <;> iassumption
+
+/-- A cell whose live witness is still around has a positive count: the tombstone is
+    the only zero case, and it cannot coexist with any share of that witness. -/
+theorem arcLedger_alive_pos (γP : GName) (d : WData) (n : Nat) (q : Qp)
+    (m : Option Nat) :
+    refAuth (GF := GF) d n ∗ arcLedger γP d n ∗ cellAlive d.cell q m ⊢
+      ⌜0 < n⌝ ∗ refAuth d n ∗ arcLedger γP d n ∗ cellAlive d.cell q m := by
+  unfold arcLedger arcAliveTok
+  iintro ⟨Hcnt, Hled, Hmine⟩
+  icases Hled with (⟨Htok, Hdep, Hq⟩ | ⟨Htok, %hn, Hq, Hw⟩ | ⟨#Hcd, -⟩)
+  · ihave #Hpos : ⌜0 < n⌝ $$ [Hcnt Htok]
+    · iapply refTok_pos d n
+      isplitl [Hcnt] <;> iassumption
+    iframe Hpos Hcnt Hmine
+    ileft
+    iframe
+  · iframe Hcnt Hmine
+    isplit
+    · ipureintro; omega
+    iright; ileft
+    iframe Htok Hq Hw
+    ipureintro; exact hn
   · iexfalso
     iapply cellAlive_dead_False d.cell q m
     isplitl [Hmine] <;> iassumption
@@ -1870,12 +1912,19 @@ theorem refAuth_give (d : WData) (n : Nat) :
 /-- Retiring a cell's ledger: the count is zero for good, and the tombstone is
     persistent, so a stale weak handle can still be shown to fail. -/
 theorem arcLedger_kill (γP : GName) (d : WData) (nxt : Option Nat) :
-    refAuth (GF := GF) d 1 ∗ arcLedger γP d 1 ∗ cellAlive d.cell 1 nxt ⊢
+    refAuth (GF := GF) d 1 ∗ arcLedger γP d 1 ∗ cellAlive d.cell q3_4 nxt ⊢
       |==> (refAuth d 0 ∗ arcLedger γP d 0 ∗ cellDead d.cell) := by
-  unfold arcLedger
-  iintro ⟨Hcnt, Hled, Halive⟩
-  icases Hled with (⟨Htok, -⟩ | ⟨-, %hn, -, -⟩ | ⟨-, %hz⟩)
-  · imod refAuth_give d 0 $$ [Hcnt Htok] with Hcnt
+  unfold arcLedger arcAliveTok
+  iintro ⟨Hcnt, Hled, Hchain⟩
+  icases Hled with (⟨Htok, -, %nxt', Hq⟩ | ⟨-, %hn, -, -⟩ | ⟨-, %hz⟩)
+  · ihave %heq := cellAlive_agree d.cell q3_4 q1_4 nxt nxt' $$ [Hchain Hq]
+    · isplitl [Hchain] <;> iassumption
+    subst heq
+    ihave Halive : cellAlive d.cell 1 nxt $$ [Hq Hchain]
+    · rw [← q1_4_add_q3_4]
+      iapply (cellAlive_split_gen d.cell q1_4 q3_4 nxt).mpr
+      iframe
+    imod refAuth_give d 0 $$ [Hcnt Htok] with Hcnt
     · isplitl [Hcnt] <;> iassumption
     imod cellAlive_full_kill d.cell nxt $$ Halive with #Hcd
     imodintro
@@ -2687,6 +2736,162 @@ theorem borrow_dead_spec
       · iframe Hweak
         ipureintro; exact hr
     · exact absurd hpos (Nat.lt_irrefl 0)
+
+set_option maxRecDepth 8000 in
+/-- **Dropping the last reference to a cell really frees it.**
+
+    This is the claim the whole design exists to support, and the one `Array` cannot
+    make.  `Arc.drop` is decomposed into its three steps so that each can be taken
+    with the invariant open exactly where it needs to be:
+
+    * `dropStrong` is atomic, and this is where `arcCell_write_last` applies — the
+      platform is write-held, so no read permit exists anywhere, so the count is one
+      and this drop *is* the last.  The ledger is retired on the spot; the tombstone
+      is persistent, so every handle a client still holds becomes provably stale.
+    * `RwLock.drop` needs no ghost state at all.  It is the actual deallocation.
+    * `dropWeak` is atomic again and only touches the weak count.
+
+    Nothing is left behind: `arcAuth _ 0 _` owns no memory, so a freed cell's ledger
+    entry is pure ghost state and the invariant never has to be torn down.  That is
+    what makes revocation able to reclaim memory at all. -/
+theorem drop_last_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData)
+    (nxt : Option Nat) (v : Val) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isArc d.arc node d.mux -∗
+    cellAlive d.cell q3_4 nxt -∗
+    isRwLock d.rw d.mux .free hl_val(#d.ptr) -∗
+    (d.ptr ↦ v) -∗
+    rwGuardFrac γP RwLock.Mode.write q1_2 -∗
+    WP hl(&Arc.drop &RwLock.drop &node)
+      {{ _r, cellDead d.cell ∗ rwGuardFrac γP RwLock.Mode.write q1_2 }} := by
+  iintro #Hinv #Hnode Harc Hchain Hlock Hptr Hwq
+  iunfold isArrInv at Hinv
+  icases Arc.isArc_copyRuntime d.arc node d.mux $$ Harc with ⟨Hshape, Harc⟩
+  icases Hshape with ⟨%ps, %pw, %hnode⟩
+  subst hnode
+  unfold Arc.drop
+  wp_pures
+  wp_bind &Arc.dropStrong _
+  iapply (wp_wand (Φ := fun r => iprop%
+    ⌜r = hl_val(#true)⌝ ∗ isWeak d.arc hl_val(((#ps, #pw), &(d.mux))) d.mux ∗
+    cellDead d.cell ∗ rwGuardFrac γP RwLock.Mode.write q1_2))
+    $$ [Hnode Harc Hchain Hwq]
+  · -- the atomic step: the count is one, so this is the last reference
+    iapply Arc.dropStrong_spec (γ := d.arc) hl_val(((#ps, #pw), &(d.mux))) d.mux $$ Harc
+    iauintro
+    iinv Hinv as Hbody
+    iunfold arrInvBody at Hbody
+    icases Hbody with ⟨Hpart, Hphys⟩
+    icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+    icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+    iunfold arrPhysPart at Hphys
+    icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+    ihave #hsw : ⌜s = RwLock.State.write⌝ $$ [Hplat Hwq]
+    · iapply isPlatform_write_frac_valid γP s platform q1_2
+      isplitl [Hplat] <;> iassumption
+    icases hsw with %hsw
+    subst hsw
+    icases arcCell_write_last γP d n platform nxt $$ [Hplat Hcnt Hled Hchain]
+      with ⟨%hle, Hplat, Hcnt, Hled, Hchain⟩
+    · isplitl [Hplat]
+      · iassumption
+      · isplitl [Hcnt]
+        · iassumption
+        · isplitl [Hled]
+          · iassumption
+          · iassumption
+    icases arcLedger_alive_pos γP d n q3_4 nxt $$ [Hcnt Hled Hchain]
+      with ⟨%hpos, Hcnt, Hled, Hchain⟩
+    · isplitl [Hcnt]
+      · iassumption
+      · isplitl [Hled]
+        · iassumption
+        · iassumption
+    have hn1 : n = 1 := by omega
+    subst hn1
+    iaaccintro' with Hauth
+    · iintro Hauth
+      imodintro
+      isplitl [Hauth Hcnt Hled Hback Hplat Hrest]
+      · unfold arrInvBody arrPhysPart
+        isplitl [Hback Hauth Hcnt Hled]
+        · iapply Hback
+          iapply arcCell_pack γP d 1 m
+          iframe
+        · iexists RwLock.State.write, M, σ
+          iframe
+      · iframe Hchain Hwq
+        repeat' first | (imodintro; iassumption) | isplitl []
+    · itele_reduce
+      iintro Hcases
+      icases Hcases with (⟨-, Hauth, Hweak⟩ | ⟨%hgt, -⟩)
+      · imod arcLedger_kill γP d nxt $$ [Hcnt Hled Hchain] with ⟨Hcnt, Hled, #Hcd⟩
+        · isplitl [Hcnt]
+          · iassumption
+          · isplitl [Hled]
+            · iassumption
+            · iassumption
+        imodintro
+        isplitl [Hauth Hcnt Hled Hback Hplat Hrest]
+        · unfold arrInvBody arrPhysPart
+          isplitl [Hback Hauth Hcnt Hled]
+          · iapply Hback
+            iapply arcCell_pack γP d 0 (m + 1)
+            iframe
+          · iexists RwLock.State.write, M, σ
+            iframe
+        · iframe Hweak Hwq
+          isplitl []
+          · ipureintro; rfl
+          · iexact Hcd
+      · exact absurd hgt (by omega)
+  iintro %r ⟨%hr, Hweak, #Hcd, Hwq⟩
+  subst hr
+  wp_pures
+  unfold Arc.closeLastStrong
+  wp_pures
+  -- the actual deallocation: no ghost state involved
+  wp_bind &RwLock.drop _
+  iapply RwLock.ptr_drop_spec d.rw d.mux d.ptr v $$ [Hlock Hptr]
+  · iframe
+  iintro !> -
+  wp_pures
+  -- the weak count, atomic again
+  rw [show (Arc.dropWeak : Val) = Weak.drop from rfl]
+  iapply (wp_wand (Φ := fun _r => iprop%
+    cellDead d.cell ∗ rwGuardFrac γP RwLock.Mode.write q1_2)) $$ [Hnode Hweak Hcd Hwq]
+  · iapply Weak.drop_spec (γ := d.arc) hl_val(((#ps, #pw), &(d.mux))) d.mux $$ Hweak
+    iauintro
+    iinv Hinv as Hbody
+    iunfold arrInvBody at Hbody
+    icases Hbody with ⟨Hpart, Hphys⟩
+    icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+    icases arcCell_unpack γP d $$ Hcell with ⟨%n2, %m2, Hauth, Hcnt, Hled⟩
+    iaaccintro' with Hauth
+    · iintro Hauth
+      imodintro
+      isplitl [Hauth Hcnt Hled Hback Hphys]
+      · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+        iapply Hback
+        iapply arcCell_pack γP d n2 m2
+        iframe
+      · iframe Hwq Hcd
+        repeat' first | (imodintro; iassumption) | isplitl []
+    · itele_reduce
+      iintro Hauth
+      imodintro
+      isplitl [Hauth Hcnt Hled Hback Hphys]
+      · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+        iapply Hback
+        iapply arcCell_pack γP d n2 (m2 - 1)
+        iframe
+      · iframe Hwq
+        iexact Hcd
+  · iintro %u H
+    iexact H
 
 /-- Give the temporary reference back and recover the half permit.  The drop is
     never the last one, so no cell is freed here. -/
