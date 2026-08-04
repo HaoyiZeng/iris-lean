@@ -2332,6 +2332,59 @@ theorem isArc_mem (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) (node : V
     · isplitl [Hauth] <;> iassumption
     exact absurd h (Nat.lt_irrefl 0)
 
+/-- A stale handle names nothing.
+
+    This is the payoff of the whole design, and the one statement `Array` cannot
+    make.  There a client's handle is strong, so a revoked cell is still allocated
+    and still reachable, and the best a specification can say is "the cell is
+    revoked" — a state that has to be modelled, carried in the invariant, and
+    reasoned about at every step.  Here the failed upgrade is *equivalent* to
+    absence from `σ`, so the abstract model needs no revoked state at all.
+
+    Both directions of that equivalence are needed and both are here:
+    `isArc_mem` gives live ⟹ present, this gives dead ⟹ absent. -/
+theorem arrPhysPart_frag_dead (γ : WArrγ) (γP : GName) (platform : Val)
+    (σc : Arr) (d : WData) (id : Nat) (q : Qp) :
+  ⊢@{IProp GF}
+    arrPhysPart γ γP platform -∗ arrFrag γ σc -∗ Arr.isNode γ id d -∗
+    cellDead d.cell -∗ rwGuardFrac γP RwLock.Mode.read q -∗
+      ⌜id ∉ σc.cells.map (·.1)⌝ ∗ arrPhysPart γ γP platform ∗ arrFrag γ σc ∗
+      rwGuardFrac γP RwLock.Mode.read q := by
+  iintro Hphys Hfrag #Hnode #Hcd Hkeep
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  icases isPlatform_read_guard_valid γP s platform q $$ [Hplat Hkeep] with %hs
+  · isplitl [Hplat] <;> iassumption
+  rcases hs with ⟨np, hsr⟩
+  subst hsr
+  simp only [isPhysical] at *
+  icases Hrest with ⟨Hshared, Hstate⟩
+  -- the client's quarter and the invariant's three quarters must agree on `σ`
+  icases arrFrag_agree γ σc σ M $$ [Hfrag Hstate] with %hσ
+  · isplitl [Hfrag] <;> iassumption
+  subst hσ
+  iunfold arrShared at Hshared
+  icases Hshared with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+  · iunfold Arr.isNode at Hnode
+    iexact Hnode
+  ihave #hnin : ⌜id ∉ σc.cells.map (·.1)⌝ $$ [Hghost]
+  · iapply cellDead_not_mem γP γ.l σc d id $$ Hmeta Hcd Hghost
+  icases hnin with %hnin
+  iframe Hfrag Hkeep
+  isplit
+  · ipureintro; exact hnin
+  unfold arrPhysPart
+  iexists (RwLock.State.read (np + 1)), M, σc
+  iframe Hplat
+  simp only [isPhysical]
+  iframe Hstate
+  unfold arrShared
+  iframe HM Hdead Hghost
+  isplit
+  · ipureintro; exact hwf
+  · ipureintro; exact hdom
+
 /-! ### Borrowing a strong reference through a weak handle
 
 Every operation on a cell starts by upgrading the client's weak handle and ends by
@@ -2354,7 +2407,7 @@ theorem borrow_read_spec
     rwGuardFrac γP RwLock.Mode.read q1_4 -∗
     WP hl(&Weak.tryUpgrade &node)
       {{ r,
-        rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 ∗ isWeak d.arc node d.mux ∗
         ((⌜r = hl_val(none())⌝ ∗ cellDead d.cell ∗
             rwGuardFrac γP RwLock.Mode.read q1_2) ∨
          (⌜r = hl_val(some(&node))⌝ ∗ isArc d.arc node d.mux ∗ refTok d)) }} := by
@@ -2416,7 +2469,7 @@ theorem borrow_read_spec
           · ipureintro; rfl
         · iexists s, M, σ
           iframe
-      · iframe Hkeep
+      · iframe Hkeep Hweak
         ileft
         iframe Hdep
         isplit
@@ -2444,7 +2497,7 @@ theorem borrow_read_spec
           iframe Hdep' Hdep
         · iexists s, M, σ
           iframe
-      · iframe Hkeep
+      · iframe Hkeep Hweak
         iright
         iframe Harc Hmine
         ipureintro; exact hr
@@ -2538,6 +2591,41 @@ theorem return_read_spec
       · iexists s, M, σ
         iframe
     · iframe Hback' Hkeep
+
+theorem q1_2_add_q1_4_add_q1_4 : q1_2 + (q1_4 + q1_4) = 1 := by
+  apply Subtype.ext
+  show (q1_2 : Qp).val + ((q1_4 : Qp).val + (q1_4 : Qp).val) = (1 : Qp).val
+  simp [q1_2, q1_4, Qp.half]
+  grind
+
+/-- The read permit splits three ways: half is the borrow deposit, a quarter is
+    parked in the cell's slot while it is locked, and a quarter stays in hand to
+    witness that the platform really is read-held. -/
+theorem rwGuard_split3 (γP : GName) :
+  ⊢@{IProp GF}
+    rwGuard γP RwLock.Mode.read -∗
+      rwGuardFrac γP RwLock.Mode.read q1_2 ∗
+      rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+      rwGuardFrac γP RwLock.Mode.read q1_4 := by
+  rw [rwGuard_eq γP RwLock.Mode.read, ← q1_2_add_q1_4_add_q1_4]
+  iintro H
+  icases (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_2 (q1_4 + q1_4)).mp $$ H
+    with ⟨H₁, H₂⟩
+  iframe H₁
+  iapply (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_4 q1_4).mp $$ H₂
+
+theorem rwGuard_join3 (γP : GName) :
+  ⊢@{IProp GF}
+    rwGuardFrac γP RwLock.Mode.read q1_2 -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+      rwGuard γP RwLock.Mode.read := by
+  rw [rwGuard_eq γP RwLock.Mode.read, ← q1_2_add_q1_4_add_q1_4]
+  iintro H₁ H₂ H₃
+  iapply (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_2 (q1_4 + q1_4)).mpr
+  iframe H₁
+  iapply (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_4 q1_4).mpr
+  iframe
 
 /-! ### Taking and releasing a cell's own lock
 
