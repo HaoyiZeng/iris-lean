@@ -2917,6 +2917,57 @@ private theorem dropStrong_seq_spec (a x : Val) (n m : Nat) :
     iintro Hβ
     iapply HΦ $$ Hβ
 
+/-- **Dropping a non-last strong reference is logically atomic.**
+
+    `drop` is `dropStrong; if last then closeLastStrong else ()`, so in general it
+    has two linearisation points and cannot be atomic.  But when the caller knows the
+    count is at least two the branch is statically `false` and everything after the
+    `faa` is pure, leaving exactly one linearisation point.
+
+    This is what a client whose `arcAuth` lives inside an invariant needs: it can
+    open the invariant for the single atomic step, instead of having to hold the
+    authority across a whole non-atomic call. -/
+theorem drop_nonlast_spec (dropT a x : Val) :
+  ⊢@{IProp GF}
+    isArc γ a x -∗
+    ⟪ ∀ n, ∀ m, arcAuth γ n m ∗ ⌜2 ≤ n⌝ ⟫
+      hl(&drop &dropT &a) @ ∅
+    ⟪ arcAuth γ (n - 1) m | RET hl_val(#()) ⟫ := by
+  iintro Harc %Φ HAU
+  icases isArc_copyRuntime γ a x $$ Harc with ⟨Hruntime, Harc⟩
+  icases Hruntime with ⟨%ps, %pw, %Ha⟩
+  subst a
+  unfold drop
+  wp_rec
+  wp_pures
+  wp_bind &dropStrong _
+  iapply dropStrong_spec (γ := γ) hl_val(((#ps, #pw), &x)) x $$ Harc
+  iauintro
+  simp only [atomicAcc]
+  iauopen HAU with ⟨%n, %m, Hpre, Hclose⟩
+  icases Hpre with ⟨Hauth, %hn⟩
+  imodintro
+  iexists n, m
+  isplitl [Hauth]
+  · iexact Hauth
+  · isplit
+    · iintro Hauth
+      icases Hclose with ⟨Habort, -⟩
+      iapply Habort
+      iframe Hauth
+      ipureintro
+      exact hn
+    · itele_reduce
+      iintro Hcases
+      icases Hclose with ⟨-, Hcommit⟩
+      icases Hcases with (⟨%h1, -, -⟩ | ⟨-, Hauth⟩)
+      · exact absurd h1 (by omega)
+      · imod Hcommit $$ Hauth with HΦ
+        imodintro
+        rw [decide_eq_false (by omega : ¬ (n = 1))]
+        wp_pures
+        iexact HΦ
+
 /-- **Derived composite `drop`.** `dropStrong` and `dropWeak` each carry their
 own linearization point, so the composition only admits an ordinary Hoare
 triple, against a privately owned `arcAuth`.
