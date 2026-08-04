@@ -985,7 +985,25 @@ instance instIsNodePersistent (γ : WArrγ) (id : Nat) (d : WData) :
   unfold Arr.isNode; infer_instance
 
 /-- A client's handle: **weak**.  Holding one does not keep the cell alive, which is
-    exactly why revocation can free it. -/
+    exactly why revocation can free it.
+
+    Note what this predicate does *not* say: nothing about the reference count.
+    `Arr.isNode` is persistent knowledge about a name, and `isWeak` carries no count
+    either, so from a handle alone one cannot derive whether upgrading it will
+    succeed.  That is the point — it is what "weak" means, and modelling it any other
+    way would be modelling something else.
+
+    Where the answer does come from is `Weak.tryUpgrade`'s specification, which is
+    logically atomic against `arcAuth` and has two exits: at the linearisation point
+    the count is either zero, and the upgrade returns `none`, or positive, and it
+    returns a strong reference.  Which exit is taken is decided by the state at that
+    instant, not by anything the caller holds, so every client has to handle both.
+
+    Tying that physical count back to the abstract list is the job of `arcCell` and
+    the two lemmas `arcLedger_dead_zero` and `isArc_mem`: between them, the count is
+    zero exactly when the identifier has left `σ.cells`.  A failed upgrade and an
+    identifier that was never in the list are therefore the same observable event,
+    which is why the specifications below need no third outcome. -/
 def Arr.isId (γ : WArrγ) (node : Val) (id : Nat) : IProp GF := iprop%
   ∃ d : WData, Arr.isNode γ id d ∗ isWeak d.arc node d.mux
 
