@@ -1201,6 +1201,216 @@ theorem arrContentAtDowngrad (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr
   · ipureintro; exact hdom
   · iapply isGhostHelpDowngrad γP γ.l none σ.cells $$ Hghost
 
+theorem isGhostHelpAccIn (γ : GName) (d : WData)
+    (slot : Slot (H := H) GF)
+    (tail : Option Nat) (id : Nat) :
+    ∀ cells : List (Nat × Int), id ∈ cells.map (·.1) →
+    wMetaAt γ id d ⊢@{IProp GF} isGhostHelp slot γ tail cells -∗
+      ∃ nxt : Option Nat,
+        aliveSlot slot γ d nxt ∗
+        (aliveSlot slot γ d nxt -∗
+          isGhostHelp slot γ tail cells) := by
+  intro cells
+  induction cells with
+  | nil => intro h; exact absurd h (by simp)
+  | cons c cells ih =>
+    rcases c with ⟨id', x⟩
+    intro hin
+    iintro #Hmeta Hlist
+    simp only [isGhostHelp]
+    icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+    by_cases hhead : id' = id
+    · subst hhead
+      ihave %hd := wMetaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iexists (nextIdOr cells tail)
+      iframe Hslot
+      iintro Hslot
+      iexists d'
+      iframe Hmeta' Hslot Hrest
+      ipureintro
+      exact hval
+    · have hin' : id ∈ cells.map (·.1) := by
+        simp only [List.map_cons, List.mem_cons] at hin
+        rcases hin with h | h
+        · exact absurd h.symm hhead
+        · exact h
+      ihave Hacc := ih hin' $$ Hmeta Hrest
+      icases Hacc with ⟨%nxt, Hslot', Hback⟩
+      iexists nxt
+      iframe Hslot'
+      iintro Hslot'
+      ihave Hrest' := Hback $$ Hslot'
+      iexists d'
+      iframe Hmeta' Hslot Hrest'
+      ipureintro
+      exact hval
+
+/-- `isGhost` is `isGhostHelp` at `tail = none`. -/
+theorem isGhostAccIn (γ : GName) (d : WData)
+    (slot : Slot (H := H) GF)
+    (id : Nat) (cells : List (Nat × Int)) (hin : id ∈ cells.map (·.1)) :
+    wMetaAt γ id d ⊢@{IProp GF} isGhost slot γ cells -∗
+      ∃ nxt : Option Nat,
+        aliveSlot slot γ d nxt ∗
+        (aliveSlot slot γ d nxt -∗
+          isGhost slot γ cells) :=
+  isGhostHelpAccIn γ d slot none id cells hin
+
+theorem isGhostHelpAccInsert (γ : GName) (d : WData) (slot : Slot (H := H) GF)
+    (tail : Option Nat) (id : Nat) (x : Int) (post : List (Nat × Int)) :
+    ∀ pre : List (Nat × Int),
+    wMetaAt γ id d ⊢@{IProp GF}
+      isGhostHelp slot γ tail (pre ++ (id, x) :: post) -∗
+        aliveSlot slot γ d (nextIdOr post tail) ∗
+        ((aliveSlot slot γ d (nextIdOr post tail) -∗
+            isGhostHelp slot γ tail (pre ++ (id, x) :: post)) ∧
+         (∀ nid : Nat, ∀ v : Int, ∀ dNew : WData, ⌜v = dNew.val⌝ -∗ wMetaAt γ nid dNew -∗
+            aliveSlot slot γ d (some nid) -∗
+            aliveSlot slot γ dNew (nextIdOr post tail) -∗
+            isGhostHelp slot γ tail (pre ++ (id, x) :: (nid, v) :: post))) := by
+  intro pre
+  induction pre with
+  | nil =>
+      iintro #Hmeta Hlist
+      simp only [List.nil_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave %hd := wMetaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iframe Hslot
+      isplit
+      · iintro Hd
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hd Hrest
+      · iintro %nid %v %dNew %hv #HmetaN Hd Hnew
+        simp only [nextIdOr]
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hd
+        iexists dNew
+        isplit
+        · ipureintro; exact hv
+        iframe HmetaN Hnew Hrest
+  | cons c pre ih =>
+      rcases c with ⟨id', x'⟩
+      iintro #Hmeta Hlist
+      simp only [List.cons_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave Hacc := ih $$ Hmeta Hrest
+      icases Hacc with ⟨Hslot', Hboth⟩
+      iframe Hslot'
+      isplit
+      · iintro Hd
+        icases Hboth with ⟨Hsame, -⟩
+        ihave Hrest' := Hsame $$ Hd
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hrest' Hslot
+      · iintro %nid %v %dNew %hv #HmetaN Hd Hnew
+        icases Hboth with ⟨-, Hback⟩
+        ihave Hrest' := Hback $$ %nid %v %dNew %hv HmetaN Hd Hnew
+        iexists d'
+        isplit
+        · ipureintro; exact hval
+        iframe Hmeta' Hrest'
+        cases pre with
+        | nil => simp only [List.nil_append, nextIdOr]; iexact Hslot
+        | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
+
+
+/-- The mirror image, for revoke: hand out the slot at `id` *and* the whole chain
+    that follows it, and take back a chain that stops at `id`.  What comes out as
+    `isGhostHelp … post` is what `Impl.revokeSuffix` walks. -/
+theorem isGhostHelpAccTruncate (γ : GName) (d : WData) (slot : Slot (H := H) GF)
+    (tail : Option Nat) (id : Nat) (x : Int) (post : List (Nat × Int)) :
+    ∀ pre : List (Nat × Int),
+    wMetaAt γ id d ⊢@{IProp GF}
+      isGhostHelp slot γ tail (pre ++ (id, x) :: post) -∗
+        aliveSlot slot γ d (nextIdOr post tail) ∗
+        isGhostHelp slot γ tail post ∗
+        (aliveSlot slot γ d tail -∗ isGhostHelp slot γ tail (pre ++ [(id, x)])) := by
+  intro pre
+  induction pre with
+  | nil =>
+      iintro #Hmeta Hlist
+      simp only [List.nil_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave %hd := wMetaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      iframe Hslot Hrest
+      iintro Hd
+      simp only [nextIdOr]
+      iexists d'
+      isplit
+      · ipureintro; exact hval
+      iframe Hmeta' Hd
+  | cons c pre ih =>
+      rcases c with ⟨id', x'⟩
+      iintro #Hmeta Hlist
+      simp only [List.cons_append, isGhostHelp]
+      icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+      ihave Hacc := ih $$ Hmeta Hrest
+      icases Hacc with ⟨Hslot', Hpost, Hback⟩
+      iframe Hslot' Hpost
+      iintro Hd
+      ihave Hrest' := Hback $$ Hd
+      iexists d'
+      isplit
+      · ipureintro; exact hval
+      iframe Hmeta' Hrest'
+      cases pre with
+      | nil => simp only [List.nil_append, nextIdOr]; iexact Hslot
+      | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
+
+
+/-! ### Reading a cell's status off the persistent dead witness
+
+`deadNodes` is persistent, so unlike `Array` this direction costs nothing to keep
+around; and a live slot carries `cellAlive` in *every* lock state (at `1` when free,
+at `1/4` when write-locked), so the refutation always lands. -/
+
+theorem cellDead_not_mem (γP : GName) (γ : GName) (σ : Arr) (d : WData) (id : Nat) :
+  ⊢@{IProp GF}
+    wMetaAt γ id d -∗ cellDead d.cell -∗ isGhost (nodeSlotShared γP) γ σ.cells -∗
+      ⌜id ∉ σ.cells.map (·.1)⌝ := by
+  iintro #Hmeta #Hcd Hghost
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · ihave Hacc := isGhostAccIn γ d (nodeSlotShared γP) id σ.cells hin $$ Hmeta Hghost
+    icases Hacc with ⟨%nxt, Hslot, -⟩
+    iunfold nodeSlotShared at Hslot
+    icases Hslot with ⟨%s, -, Hstate⟩
+    iexfalso
+    rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
+    · icases Hstate with ⟨-, Halive⟩
+      iapply cellAlive_dead_False d.cell 1 nxt
+      isplitl [Halive] <;> iassumption
+    · iexact Hstate
+    · icases Hstate with ⟨-, Halive⟩
+      iapply cellAlive_dead_False d.cell q1_4 nxt
+      isplitl [Halive] <;> iassumption
+  · ipureintro
+    exact hin
+
+theorem cellDead_not_mem_exclusive (γ : GName) (σ : Arr) (d : WData) (id : Nat) :
+  ⊢@{IProp GF}
+    wMetaAt γ id d -∗ cellDead d.cell -∗ isGhost nodeSlotExclusive γ σ.cells -∗
+      ⌜id ∉ σ.cells.map (·.1)⌝ := by
+  iintro #Hmeta #Hcd Hghost
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · ihave Hacc := isGhostAccIn γ d nodeSlotExclusive id σ.cells hin $$ Hmeta Hghost
+    icases Hacc with ⟨%nxt, Hslot, -⟩
+    iunfold nodeSlotExclusive at Hslot
+    icases Hslot with ⟨-, Halive, -⟩
+    iexfalso
+    iapply cellAlive_dead_False d.cell 1 nxt
+    isplitl [Halive] <;> iassumption
+  · ipureintro
+    exact hin
+
 /-! ### The platform lock's effect on the invariant body -/
 
 theorem isPhysical_read_acquire_first (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) :
@@ -1314,6 +1524,105 @@ theorem rwGuard_toFrac (γ : GName) :
   iintro H
   rw [← rwGuard_eq γ RwLock.Mode.read]
   iexact H
+
+/-! ### Working the ledger
+
+These four are where the design pays off.  Each turns a fact about the *lock* into a
+fact about a *reference count*, or the other way round. -/
+
+/-- **Gap 1.**  A cell that is still in the list has a positive count, so a weak
+    handle on it upgrades successfully.  The evidence is the `refTok` the ledger
+    itself holds while the cell is live. -/
+theorem arcCell_live_pos (γP : GName) (d : WData) (n m : Nat) :
+    arcAuth (GF := GF) d.arc n m ∗ refAuth d n ∗
+      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗
+      cellAlive d.cell q1_4 nxt ⊢ ⌜0 < n⌝ := by
+  iintro ⟨-, Hcnt, Hled, Halive⟩
+  icases Hled with (⟨Htok, -⟩ | ⟨#Hcd, -⟩)
+  · iapply refTok_pos d n
+    isplitl [Hcnt] <;> iassumption
+  · iexfalso
+    iapply cellAlive_dead_False d.cell q1_4 nxt
+    isplitl [Halive] <;> iassumption
+
+/-- **Gap 2.**  A thread that has upgraded a weak handle holds a `refTok` of its own,
+    so the ledger's copy proves the count is at least two and its own drop is not the
+    last one. -/
+theorem arcCell_two (γP : GName) (d : WData) (n : Nat) :
+    refAuth (GF := GF) d n ∗
+      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗ refTok d ⊢
+      ⌜2 ≤ n⌝ ∗ refAuth d n ∗ refTok d ∗ arcDeposit γP n ∗ refTok d := by
+  iintro ⟨Hcnt, Hled, Hmine⟩
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hz⟩)
+  · ihave #Hge : ⌜2 ≤ n⌝ $$ [Hcnt Htok Hmine]
+    · iapply refTok_two d n
+      isplitl [Hcnt]
+      · iassumption
+      isplitl [Htok] <;> iassumption
+    iframe Hge Hcnt Htok Hdep Hmine
+  · subst hz
+    iexfalso
+    icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
+    · isplitl [Hcnt] <;> iassumption
+    exact absurd h (Nat.lt_irrefl 0)
+
+/-- **Gap 3**, the one `Array` never closes.  Under the platform *write* lock there
+    can be no read permit anywhere, so the deposit forces the count down to exactly
+    one: the reference revocation is about to drop really is the last. -/
+theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val) :
+    isPlatform (GF := GF) γP .write platform ∗ refAuth d n ∗
+      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗ refTok d ⊢
+      ⌜n = 1⌝ ∗ isPlatform γP .write platform ∗ refAuth d n ∗ refTok d ∗ refTok d := by
+  iintro ⟨Hplat, Hcnt, Hled, Hmine⟩
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hz⟩)
+  · ihave #Hpos : ⌜0 < n⌝ $$ [Hcnt Htok]
+    · iapply refTok_pos d n
+      isplitl [Hcnt] <;> iassumption
+    icases Hpos with %hpos
+    ihave #Hle : ⌜n < 2⌝ $$ [Hplat Hdep]
+    · by_cases hn : 2 ≤ n
+      · iexfalso
+        icases arcDeposit_read γP n hn $$ Hdep with ⟨%q, Hq⟩
+        icases isPlatform_read_guard_valid γP .write platform q $$ [Hplat Hq] with %hcontra
+        · isplitl [Hplat] <;> iassumption
+        rcases hcontra with ⟨k, hk⟩
+        exact absurd hk (by simp)
+      · ipureintro; omega
+    icases Hle with %hle
+    isplit
+    · ipureintro; omega
+    iframe Hplat Hcnt Htok Hmine
+  · subst hz
+    iexfalso
+    icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
+    · isplitl [Hcnt] <;> iassumption
+    exact absurd h (Nat.lt_irrefl 0)
+
+/-- Handing out a reference costs a `refTok` and, above the first, half a read
+    permit — which the taker can afford, because it is inside a platform read
+    critical section. -/
+theorem refAuth_take (d : WData) (n : Nat) :
+    refAuth (GF := GF) d n ⊢ |==> (refAuth d (n + 1) ∗ refTok d) :=
+  refAuth_alloc d n
+
+/-- Giving one back.  `Credit` is cancellable, so the authority really does go
+    down. -/
+theorem refDeallocUpdate (n : Nat) :
+    ((● ((n + 1 : Nat) : Credit) : Auth Credit) • ◯ (1 : Credit)) ~~>
+      (● ((n : Nat) : Credit)) := by
+  apply Auth.auth_update_dealloc
+  have h := cancel_local_update_unit (1 : Credit) ((n : Nat) : Credit)
+  have e1 : CMRA.op (1 : Credit) ((n : Nat) : Credit) = ((n + 1 : Nat) : Credit) := by
+    show 1 + n = n + 1
+    omega
+  rw [e1] at h
+  exact h
+
+theorem refAuth_give (d : WData) (n : Nat) :
+    refAuth (GF := GF) d (n + 1) ∗ refTok d ⊢ |==> refAuth d n := by
+  unfold refAuth refTok
+  refine .trans (iOwn_op (F := CntRF) (γ := d.cnt)).mpr ?_
+  exact iOwn_update (F := CntRF) (γ := d.cnt) (refDeallocUpdate n)
 
 /-- Reassembling the physical half while the platform lock is read-held. -/
 theorem arrPhysPart_read (γ : WArrγ) (γp : GName) (platform : Val) (n : Nat)
