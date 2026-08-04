@@ -505,6 +505,7 @@ theorem cellAlive_frac_valid (γ : GName) (q₁ q₂ : Qp) (n₁ n₂ : Option N
   rw [he] at h
   exact DFrac.valid_own.mp h
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 /-- Full ownership of the live witness excludes any other share.  This is what makes
     the exclusive-mode deposit below work: a writer holding the chain owns `1` of
     every live cell, so a ledger claiming a quarter of one is a contradiction. -/
@@ -546,6 +547,7 @@ instance instArcDepositTimeless (γP : GName) (n : Nat) :
   | 1 => unfold arcDeposit; infer_instance
   | _ + 2 => unfold arcDeposit; infer_instance
 
+omit [ArcG GF] in
 /-- Taking on one more reference costs half a read permit — at every count at which a
     reference can actually be taken on. -/
 theorem arcDeposit_succ (γP : GName) (n : Nat) (h : 1 ≤ n) :
@@ -559,6 +561,7 @@ theorem arcDeposit_succ (γP : GName) (n : Nat) (h : 1 ≤ n) :
       simp only [arcDeposit, qHalvesSucc]
       exact RwLock.rwGuardFrac_split _ _ (qHalvesSucc k) q1_2
 
+omit [ArcG GF] in
 /-- Two or more references means somebody is holding the platform for reading. -/
 theorem arcDeposit_read (γP : GName) (n : Nat) (h : 2 ≤ n) :
     arcDeposit (GF := GF) γP n ⊢ ∃ q : Qp, rwGuardFrac γP RwLock.Mode.read q := by
@@ -607,7 +610,7 @@ instance instArcCellTimeless (γP : GName) (d : WData) :
     opening the invariant once yields both the count and the platform's lock
     state. -/
 def arcNodes (γP : GName) (M : H WData) : IProp GF := iprop%
-  [∗map] id ↦ d ∈ M, arcCell γP d
+  [∗map] _id ↦ d ∈ M, arcCell γP d
 
 instance instArcNodesTimeless (γP : GName) (M : H WData) :
     Timeless (arcNodes (GF := GF) (H := H) γP M) := by
@@ -658,11 +661,13 @@ instance instDeadNodesTimeless (M : H WData) (cells : List (Nat × Int)) :
   intro k x _
   by_cases h : k ∈ cells.map (·.1) <;> simp only [h, reduceIte] <;> infer_instance
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 theorem deadNodes_empty (cells : List (Nat × Int)) :
     ⊢@{IProp GF} deadNodes (H := H) ∅ cells := by
   unfold deadNodes
   exact (BigSepM.bigSepM_eqv_empty (M := H) rfl).mpr
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 /-- Growing the live set only turns obligations into `emp`. -/
 theorem deadNodes_grow (M : H WData) (cells cells' : List (Nat × Int))
     (h : ∀ i, i ∈ cells.map (·.1) → i ∈ cells'.map (·.1)) :
@@ -680,6 +685,7 @@ theorem deadNodes_grow (M : H WData) (cells cells' : List (Nat × Int))
     · rw [if_neg h₂]
       exact .rfl
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 /-- A fresh cell that joins the list adds nothing to the ledger. -/
 theorem deadNodes_insert_live (M : H WData) (cells : List (Nat × Int))
     (id : Nat) (d : WData) (hfresh : get? M id = none) (hlive : id ∈ cells.map (·.1)) :
@@ -700,6 +706,7 @@ instance instCellDeadAtPersistent (γ : GName) (i : Nat) :
     Persistent (cellDeadAt (GF := GF) (H := H) γ i) := by
   unfold cellDeadAt; infer_instance
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 /-- `deadNodes` only depends on which ids are live, not on their order. -/
 theorem deadNodes_congr (M : H WData) (c₁ c₂ : List (Nat × Int))
     (h : ∀ i, i ∈ c₁.map (·.1) ↔ i ∈ c₂.map (·.1)) :
@@ -713,6 +720,7 @@ theorem deadNodes_congr (M : H WData) (c₁ c₂ : List (Nat × Int))
   · rw [if_neg hk, if_neg (fun hc => hk ((h k).mpr hc))]
     exact .rfl
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 /-- Shrinking the live set by one cell, which the caller has just retired.  This is
     how the tombstones a revocation collects turn back into the array invariant's own
     record of which cells are gone. -/
@@ -746,6 +754,7 @@ theorem deadNodes_kill (M : H WData) (rest : List (Nat × Int)) (i : Nat) (x : I
   · rw [if_neg h, if_neg (fun hc => h (hmem.mp hc))]
     exact .rfl
 
+omit [RwLockG GF] [ArcG GF] [WArrG GF H] in
 theorem deadNodes_lookup (M : H WData) (cells : List (Nat × Int)) (id : Nat) (d : WData)
     (hlookup : get? M id = some d) (hgone : id ∉ cells.map (·.1)) :
     deadNodes (GF := GF) M cells ⊢ cellDead d.cell := by
@@ -1254,6 +1263,7 @@ A cell's slot looks different depending on whether the platform is held exclusiv
 lemmas are the two directions; the interesting one is `…Upgrade`, which uses the
 platform lock itself to rule out the intermediate states. -/
 
+omit [ArcG GF] in
 theorem nodeSlotSharedUpgrade (γP : GName) (d : WData) (C : Qp → IProp GF) (P : IProp GF)
     (mux ptr : Val) :
   ⊢@{IProp GF}
@@ -1297,6 +1307,7 @@ theorem isGhostHelpUpgrade (γP : GName) (γ : GName) (tail : Option Nat)
       iexists d
       iframe
 
+omit [ArcG GF] in
 theorem nodeSlotExclusiveDowngrad (γP : GName) (d : WData) (C : Qp → IProp GF) (P : IProp GF) :
     nodeSlotExclusive d C P ⊢@{IProp GF} nodeSlotShared γP d C P := by
   unfold nodeSlotExclusive nodeSlotShared
@@ -1348,6 +1359,7 @@ theorem arrContentAtDowngrad (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr
   · ipureintro; exact hdom
   · iapply isGhostHelpDowngrad γP γ.l none σ.cells $$ Hghost
 
+omit [RwLockG GF] in
 theorem isGhostHelpAccIn (γ : GName) (d : WData)
     (slot : Slot (H := H) GF)
     (tail : Option Nat) (id : Nat) :
@@ -1393,6 +1405,7 @@ theorem isGhostHelpAccIn (γ : GName) (d : WData)
       ipureintro
       exact hval
 
+omit [RwLockG GF] in
 /-- `isGhost` is `isGhostHelp` at `tail = none`. -/
 theorem isGhostAccIn (γ : GName) (d : WData)
     (slot : Slot (H := H) GF)
@@ -1404,6 +1417,7 @@ theorem isGhostAccIn (γ : GName) (d : WData)
           isGhost slot γ cells) :=
   isGhostHelpAccIn γ d slot none id cells hin
 
+omit [RwLockG GF] in
 theorem isGhostHelpAccInsert (γ : GName) (d : WData) (slot : Slot (H := H) GF)
     (tail : Option Nat) (id : Nat) (x : Int) (post : List (Nat × Int)) :
     ∀ pre : List (Nat × Int),
@@ -1469,6 +1483,7 @@ theorem isGhostHelpAccInsert (γ : GName) (d : WData) (slot : Slot (H := H) GF)
         | cons c' pre' => simp only [List.cons_append, nextIdOr]; iexact Hslot
 
 
+omit [RwLockG GF] in
 /-- The mirror image, for revoke: hand out the slot at `id` *and* the whole chain
     that follows it, and take back a chain that stops at `id`.  What comes out as
     `isGhostHelp … post` is what `Impl.revokeSuffix` walks. -/
@@ -1622,6 +1637,7 @@ theorem isPhysical_write_release (γ : WArrγ) (γp : GName)
   iexists M'
   iframe
 
+omit [RwLockG GF] [ArcG GF] [ArrG GF H] in
 theorem arrFrag_agree (γ : WArrγ) (σ σ' : Arr) (M : H WData) :
     arrFrag γ σ ∗ wStateVar γ.s q3_4 σ' M ⊢@{IProp GF} ⌜σ = σ'⌝ := by
   unfold arrFrag
@@ -1701,6 +1717,7 @@ theorem isPlatform_write_frac_valid (ρ : GName) (s : RwLock.State) (platform : 
   cases Hvalid
   rfl
 
+omit [ArcG GF] in
 theorem rwGuard_toFrac (γ : GName) :
     ⊢@{IProp GF} rwGuard γ RwLock.Mode.read -∗ rwGuardFrac γ RwLock.Mode.read 1 := by
   iintro H
@@ -1742,6 +1759,7 @@ theorem arcCell_pack (γP : GName) (d : WData) (n m : Nat) :
   iexists n, m
   iframe
 
+omit [ArcG GF] in
 /-- **Gap 1.**  A cell that is still in the list has a positive count, so a weak
     handle on it upgrades successfully — and, read the other way, a cell that has
     been retired has count zero, so a stale handle provably fails.
@@ -1766,6 +1784,7 @@ theorem arcLedger_dead_zero (γP : GName) (d : WData) (n : Nat) :
     · iexact Hcd
     · ipureintro; exact hz
 
+omit [ArcG GF] in
 /-- Borrow the ledger's share of the live witness — the piece a rewiring thread needs
     in order to reach full ownership — leaving a hole to be filled back in.  The
     caller's own share rules out the tombstone case. -/
@@ -1810,6 +1829,7 @@ theorem arcLedger_takeAlive (γP : GName) (d : WData) (n : Nat) (q : Qp)
     iapply cellAlive_dead_False d.cell q m
     isplitl [Hmine] <;> iassumption
 
+omit [ArcG GF] in
 /-- A cell whose live witness is still around has a positive count: the tombstone is
     the only zero case, and it cannot coexist with any share of that witness. -/
 theorem arcLedger_alive_pos (γP : GName) (d : WData) (n : Nat) (q : Qp)
@@ -1835,6 +1855,7 @@ theorem arcLedger_alive_pos (γP : GName) (d : WData) (n : Nat) (q : Qp)
     iapply cellAlive_dead_False d.cell q m
     isplitl [Hmine] <;> iassumption
 
+omit [ArcG GF] in
 /-- **Gap 2.**  A thread that has upgraded a weak handle holds a `refTok` of its own,
     so the ledger's copy proves the count is at least two and its own drop is not the
     last one. -/
@@ -1937,6 +1958,7 @@ theorem arcLedger_no_write_borrow (γP : GName) (d : WData) (n : Nat)
   · iframe Hplat Hread
     iright; iexact Hright
 
+omit [RwLockG GF] [ArcG GF] [ArrG GF H] in
 /-- Handing out a reference costs a `refTok` and, above the first, half a read
     permit — which the taker can afford, because it is inside a platform read
     critical section. -/
@@ -1955,6 +1977,7 @@ theorem refDeallocUpdate (n : Nat) :
   rw [e1] at h
   exact h
 
+omit [RwLockG GF] [ArcG GF] [ArrG GF H] in
 /-- Giving one back.  `Credit` is cancellable, so the authority really does go
     down. -/
 theorem refAuth_give (d : WData) (n : Nat) :
@@ -1963,6 +1986,7 @@ theorem refAuth_give (d : WData) (n : Nat) :
   refine .trans (iOwn_op (F := CntRF) (γ := d.cnt)).mpr ?_
   exact iOwn_update (F := CntRF) (γ := d.cnt) (refDeallocUpdate n)
 
+omit [ArcG GF] in
 /-- Retiring a cell's ledger: the count is zero for good, and the tombstone is
     persistent, so a stale weak handle can still be shown to fail. -/
 theorem arcLedger_kill (γP : GName) (d : WData) (nxt : Option Nat) :
@@ -2004,6 +2028,7 @@ theorem arrPhysPart_read (γ : WArrγ) (γp : GName) (platform : Val) (n : Nat)
   simp only [isPhysical]
   iframe
 
+omit [RwLockG GF] [ArrG GF H] in
 theorem Arr.isId_lookup (γ : WArrγ) (q : Qp) (M : H WData) (node : Val) (id : Nat) :
     wMetaMap γ.l q M ∗ Arr.isId γ node id ⊢@{IProp GF}
       wMetaMap γ.l q M ∗
@@ -2446,6 +2471,7 @@ def Arr.succOf : List (Nat × Int) → Nat → Option Nat
   | [], _ => none
   | (id', _) :: cs, id => if id' = id then nextIdOr cs none else Arr.succOf cs id
 
+omit [RwLockG GF] in
 /-- The chain accessor, with the successor pinned down rather than existential. -/
 theorem isGhostHelpAccSucc (γ : GName) (d : WData) (slot : Slot (H := H) GF)
     (id : Nat) :
@@ -3151,12 +3177,14 @@ theorem q1_2_add_q1_4_add_q1_4 : q1_2 + (q1_4 + q1_4) = 1 := by
   simp [q1_2, q1_4, Qp.half]
   grind
 
+omit [ArcG GF] in
 theorem rwGuard_split2 (γP : GName) (md : RwLock.Mode) :
   ⊢@{IProp GF} rwGuard γP md -∗ rwGuardFrac γP md q1_2 ∗ rwGuardFrac γP md q1_2 := by
   rw [rwGuard_eq γP md, ← q1_2_add_q1_2]
   iintro H
   iapply (RwLock.rwGuardFrac_split γP md q1_2 q1_2).mp $$ H
 
+omit [ArcG GF] in
 theorem rwGuard_join2 (γP : GName) (md : RwLock.Mode) :
   ⊢@{IProp GF} rwGuardFrac γP md q1_2 -∗ rwGuardFrac γP md q1_2 -∗ rwGuard γP md := by
   rw [rwGuard_eq γP md, ← q1_2_add_q1_2]
@@ -3164,6 +3192,7 @@ theorem rwGuard_join2 (γP : GName) (md : RwLock.Mode) :
   iapply (RwLock.rwGuardFrac_split γP md q1_2 q1_2).mpr
   iframe
 
+omit [ArcG GF] in
 /-- The read permit splits three ways: half is the borrow deposit, a quarter is
     parked in the cell's slot while it is locked, and a quarter stays in hand to
     witness that the platform really is read-held. -/
@@ -3180,6 +3209,7 @@ theorem rwGuard_split3 (γP : GName) :
   iframe H₁
   iapply (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_4 q1_4).mp $$ H₂
 
+omit [ArcG GF] in
 theorem rwGuard_join3 (γP : GName) :
   ⊢@{IProp GF}
     rwGuardFrac γP RwLock.Mode.read q1_2 -∗
@@ -3357,7 +3387,7 @@ theorem node_acquire_spec
     successor may have been rewired in the meantime, which is why `nxt` is a
     parameter rather than being read off `σ`. -/
 theorem node_release_spec
-    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData)
+    (γ : WArrγ) (γP : GName) (platform : Val) (id : Nat) (d : WData)
     (nxt : Option Nat) :
   ⊢@{IProp GF}
     isArrInv γ γP platform -∗
@@ -4490,7 +4520,7 @@ theorem getChild_spec
             iexact Hpayload
           wp_bind &RwLock.write_release _
           iapply wp_wand $$ [Hnode Hwguard Hcell Hpayload Hkeep]
-          · iapply node_release_spec γ γP platform node id d none
+          · iapply node_release_spec γ γP platform id d none
               $$ Hinv' Hnode Hwguard Hcell Hpayload Hkeep
           iintro %u ⟨Hpay, Hkeep⟩
           wp_pures
@@ -4549,7 +4579,7 @@ theorem getChild_spec
             iexact Hmeta
           wp_bind &RwLock.write_release _
           iapply wp_wand $$ [Hnode Hwguard Hcell Hpayload Hkeep]
-          · iapply node_release_spec γ γP platform node id d (some cid)
+          · iapply node_release_spec γ γP platform id d (some cid)
               $$ Hinv' Hnode Hwguard Hcell Hpayload Hkeep
           iintro %u ⟨Hpay, Hkeep⟩
           wp_pures
