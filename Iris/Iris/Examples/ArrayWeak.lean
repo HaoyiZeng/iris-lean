@@ -2919,6 +2919,35 @@ theorem node_release_spec
     · itele_reduce
       iframe Hpark Hkeep
 
+/-! ### What is left, and why it is not a matter of more proof script
+
+`getChild` goes through because it does not move the abstract state: its
+linearisation point can sit at the very end, after both deposits have been reclaimed
+and the whole read permit is back in hand.
+
+`insert` and `revoke` cannot do that.  Their linearisation point is forced to the
+step that physically rewires the chain — the store, respectively the truncation —
+because the invariant ties `σ.cells` to the physical links through `cellAlive`, and
+that share can only be moved with the invariant open.  At that step half the read
+permit is still sitting in the ledger, backing a strong reference that is only
+dropped later, so the thread does *not* hold the whole permit there.
+
+`execute_shared_spec` currently demands it, because its body's postcondition reads
+
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫
+
+and everything in an atomic postcondition has to be produced at the linearisation
+point.  The permit is not shared state; it is the caller's private receipt, and
+`atomicWP` already has a slot for exactly that — the non-atomic `POST` of
+`⟪ β | RET v; POST ⟫`.  Moving `rwGuard` there is what unblocks both proofs:
+
+    ⟪ ∃ r, (∃ σ', arrFrag γ σ' ∗ Q σ σ' r) | z, RET z; rwGuard γP .read ∗ ⌜z = r⌝ ⟫
+
+`Array` never runs into this, and the reason is instructive: it has no deposit at
+all.  Its only parked fraction belongs to a locked cell and comes back at exactly
+the release that *is* its linearisation point.  The deposit is the price of keeping
+reference counts outside the platform lock, and this is where that price is paid. -/
+
 /-- Splice a cell in after `node`.
 
     The handle is weak, so the return value can in principle be `none` because the
