@@ -2627,6 +2627,47 @@ theorem rwGuard_join3 (γP : GName) :
   iapply (RwLock.rwGuardFrac_split γP RwLock.Mode.read q1_4 q1_4).mpr
   iframe
 
+/-- Downgrade the successor link to a handle for the caller.  The link itself is the
+    list's own strong reference and is put straight back, so the cell's strong count
+    does not move — only the weak count. -/
+theorem downgrade_child_spec
+    (γ : WArrγ) (γP : GName) (platform child : Val) (cid : Nat) (d' : WData) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ cid d' -∗
+    isArc d'.arc child d'.mux -∗
+    WP hl(&Arc.downgrade &child)
+      {{ w, ⌜w = child⌝ ∗ isArc d'.arc child d'.mux ∗ isWeak d'.arc child d'.mux }} := by
+  iintro #Hinv #Hnode Harc
+  iapply Arc.downgrade_spec (γ := d'.arc) child d'.mux $$ Harc
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP cid d' $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d' $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iaaccintro' with Hauth
+  · iintro Hauth
+    imodintro
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      iapply arcCell_pack γP d' n m
+      iframe
+    · iframe
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro ⟨Hauth, Harc, Hweak⟩
+    imodintro
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      iapply arcCell_pack γP d' n (m + 1)
+      iframe
+    · iframe Harc Hweak
+      itrivial
+
 /-! ### Taking and releasing a cell's own lock
 
 Under the platform read lock the chain is shared, so a cell's slot has to be reached
@@ -2930,6 +2971,7 @@ def getChildQ (γ : WArrγ) (node : Val) (id : Nat)
    ⌜ret = hl_val(some(none()))⌝ ∨
    (∃ (w : Val) (cid : Nat), ⌜ret = hl_val(some(some(&w)))⌝ ∗ Arr.isId γ w cid))
 
+set_option maxRecDepth 8000 in
 /-- A handle on the successor.  Reading the list does not move it, so `σ` does not
     change; the outer `option` distinguishes "the handle was stale" from "there is no
     successor".
@@ -2949,6 +2991,7 @@ theorem getChild_spec
   unfold getChild
   wp_pures
   have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hsub : ((⊤ : CoPset) \ (↑arrN : CoPset)) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
   iapply execute_shared_spec γ γP platform _ (getChildQ γ node id) $$ Hinv [Hid]
   · iintro #Hinv' Hguard %Φ' HAU'
     iunfold Arr.isId at Hid
@@ -2997,8 +3040,128 @@ theorem getChild_spec
         iframe
       imodintro
       iexact HΦ
-
-    · sorry
+    · -- the handle was live: read the successor link out under the cell's own lock
+      subst hr
+      wp_pures
+      wp_bind &Arc.get _
+      iapply Arc.get_spec (γ := d.arc) node d.mux $$ Harc
+      iintro !> Harc
+      wp_pures
+      wp_bind &RwLock.write_acquire _
+      iapply wp_wand $$ [Hnode Harc Hpay Hkeep]
+      · iapply node_acquire_spec γ γP platform node id d $$ Hinv' Hnode Harc Hpay Hkeep
+      iintro %ptr ⟨%hptr, Hkeep, Harc, Hwguard, %nxt, Hcell, Hpayload⟩
+      subst hptr
+      wp_pures
+      wp_bind !_
+      iunfold payload at Hpayload
+      cases nxt with
+      | none =>
+          iapply wp_load $$ Hpayload
+          iintro !> Hpayload
+          wp_pures
+          ihave Hpayload : payload γ.l d none $$ [Hpayload]
+          · unfold payload
+            iexact Hpayload
+          wp_bind &RwLock.write_release _
+          iapply wp_wand $$ [Hnode Hwguard Hcell Hpayload Hkeep]
+          · iapply node_release_spec γ γP platform node id d none
+              $$ Hinv' Hnode Hwguard Hcell Hpayload Hkeep
+          iintro %u ⟨Hpay, Hkeep⟩
+          wp_pures
+          wp_bind &Arc.drop _ _
+          iapply wp_wand $$ [Hnode Harc Hmine Hkeep]
+          · iapply return_read_spec γ γP platform node id d
+              $$ Hinv' Hnode Harc Hmine Hkeep
+          iintro %u2 ⟨Hdep, Hkeep⟩
+          wp_pures
+          -- both deposits are back, so the whole permit is in hand: commit here
+          iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+          icases Hclose with ⟨-, Hcommit⟩
+          ihave Hbeta : (∃ σ', arrFrag γ σ' ∗
+              getChildQ γ node id σc σ' hl_val(some(none())) ∗
+              rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep]
+          · iexists σc
+            iframe Hfrag
+            isplitl [Hweak]
+            · unfold getChildQ
+              isplit
+              · ipureintro; rfl
+              isplitl [Hweak]
+              · unfold Arr.isId
+                iexists d
+                iframe Hweak
+                iexact Hnode
+              · iright; ileft
+                ipureintro; rfl
+            · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+          imod Hcommit $$ Hbeta with HΦ
+          imodintro
+          iexact HΦ
+      | some cid =>
+          iunfold wSuccRef at Hpayload
+          icases Hpayload with ⟨%child, Hptr, %d', #Hmeta, Harcc⟩
+          iapply wp_load $$ Hptr
+          iintro !> Hptr
+          wp_pures
+          ihave #Hnodec : Arr.isNode γ cid d' $$ [Hmeta]
+          · unfold Arr.isNode
+            iexact Hmeta
+          wp_bind &Arc.downgrade _
+          iapply wp_wand $$ [Hnodec Harcc]
+          · iapply downgrade_child_spec γ γP platform child cid d'
+              $$ Hinv' Hnodec Harcc
+          iintro %w ⟨%hw, Harcc, Hweakc⟩
+          subst hw
+          wp_pures
+          ihave Hpayload : payload γ.l d (some cid) $$ [Hptr Harcc]
+          · unfold payload wSuccRef
+            iexists w
+            iframe Hptr
+            iexists d'
+            iframe Harcc
+            iexact Hmeta
+          wp_bind &RwLock.write_release _
+          iapply wp_wand $$ [Hnode Hwguard Hcell Hpayload Hkeep]
+          · iapply node_release_spec γ γP platform node id d (some cid)
+              $$ Hinv' Hnode Hwguard Hcell Hpayload Hkeep
+          iintro %u ⟨Hpay, Hkeep⟩
+          wp_pures
+          wp_bind &Arc.drop _ _
+          iapply wp_wand $$ [Hnode Harc Hmine Hkeep]
+          · iapply return_read_spec γ γP platform node id d
+              $$ Hinv' Hnode Harc Hmine Hkeep
+          iintro %u2 ⟨Hdep, Hkeep⟩
+          wp_pures
+          -- both deposits are back, so the whole permit is in hand: commit here
+          iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+          icases Hclose with ⟨-, Hcommit⟩
+          ihave Hbeta : (∃ σ', arrFrag γ σ' ∗
+              getChildQ γ node id σc σ' hl_val(some(some(&w))) ∗
+              rwGuard γP RwLock.Mode.read) $$ [Hfrag Hweak Hdep Hpay Hkeep Hweakc Hmeta]
+          · iexists σc
+            iframe Hfrag
+            isplitl [Hweak Hweakc Hmeta]
+            · unfold getChildQ
+              isplit
+              · ipureintro; rfl
+              isplitl [Hweak]
+              · unfold Arr.isId
+                iexists d
+                iframe Hweak
+                iexact Hnode
+              · iright; iright
+                iexists w, cid
+                isplit
+                · ipureintro; rfl
+                unfold Arr.isId
+                iexists d'
+                iframe Hweakc
+                iexact Hnodec
+            · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+          imod Hcommit $$ Hbeta with HΦ
+          imodintro
+          iexact HΦ
   · iexact HAU
 
 /-- Duplicating a handle: no platform lock, because the reference counts are not
