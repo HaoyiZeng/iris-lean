@@ -3165,7 +3165,88 @@ theorem insert_spec
       iapply wp_store $$ Hptr
       iintro !> Hptr
       wp_pures
-      sorry
+      -- releasing the cell's lock is the linearisation point: the new cell becomes
+      -- visible and the abstract state moves, both at this one step
+      wp_bind &RwLock.write_release _
+      ihave #Hinvraw : inv arrN (arrInvBody γ γP platform) $$ [Hinv']
+      · iunfold isArrInv at Hinv'
+        iexact Hinv'
+      have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+        fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+      iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hwguard
+      iauintro
+      iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+      iintro HI
+      icases arrInvOpenRead γ γP platform $$ HI Hkeep
+        with ⟨%np, %M, %σ, %hwf, %hdom, Hpart, Hplat, HM, #Hdead, Hghost, Hstate, Hkeep⟩
+      ihave #hlookup : ⌜get? M id = some d⌝ $$ [HM Hnode]
+      · iunfold Arr.isNode at Hnode
+        iapply wMetaMap_lookup γ.l q1_2 M id d $$ HM Hnode
+      icases hlookup with %hlookup
+      icases isArc_mem γ γP M σ node id d hlookup $$ Hpart Hnode Hdead Harc
+        with ⟨%hin, Hpart, Harc⟩
+      obtain ⟨pre, xv, post, hsplit⟩ := Arr.exists_split_id hin
+      iunfold isGhost at Hghost
+      ihave Hghost : isGhostHelp (nodeSlotShared γP) γ.l none (pre ++ (id, xv) :: post)
+          $$ [Hghost]
+      · rw [← hsplit]
+        iexact Hghost
+      ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+      · iunfold Arr.isNode at Hnode
+        iexact Hnode
+      ihave ⟨Hslot, Hback⟩ :=
+        isGhostHelpAccInsert γ.l d (nodeSlotShared γP) none id xv post pre $$ Hmeta Hghost
+      iunfold aliveSlot at Hslot
+      iunfold nodeSlotShared at Hslot
+      icases Hslot with ⟨%sn, Hlock, Hstaten⟩
+      -- the payload is in our hands, so the slot is neither free nor read-held
+      ihave ⟨%hsn, Hlock, Hpark, Hq4, Hcell⟩ :
+          (⌜sn = RwLock.State.write⌝ ∗ isRwLock d.rw d.mux sn hl_val(#d.ptr) ∗
+            rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+            cellAlive d.cell q1_4 (nextIdOr post none) ∗
+            cellAlive d.cell q1_2 nxt) $$ [Hlock Hstaten Hcell]
+      · rcases sn with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody] at *
+        · icases Hstaten with ⟨-, Halive⟩
+          iexfalso
+          icases cellAlive_frac_valid d.cell q1_2 q3_4 nxt (nextIdOr post none)
+            $$ [Hcell Halive] with %hv
+          · isplitl [Hcell] <;> iassumption
+          ipureintro
+          have h34 : (q3_4 : Qp).val = 3/4 := by simp [q3_4, Qp.half]; grind
+          have h12 : (q1_2 : Qp).val = 1/2 := by simp [q1_2, Qp.half]
+          rw [Qp.val_add, h12, h34] at hv
+          grind
+        · iexfalso; iexact Hstaten
+        · icases Hstaten with ⟨Hpark, Halive⟩
+          iframe Hlock Hpark Halive Hcell
+          ipureintro; rfl
+      subst hsn
+      ihave %hnx := cellAlive_agree d.cell q1_2 q1_4 nxt (nextIdOr post none) $$ [Hcell Hq4]
+      · isplitl [Hcell] <;> iassumption
+      subst hnx
+      iaaccintro' with Hlock
+      · -- abort: park the slot back exactly as we found it
+        iintro Hlock
+        imodintro
+        ihave Hslot : aliveSlot (nodeSlotShared γP) γ.l d (nextIdOr post none)
+            $$ [Hlock Hpark Hq4]
+        · unfold aliveSlot nodeSlotShared
+          iexists RwLock.State.write
+          iframe Hlock
+          dsimp only [nodeSlotSharedBody]
+          iframe Hpark Hq4
+        icases Hback with ⟨Hsame, -⟩
+        ihave Hghost := Hsame $$ Hslot
+        ihave Hghost : isGhost (nodeSlotShared γP) γ.l σ.cells $$ [Hghost]
+        · unfold isGhost
+          rw [hsplit]
+          iexact Hghost
+        ihave HIb := arrInvCloseRead γ γP platform np M σ hwf hdom
+          $$ Hpart Hplat HM Hdead Hghost Hstate
+        iframe HIb HAU' Harc Hmine Hweak Hcell Hptr Hkeep
+        iframe HauthN HcntN HledN HarcNew HweakNew HlockNew HaliveNew HpayNew
+        repeat' first | (imodintro; iassumption) | isplitl []
+      · sorry
   · iexact HAU
 
 /-- Detach and free everything strictly after `node`.
