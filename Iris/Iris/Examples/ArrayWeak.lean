@@ -2255,6 +2255,83 @@ theorem execute_exclusive_spec
           wp_pures
           iexact HΦ
 
+/-- The successor of `id` in the abstract list, if any.  Matches what the chain
+    records, so a `getChild` can be specified against `σ` alone. -/
+def Arr.succOf : List (Nat × Int) → Nat → Option Nat
+  | [], _ => none
+  | (id', _) :: cs, id => if id' = id then nextIdOr cs none else Arr.succOf cs id
+
+/-- The chain accessor, with the successor pinned down rather than existential. -/
+theorem isGhostHelpAccSucc (γ : GName) (d : WData) (slot : Slot (H := H) GF)
+    (id : Nat) :
+    ∀ cells : List (Nat × Int), id ∈ cells.map (·.1) →
+    wMetaAt γ id d ⊢@{IProp GF} isGhostHelp slot γ none cells -∗
+      aliveSlot slot γ d (Arr.succOf cells id) ∗
+      (aliveSlot slot γ d (Arr.succOf cells id) -∗ isGhostHelp slot γ none cells) := by
+  intro cells
+  induction cells with
+  | nil => intro h; exact absurd h (by simp)
+  | cons c cells ih =>
+    rcases c with ⟨id', x⟩
+    intro hin
+    iintro #Hmeta Hlist
+    simp only [isGhostHelp, Arr.succOf]
+    icases Hlist with ⟨%d', %hval, #Hmeta', Hslot, Hrest⟩
+    by_cases hhead : id' = id
+    · subst hhead
+      ihave %hd := wMetaAt_agree $$ Hmeta' Hmeta
+      subst hd
+      rw [if_pos rfl]
+      iframe Hslot
+      iintro Hslot
+      iexists d'
+      iframe Hmeta' Hslot Hrest
+      ipureintro
+      exact hval
+    · rw [if_neg hhead]
+      have hin' : id ∈ cells.map (·.1) := by
+        simp only [List.map_cons, List.mem_cons] at hin
+        rcases hin with h | h
+        · exact absurd h.symm hhead
+        · exact h
+      ihave Hacc := ih hin' $$ Hmeta Hrest
+      icases Hacc with ⟨Hslot', Hback⟩
+      iframe Hslot'
+      iintro Hslot'
+      ihave Hrest' := Hback $$ Hslot'
+      iexists d'
+      iframe Hmeta' Hslot Hrest'
+      ipureintro
+      exact hval
+
+/-- Holding a strong reference proves the cell is still in the abstract list.
+
+    This is the direction that needs the ledger's share of the live witness: without
+    it, "the cell has been retired" and "the counter is positive" would be
+    independent facts and the two views could drift apart. -/
+theorem isArc_mem (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) (node : Val)
+    (id : Nat) (d : WData) (hlookup : get? M id = some d) :
+  ⊢@{IProp GF}
+    arcPart γ γP -∗ Arr.isNode γ id d -∗ deadNodes M σ.cells -∗
+    isArc d.arc node d.mux -∗
+      ⌜id ∈ σ.cells.map (·.1)⌝ ∗ arcPart γ γP ∗ isArc d.arc node d.mux := by
+  iintro Hpart #Hnode #Hdead Harc
+  by_cases hin : id ∈ σ.cells.map (·.1)
+  · iframe Hpart Harc
+    ipureintro; exact hin
+  · iexfalso
+    ihave #Hcd : cellDead d.cell $$ [Hdead]
+    · iapply deadNodes_lookup M σ.cells id d hlookup hin
+      iexact Hdead
+    icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, -⟩
+    icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, -, Hled⟩
+    icases arcLedger_dead_zero γP d n $$ [Hcd Hled] with ⟨%hz, -⟩
+    · isplitl [] <;> iassumption
+    subst hz
+    icases Arc.arcAuth_isArc_valid (γ := d.arc) 0 m node d.mux $$ [Hauth Harc] with %h
+    · isplitl [Hauth] <;> iassumption
+    exact absurd h (Nat.lt_irrefl 0)
+
 /-! ### Borrowing a strong reference through a weak handle
 
 Every operation on a cell starts by upgrading the client's weak handle and ends by
@@ -2461,6 +2538,257 @@ theorem return_read_spec
       · iexists s, M, σ
         iframe
     · iframe Hback' Hkeep
+
+/-! ### Taking and releasing a cell's own lock
+
+Under the platform read lock the chain is shared, so a cell's slot has to be reached
+through the invariant.  Acquiring parks a quarter of the platform read permit in the
+slot; releasing takes it back.  That parked quarter is what stops a thread from
+leaving the platform read critical section while it still holds a cell locked. -/
+
+theorem node_acquire_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isArc d.arc node d.mux -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    WP hl(&RwLock.write_acquire &(d.mux))
+      {{ r,
+        ⌜r = hl_val(#d.ptr)⌝ ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+        isArc d.arc node d.mux ∗
+        rwGuard d.rw RwLock.Mode.write ∗
+        ∃ nxt : Option Nat, cellAlive d.cell q1_2 nxt ∗ payload γ.l d nxt }} := by
+  iintro #Hinv #Hnode Harc Hpay Hkeep
+  iapply RwLock.write_acquire_spec d.rw d.mux hl_val(#d.ptr)
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  -- the platform is read-held, so the shared view is available
+  icases isPlatform_read_guard_valid γP s platform q1_4 $$ [Hplat Hkeep] with %hs
+  · isplitl [Hplat] <;> iassumption
+  rcases hs with ⟨np, hsr⟩
+  subst hsr
+  simp only [isPhysical] at *
+  icases Hrest with ⟨Hshared, Hstate⟩
+  iunfold arrShared at Hshared
+  icases Hshared with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  ihave #hlookup : ⌜get? M id = some d⌝ $$ [HM Hnode]
+  · iunfold Arr.isNode at Hnode
+    iapply wMetaMap_lookup γ.l q1_2 M id d $$ HM Hnode
+  icases hlookup with %hlookup
+  icases isArc_mem γ γP M σ node id d hlookup $$ Hpart Hnode Hdead Harc
+    with ⟨%hin, Hpart, Harc⟩
+  ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+  · iunfold Arr.isNode at Hnode
+    iexact Hnode
+  iunfold isGhost at Hghost
+  ihave ⟨Hslot, Hback⟩ := isGhostHelpAccSucc γ.l d (nodeSlotShared γP) id σ.cells hin
+    $$ Hmeta Hghost
+  iunfold nodeSlotShared at Hslot
+  icases Hslot with ⟨%sn, Hlock, Hstaten⟩
+  iaaccintro' with Hlock
+  · iintro Hlock
+    imodintro
+    isplitl [Hpart HM Hstate Hlock Hstaten Hback Hplat]
+    · unfold arrInvBody arrPhysPart
+      iframe Hpart
+      iexists (RwLock.State.read (np + 1)), M, σ
+      iframe Hplat
+      simp only [isPhysical]
+      iframe Hstate
+      unfold arrShared isGhost
+      iframe HM Hdead
+      isplit
+      · ipureintro; exact hwf
+      isplit
+      · ipureintro; exact hdom
+      iapply Hback
+      unfold aliveSlot nodeSlotShared
+      iexists sn
+      iframe
+    · iframe Harc Hpay Hkeep
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro ⟨Hlock, Hguard, %hsn⟩
+    subst hsn
+    -- the slot was free, so the payload comes out and the parked quarter goes in
+    ihave ⟨Hpayload, Hcellfull⟩ :
+        (payload γ.l d (Arr.succOf σ.cells id) ∗
+          cellAlive d.cell q3_4 (Arr.succOf σ.cells id)) $$ [Hstaten]
+    · dsimp only [nodeSlotSharedBody]
+      icases Hstaten with ⟨Hp, Hc⟩
+      iframe Hp Hc
+    ihave ⟨Hq4, Hq2⟩ : (cellAlive d.cell q1_4 (Arr.succOf σ.cells id) ∗
+        cellAlive d.cell q1_2 (Arr.succOf σ.cells id)) $$ [Hcellfull]
+    · iapply (cellAlive_split_gen d.cell q1_4 q1_2 (Arr.succOf σ.cells id)).mp
+      rw [q1_4_add_q1_2]
+      iexact Hcellfull
+    imodintro
+    isplitl [Hpart HM Hstate Hlock Hpay Hq4 Hback Hplat]
+    · unfold arrInvBody arrPhysPart
+      iframe Hpart
+      iexists (RwLock.State.read (np + 1)), M, σ
+      iframe Hplat
+      simp only [isPhysical]
+      iframe Hstate
+      unfold arrShared isGhost
+      iframe HM Hdead
+      isplit
+      · ipureintro; exact hwf
+      isplit
+      · ipureintro; exact hdom
+      iapply Hback
+      unfold aliveSlot nodeSlotShared
+      iexists RwLock.State.write
+      iframe Hlock
+      dsimp only [nodeSlotSharedBody]
+      iframe Hpay Hq4
+    · itele_reduce
+      isplitl []
+      · itrivial
+      iframe Harc Hkeep Hguard
+      iexists (Arr.succOf σ.cells id)
+      iframe Hq2
+      iexact Hpayload
+
+/-- Release a cell's lock, taking the parked quarter of the read permit back.  The
+    successor may have been rewired in the meantime, which is why `nxt` is a
+    parameter rather than being read off `σ`. -/
+theorem node_release_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData)
+    (nxt : Option Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    rwGuard d.rw RwLock.Mode.write -∗
+    cellAlive d.cell q1_2 nxt -∗
+    payload γ.l d nxt -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    WP hl(&RwLock.write_release &(d.mux))
+      {{ _r,
+        rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 }} := by
+  iintro #Hinv #Hnode Hguard Hq2 Hpayload Hkeep
+  iapply RwLock.write_release_spec d.rw d.mux hl_val(#d.ptr) $$ Hguard
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  icases isPlatform_read_guard_valid γP s platform q1_4 $$ [Hplat Hkeep] with %hs
+  · isplitl [Hplat] <;> iassumption
+  rcases hs with ⟨np, hsr⟩
+  subst hsr
+  simp only [isPhysical] at *
+  icases Hrest with ⟨Hshared, Hstate⟩
+  iunfold arrShared at Hshared
+  icases Hshared with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+  · iunfold Arr.isNode at Hnode
+    iexact Hnode
+  -- the cell is still in the list: we hold half its live witness
+  ihave #hin : ⌜id ∈ σ.cells.map (·.1)⌝ $$ [Hq2 Hdead HM Hmeta]
+  · by_cases hin : id ∈ σ.cells.map (·.1)
+    · ipureintro; exact hin
+    · iexfalso
+      ihave #hlookup : ⌜get? M id = some d⌝ $$ [HM Hmeta]
+      · iapply wMetaMap_lookup γ.l q1_2 M id d $$ HM Hmeta
+      icases hlookup with %hlookup
+      ihave #Hcd : cellDead d.cell $$ [Hdead]
+      · iapply deadNodes_lookup M σ.cells id d hlookup hin
+        iexact Hdead
+      iapply cellAlive_dead_False d.cell q1_2 nxt
+      isplitl [Hq2] <;> iassumption
+  icases hin with %hin
+  ihave ⟨%nxt0, Hslot, Hback⟩ := isGhostAccIn γ.l d (nodeSlotShared γP) id σ.cells hin
+    $$ Hmeta Hghost
+  iunfold nodeSlotShared at Hslot
+  icases Hslot with ⟨%sn, Hlock, Hstaten⟩
+  -- our own write permit says the slot is in the `write` state
+  ihave ⟨%hsn, Hlock, Hpark, Hq4, Hq2⟩ :
+      (⌜sn = RwLock.State.write⌝ ∗ isRwLock d.rw d.mux sn hl_val(#d.ptr) ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 ∗ cellAlive d.cell q1_4 nxt0 ∗
+        cellAlive d.cell q1_2 nxt) $$ [Hlock Hstaten Hq2]
+  · rcases sn with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody] at *
+    · icases Hstaten with ⟨-, Halive⟩
+      iexfalso
+      icases cellAlive_frac_valid d.cell q1_2 q3_4 nxt nxt0 $$ [Hq2 Halive] with %hv
+      · isplitl [Hq2] <;> iassumption
+      ipureintro
+      have h34 : (q3_4 : Qp).val = 3/4 := by simp [q3_4, Qp.half]; grind
+      have h12 : (q1_2 : Qp).val = 1/2 := by simp [q1_2, Qp.half]
+      rw [Qp.val_add, h12, h34] at hv
+      grind
+    · iexfalso; iexact Hstaten
+    · icases Hstaten with ⟨Hpark, Halive⟩
+      iframe Hlock Hpark Halive Hq2
+      ipureintro; rfl
+  subst hsn
+  ihave %hnxt := cellAlive_agree d.cell q1_2 q1_4 nxt nxt0 $$ [Hq2 Hq4]
+  · isplitl [Hq2] <;> iassumption
+  subst hnxt
+  iaaccintro' with Hlock
+  · iintro Hlock
+    imodintro
+    isplitl [Hpart HM Hstate Hlock Hpark Hq4 Hback Hplat]
+    · unfold arrInvBody arrPhysPart
+      iframe Hpart
+      iexists (RwLock.State.read (np + 1)), M, σ
+      iframe Hplat
+      simp only [isPhysical]
+      iframe Hstate
+      unfold arrShared isGhost
+      iframe HM Hdead
+      isplit
+      · ipureintro; exact hwf
+      isplit
+      · ipureintro; exact hdom
+      iapply Hback
+      unfold aliveSlot nodeSlotShared
+      iexists RwLock.State.write
+      iframe Hlock
+      dsimp only [nodeSlotSharedBody]
+      iframe Hpark Hq4
+    · iframe Hq2 Hpayload Hkeep
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro Hlock
+    -- put the payload and the full chain share back, and reclaim the parked quarter
+    ihave Hfull : cellAlive d.cell q3_4 nxt $$ [Hq4 Hq2]
+    · rw [← q1_4_add_q1_2]
+      iapply (cellAlive_split_gen d.cell q1_4 q1_2 nxt).mpr
+      iframe
+    imodintro
+    isplitl [Hpart HM Hstate Hlock Hfull Hpayload Hback Hplat]
+    · unfold arrInvBody arrPhysPart
+      iframe Hpart
+      iexists (RwLock.State.read (np + 1)), M, σ
+      iframe Hplat
+      simp only [isPhysical]
+      iframe Hstate
+      unfold arrShared isGhost
+      iframe HM Hdead
+      isplit
+      · ipureintro; exact hwf
+      isplit
+      · ipureintro; exact hdom
+      iapply Hback
+      unfold aliveSlot nodeSlotShared
+      iexists RwLock.State.free
+      iframe Hlock
+      dsimp only [nodeSlotSharedBody]
+      iframe Hpayload Hfull
+    · itele_reduce
+      iframe Hpark Hkeep
 
 /-- Splice a cell in after `node`.
 
