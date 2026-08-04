@@ -1279,7 +1279,7 @@ theorem write_acquire_spec (γ : GName) (l x : Val) :
 /-- Sequential view of `write_acquire_spec`, for a client that owns the lock
     outright — a thread holding a whole data structure under an outer lock, say,
     which therefore does not have to go through an invariant to reach a cell. -/
-theorem write_acquire_seq_spec (γ : GName) (l x : Val) :
+theorem write_acquire_owned_spec (γ : GName) (l x : Val) :
   ⊢@{IProp GF}
     ⦃ isRwLock γ l .free x ⦄
       hl(&write_acquire &l)
@@ -1337,8 +1337,8 @@ theorem write_release_spec (γ : GName) (l x : Val) :
   imodintro
   itrivial
 
-/-- Sequential view of `write_release_spec`. -/
-theorem write_release_seq_spec (γ : GName) (l x : Val) :
+/-- Sequential view of `write_release_spec`, for a locally owned lock. -/
+theorem write_release_owned_spec (γ : GName) (l x : Val) :
   ⊢@{IProp GF}
     ⦃ isRwLock γ l .write x ∗ rwGuard γ .write ⦄
       hl(&write_release &l)
