@@ -3020,12 +3020,35 @@ abstract state at the store; `revoke` has to truncate with `isGhostHelpAccTrunca
 and, because it frees cells, needs a placeholder in `arcNodes` so that the freeing
 thread can take `arcAuth` out of the invariant across the non-atomic `Arc.drop`. -/
 
+omit [RwLockG GF] [ArcG GF] in
+/-- A handle that fails to upgrade names a cell that is not in the list, and the
+    abstract insert on such an `id` is a no-op. -/
+theorem Arr.insert_of_not_mem (σ : Arr) (id : Nat) (x : Int)
+    (h : id ∉ σ.cells.map (·.1)) : Arr.insert σ id x = (σ, none) := by
+  unfold Arr.insert
+  rw [if_neg]
+  intro hany
+  rw [List.any_eq_true] at hany
+  obtain ⟨p, hp, hpid⟩ := hany
+  exact h (List.mem_map.mpr ⟨p, hp, of_decide_eq_true hpid⟩)
+
+/-- What `insert`'s body achieves, in the shape `execute_shared_spec` wants. -/
+def insertQ (γ : WArrγ) (node : Val) (id : Nat) (x : Int)
+    (σ σ' : Arr) (ret : Val) : IProp GF := iprop%
+  ⌜σ' = (Arr.insert σ id x).1⌝ ∗ Arr.isId γ node id ∗
+  match (Arr.insert σ id x).2 with
+  | none => iprop% ⌜ret = hl_val(none())⌝
+  | some nid => iprop%
+      ∃ newNode : Val, ⌜ret = hl_val(some(&newNode))⌝ ∗ Arr.isId γ newNode nid
+
+set_option maxRecDepth 8000 in
 /-- Splice a cell in after `node`.
 
-    The handle is weak, so the return value can in principle be `none` because the
-    cell was freed rather than because it was never there — but those are the same
-    thing: a cell leaves the list exactly by being freed.  So the postcondition is
-    still indexed by `Arr.insert` alone, with no extra failure case. -/
+    The handle is weak, so the return value can be `none` because the cell was freed
+    rather than because it was never there — but those are the same thing here: a
+    cell leaves the list exactly by being freed.  So the postcondition is indexed by
+    `Arr.insert` alone, with no extra failure case, which is precisely what `Array`
+    cannot do. -/
 theorem insert_spec
     (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
@@ -3033,18 +3056,64 @@ theorem insert_spec
     Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&insert &platform &node #x) @ ↑arrN
-    ⟪ ∃ ret,
-        arrFrag γ (Arr.insert σ id x).1 ∗
-        Arr.isId γ node id ∗
-        match (Arr.insert σ id x).2 with
-        | none => iprop% ⌜ret = hl_val(none())⌝
-        | some nid => iprop%
-            ∃ newNode : Val,
-              ⌜ret = hl_val(some(&newNode))⌝ ∗
-              Arr.isId γ newNode nid
-      | RET ret
-    ⟫ := by
-  sorry
+    ⟪ ∃ ret, ∃ σ', arrFrag γ σ' ∗ insertQ γ node id x σ σ' ret | RET ret ⟫ := by
+  iintro #Hinv Hid %Φ HAU
+  unfold insert
+  wp_pures
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hsub : ((⊤ : CoPset) \ (↑arrN : CoPset)) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  iapply execute_shared_spec γ γP platform _ (insertQ γ node id x) $$ Hinv [Hid]
+  · iintro #Hinv' Hguard %Φ' HAU'
+    iunfold Arr.isId at Hid
+    icases Hid with ⟨%d, #Hnode, Hweak⟩
+    wp_pures
+    icases rwGuard_split3 γP $$ Hguard with ⟨Hdep, Hpay, Hkeep⟩
+    wp_bind &Weak.tryUpgrade _
+    iapply wp_wand $$ [Hnode Hweak Hdep Hkeep]
+    · iapply borrow_read_spec γ γP platform node id d $$ Hinv' Hnode Hweak Hdep Hkeep
+    iintro %r ⟨Hkeep, Hweak, Hcases⟩
+    icases Hcases with (⟨%hr, #Hcd, Hdep⟩ | ⟨%hr, Harc, Hmine⟩)
+    · -- the handle was stale: the cell has left the list, so the insert is a no-op
+      subst hr
+      wp_pures
+      ihave #Hinvraw : inv arrN (arrInvBody γ γP platform) $$ [Hinv']
+      · iunfold isArrInv at Hinv'
+        iexact Hinv'
+      imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
+      iunfold arrInvBody at HI
+      icases HI with ⟨Hpart, Hphys⟩
+      iauopen HAU' with ⟨%σc, Hfrag, Hclose⟩
+      icases arrPhysPart_frag_dead γ γP platform σc d id q1_4
+          $$ Hphys Hfrag Hnode Hcd Hkeep with ⟨%hnin, Hphys, Hfrag, Hkeep⟩
+      icases Hclose with ⟨-, Hcommit⟩
+      have hins := Arr.insert_of_not_mem σc id x hnin
+      ihave Hbeta : (∃ σ', arrFrag γ σ' ∗ insertQ γ node id x σc σ' hl_val(none()))
+          $$ [Hfrag Hweak]
+      · iexists (Arr.insert σc id x).1
+        rw [hins]
+        iframe Hfrag
+        unfold insertQ
+        rw [hins]
+        isplit
+        · ipureintro; rfl
+        isplitl [Hweak]
+        · unfold Arr.isId
+          iexists d
+          iframe Hweak
+          iexact Hnode
+        · ipureintro; rfl
+      imod Hcommit $$ Hbeta with HΦ
+      imod Hcl $$ [Hpart Hphys] with -
+      · unfold arrInvBody
+        iframe
+      imodintro
+      simp only [wandM]
+      iapply HΦ
+      isplitl [Hdep Hpay Hkeep]
+      · iapply rwGuard_join3 γP $$ Hdep Hpay Hkeep
+      · ipureintro; rfl
+    · sorry
+  · iexact HAU
 
 /-- Detach and free everything strictly after `node`.
 
