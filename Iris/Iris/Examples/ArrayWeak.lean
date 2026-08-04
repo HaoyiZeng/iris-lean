@@ -3832,6 +3832,129 @@ theorem insert_spec
         · ipureintro; rfl
   · iexact HAU
 
+set_option maxRecDepth 8000 in
+/-- Give an exclusive-mode borrow back, and retarget the cell's successor while the
+    invariant is open.
+
+    Both have to happen at the same step: retargeting needs the whole live witness,
+    and the ledger's quarter of it is only reachable with the invariant open — which
+    the drop opens anyway.  What comes back is the receipt: the extra quarter of the
+    witness and the half of the write permit that was parked. -/
+theorem return_write_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData)
+    (nxt nxt' : Option Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isArc d.arc node d.mux -∗
+    refTok d -∗
+    cellAlive d.cell q1_2 nxt -∗
+    rwGuardFrac γP RwLock.Mode.write q1_2 -∗
+    WP hl(&Arc.drop &RwLock.drop &node)
+      {{ _r, cellAlive d.cell q3_4 nxt' ∗
+             rwGuardFrac γP RwLock.Mode.write q1_2 ∗
+             rwGuardFrac γP RwLock.Mode.write q1_2 }} := by
+  iintro #Hinv #Hnode Harc Hmine Hkeep2 Hwq
+  iapply Arc.drop_nonlast_spec (γ := d.arc) hl_val(&RwLock.drop) node d.mux $$ Harc
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  ihave #hsw : ⌜s = RwLock.State.write⌝ $$ [Hplat Hwq]
+  · iapply isPlatform_write_frac_valid γP s platform q1_2
+    isplitl [Hplat] <;> iassumption
+  icases hsw with %hsw
+  subst hsw
+  -- our own token plus the ledger's makes two, so this drop is not the last
+  iunfold arcLedger at Hled
+  icases Hled with (⟨Htok, Hdep, %nxtL, Hq⟩ | ⟨Htok, %hn, ⟨%nxtL, Hq⟩, Hwpark⟩ | ⟨-, %hz⟩)
+  · -- the left disjunct at a count of two would need a read permit, and the
+    -- platform is write-held
+    iexfalso
+    ihave #Hge : ⌜2 ≤ n⌝ $$ [Hcnt Htok Hmine]
+    · iapply refTok_two d n
+      isplitl [Hcnt]
+      · iassumption
+      · isplitl [Htok] <;> iassumption
+    icases Hge with %hge
+    icases arcDeposit_read γP n hge $$ Hdep with ⟨%qr, Hqr⟩
+    icases isPlatform_read_guard_valid γP .write platform qr $$ [Hplat Hqr]
+      with %hcontra
+    · isplitl [Hplat] <;> iassumption
+    rcases hcontra with ⟨k, hk⟩
+    exact absurd hk (by simp)
+  · subst hn
+    ihave %heqL := cellAlive_agree d.cell q1_2 q1_2 nxt nxtL $$ [Hkeep2 Hq]
+    · isplitl [Hkeep2] <;> iassumption
+    subst heqL
+    ihave Hpre : (arcAuth d.arc 2 m ∗ ⌜2 ≤ 2⌝) $$ [Hauth]
+    · iframe Hauth
+      ipureintro; omega
+    iaaccintro' with Hpre
+    · iintro Hpre
+      icases Hpre with ⟨Hauth, -⟩
+      imodintro
+      isplitl [Hauth Hcnt Htok Hq Hwpark Hback Hplat Hrest]
+      · unfold arrInvBody arrPhysPart
+        isplitl [Hback Hauth Hcnt Htok Hq Hwpark]
+        · iapply Hback
+          iapply arcCell_pack γP d 2 m
+          iframe Hauth Hcnt
+          unfold arcLedger arcAliveTok
+          iright; ileft
+          iframe Htok Hwpark
+          isplit
+          · ipureintro; rfl
+          · iexists nxt
+            iexact Hq
+        · iexists RwLock.State.write, M, σ
+          iframe
+      · iframe Hmine Hkeep2 Hwq
+        repeat' first | (imodintro; iassumption) | isplitl []
+    · itele_reduce
+      iintro Hauth
+      -- the whole witness is here now, so the successor can be rewired
+      ihave Hallive : cellAlive d.cell 1 nxt $$ [Hkeep2 Hq]
+      · rw [← q1_2_add_q1_2]
+        iapply (cellAlive_split_gen d.cell q1_2 q1_2 nxt).mpr
+        iframe
+      imod cellAlive_full_update d.cell nxt nxt' $$ Hallive with Hallive
+      ihave Hallive : cellAlive d.cell (q1_4 + q3_4) nxt' $$ [Hallive]
+      · rw [q1_4_add_q3_4]
+        iexact Hallive
+      icases (cellAlive_split_gen d.cell q1_4 q3_4 nxt').mp $$ Hallive
+        with ⟨Hledger4, Hchain34⟩
+      imod refAuth_give d 1 $$ [Hcnt Hmine] with Hcnt
+      · isplitl [Hcnt] <;> iassumption
+      imodintro
+      isplitl [Hauth Hcnt Htok Hledger4 Hback Hplat Hrest]
+      · unfold arrInvBody arrPhysPart
+        isplitl [Hback Hauth Hcnt Htok Hledger4]
+        · iapply Hback
+          iapply arcCell_pack γP d 1 m
+          iframe Hauth Hcnt
+          unfold arcLedger arcAliveTok
+          ileft
+          iframe Htok
+          isplitl []
+          · unfold arcDeposit
+            itrivial
+          · iexists nxt'
+            iexact Hledger4
+        · iexists RwLock.State.write, M, σ
+          iframe
+      · iframe Hchain34 Hwq Hwpark
+  · subst hz
+    iexfalso
+    icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
+    · isplitl [Hcnt] <;> iassumption
+    exact absurd h (Nat.lt_irrefl 0)
+
 /-- The link value that points at the head of `cells`. -/
 def chainHead (γ : GName) : List (Nat × Int) → Val → IProp GF
   | [], cur => iprop% ⌜cur = hl_val(none())⌝
