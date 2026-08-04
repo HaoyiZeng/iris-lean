@@ -1546,6 +1546,24 @@ theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : 
   cases Hvalid with
   | read n => exact ⟨n, rfl⟩
 
+/-- The write permit identifies the lock state, which is what lets the body of an
+    exclusive `execute` reason about the ledger: `arcCell_write_last` needs to know
+    the platform really is write-held, and the permit is the only evidence of that
+    which survives being handed to a client-supplied function. -/
+theorem isPlatform_write_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) :
+    isPlatform (GF := GF) ρ s platform ∗ rwGuard ρ RwLock.Mode.write ⊢ ⌜s = .write⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuard_valid
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  ipureintro
+  cases Hvalid
+  rfl
+
 theorem rwGuard_toFrac (γ : GName) :
     ⊢@{IProp GF} rwGuard γ RwLock.Mode.read -∗ rwGuardFrac γ RwLock.Mode.read 1 := by
   iintro H
@@ -1967,19 +1985,190 @@ theorem execute_shared_spec
               iexact HΦ
 
 /-- Run `f` under the platform write lock.  The body is an ordinary Hoare triple on
-    `arrContent`: it has the whole list to itself. -/
+    `arrContent`: it has the whole list to itself.
+
+    The write permit is *lent* to `f` and taken back.  `execute` holds it only across
+    `f`'s execution anyway, so this costs nothing, and it is what lets `f` prove the
+    platform is write-held — which the reference-count ledger needs. -/
 theorem execute_exclusive_spec
     (γ : WArrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
   ⊢@{IProp GF}
     isArrInv γ γP platform -∗
     (∀ σ,
-       ⦃ arrContent γ σ ⦄
+       ⦃ arrContent γ σ ∗ rwGuard γP RwLock.Mode.write ⦄
          hl(&f #())
-       ⦃ r, RET r; ∃ σ', arrContent γ σ' ∗ Q σ σ' r ⦄) -∗
+       ⦃ r, RET r;
+         ∃ σ', arrContent γ σ' ∗ rwGuard γP RwLock.Mode.write ∗ Q σ σ' r ⦄) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&execute &platform #true &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
-  sorry
+  iintro #Hinv Hf %Φ HAU
+  iunfold isArrInv at Hinv
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+  iapply fupd_wp
+  imod inv_acc Hfull $$ Hinv with ⟨>HI, Hcl⟩
+  iunfold arrInvBody at HI
+  icases HI with ⟨Hpart, HP⟩
+  iunfold arrPhysPart at HP
+  icases HP with ⟨%s0, %M0, %σ0, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α, %gate, %cell, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hshape : ⌜∃ ps pw p c : Loc, platform = hl_val(((#ps, #pw), (#p, #c)))⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α platform gate $$ Harc with ⟨⟨%ps, %pw, %hp⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate hl_val(#cell) s0 $$ Hlock with ⟨⟨%p, %hg⟩, -⟩
+    ipureintro
+    exact ⟨ps, pw, p, cell, by rw [hp, hg]⟩
+  ihave HI : arrInvBody γ γP platform $$ [Hpart Hphys Hstrong Harc Hlock Hcell]
+  · unfold arrInvBody arrPhysPart isPlatform
+    iframe Hpart
+    iexists s0, M0, σ0
+    isplitl [Hstrong Harc Hlock Hcell]
+    · iexists α, gate, cell
+      iframe
+    · iframe
+  imod Hcl $$ HI with -
+  imodintro
+  icases hshape with ⟨%ps, %pw, %p, %c, %hplat⟩
+  subst hplat
+  unfold execute Arc.get
+  wp_pures
+  wp_bind &RwLock.write_acquire _
+  iapply RwLock.write_acquire_spec γP hl_val((#p, #c)) hl_val(#c)
+  iauintro
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinv
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨Hpart, HP⟩
+  iunfold arrPhysPart at HP
+  icases HP with ⟨%s1, %M1, %σ1, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α1, %gate1, %cell1, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hg1 : ⌜gate1 = hl_val((#p, #c)) ∧ cell1 = c⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc
+      with ⟨⟨%u1, %u2, %hu⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%u3, %hv⟩, -⟩
+    ipureintro
+    simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
+    grind
+  icases hg1 with ⟨%hg1a, %hg1b⟩
+  subst hg1a
+  subst cell1
+  ihave Hα : isRwLock γP hl_val((#p, #c)) s1 hl_val(#c) $$ [Hlock]
+  · iframe
+  iaaccintro' with Hα
+  · iintro Hlock
+    imodintro
+    isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody arrPhysPart isPlatform
+      iframe Hpart
+      iexists s1, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · iframe
+      imodintro
+      iexact Hinv
+  · itele_reduce
+    iintro Hpost
+    icases Hpost with ⟨Hlock, Hguard, %hs1⟩
+    subst hs1
+    imodintro
+    icases isPhysical_write_acquire γ γP M1 σ1 $$ Hphys with ⟨⟨Hcontent, Hout⟩, Hphys⟩
+    isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody arrPhysPart isPlatform
+      iframe Hpart
+      iexists RwLock.State.write, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · itele_reduce
+      wp_pures
+      wp_bind &f _
+      ihave Hcontent : arrContent γ σ1 $$ [Hcontent]
+      · unfold arrContent
+        iexists M1
+        iexact Hcontent
+      iapply Hf $$ [Hcontent Hguard]
+      · iframe
+      iintro %r !> Hres
+      icases Hres with ⟨%σ2, Hcontent2, Hguard, HQ⟩
+      iunfold arrContent at Hcontent2
+      icases Hcontent2 with ⟨%M2, Hcontent2⟩
+      wp_pures
+      wp_bind &RwLock.write_release _
+      iapply RwLock.write_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
+      iauintro
+      iapply aacc_inv _ _ _ _ Hfull' $$ Hinv
+      iintro HI
+      iunfold arrInvBody at HI
+      icases HI with ⟨Hpart, HP⟩
+      iunfold arrPhysPart at HP
+      icases HP with ⟨%s3, %M3, %σ3, Hplat, Hphys⟩
+      ihave #hw : ⌜s3 = .write⌝ $$ [Hphys Hout]
+      · iapply isPhysical_write_pinned γ γP M3 M1 σ3 σ1 s3
+        isplitl [Hphys] <;> iassumption
+      icases hw with %hw
+      subst hw
+      iunfold isPlatform at Hplat
+      icases Hplat with ⟨%α3, %gate3, %cell3, Hstrong, Harc, Hlock, Hcell⟩
+      ihave #hg3 : ⌜gate3 = hl_val((#p, #c)) ∧ cell3 = c⌝ $$ [Harc Hlock]
+      · icases Arc.isArc_copyRuntime α3 hl_val(((#ps, #pw), (#p, #c))) gate3 $$ Harc
+          with ⟨⟨%v1, %v2, %hv1⟩, -⟩
+        icases RwLock.isRwLock_copyRuntime γP gate3 hl_val(#cell3) .write $$ Hlock
+          with ⟨⟨%v3, %hv2⟩, -⟩
+        ipureintro
+        simp only [Val.pair.injEq, Val.lit.injEq] at hv1 hv2
+        grind
+      icases hg3 with ⟨%hg3a, %hg3b⟩
+      subst hg3a
+      subst cell3
+      ihave Hα : isRwLock γP hl_val((#p, #c)) .write hl_val(#c) $$ [Hlock]
+      · iframe
+      iaaccintro' with Hα
+      · iintro Hlock
+        imodintro
+        isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+        · unfold arrInvBody arrPhysPart isPlatform
+          iframe Hpart
+          iexists RwLock.State.write, M3, σ3
+          isplitl [Hstrong Harc Hlock Hcell]
+          · iexists α3, hl_val((#p, #c)), c
+            iframe
+          · iframe
+        · iframe
+          imodintro
+          iexact Hinv
+      · itele_reduce
+        iintro Hlock
+        iauopen HAU with ⟨%σc, Hfrag, Hclose⟩
+        ihave #hac : ⌜σc = σ1⌝ $$ [Hfrag Hout]
+        · iapply arrFrag_agree γ σc σ1 M1
+          isplitl [Hfrag] <;> iassumption
+        icases hac with %hac
+        subst hac
+        ihave Hupd := isPhysical_write_release γ γP M1 M2 σc σ2 $$ Hcontent2 Hout Hfrag
+        imod Hupd with ⟨Hphys', Hfrag'⟩
+        icases Hclose with ⟨-, Hcommit⟩
+        ihave Hbeta : ∃ σ', arrFrag γ σ' ∗ Q σc σ' r $$ [Hfrag' HQ]
+        · iexists σ2
+          iframe
+        imod Hcommit $$ Hbeta with HΦ
+        imodintro
+        isplitl [Hpart Hstrong Harc Hlock Hcell Hphys']
+        · unfold arrInvBody arrPhysPart isPlatform
+          iframe Hpart
+          iexists RwLock.State.free, M2, σ2
+          isplitl [Hstrong Harc Hlock Hcell]
+          · iexists α3, hl_val((#p, #c)), c
+            iframe
+          · iframe
+        · itele_reduce
+          wp_pures
+          iexact HΦ
 
 /-- Splice a cell in after `node`.
 
