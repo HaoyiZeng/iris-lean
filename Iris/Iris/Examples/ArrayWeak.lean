@@ -700,6 +700,19 @@ instance instCellDeadAtPersistent (γ : GName) (i : Nat) :
     Persistent (cellDeadAt (GF := GF) (H := H) γ i) := by
   unfold cellDeadAt; infer_instance
 
+/-- `deadNodes` only depends on which ids are live, not on their order. -/
+theorem deadNodes_congr (M : H WData) (c₁ c₂ : List (Nat × Int))
+    (h : ∀ i, i ∈ c₁.map (·.1) ↔ i ∈ c₂.map (·.1)) :
+    deadNodes (GF := GF) M c₁ ⊢ deadNodes M c₂ := by
+  unfold deadNodes
+  refine BigSepM.bigSepM_mono (M := H) ?_
+  intro k e _
+  by_cases hk : k ∈ c₁.map (·.1)
+  · rw [if_pos hk, if_pos ((h k).mp hk)]
+    exact .rfl
+  · rw [if_neg hk, if_neg (fun hc => hk ((h k).mpr hc))]
+    exact .rfl
+
 /-- Shrinking the live set by one cell, which the caller has just retired.  This is
     how the tombstones a revocation collects turn back into the array invariant's own
     record of which cells are gone. -/
@@ -3138,6 +3151,19 @@ theorem q1_2_add_q1_4_add_q1_4 : q1_2 + (q1_4 + q1_4) = 1 := by
   simp [q1_2, q1_4, Qp.half]
   grind
 
+theorem rwGuard_split2 (γP : GName) (md : RwLock.Mode) :
+  ⊢@{IProp GF} rwGuard γP md -∗ rwGuardFrac γP md q1_2 ∗ rwGuardFrac γP md q1_2 := by
+  rw [rwGuard_eq γP md, ← q1_2_add_q1_2]
+  iintro H
+  iapply (RwLock.rwGuardFrac_split γP md q1_2 q1_2).mp $$ H
+
+theorem rwGuard_join2 (γP : GName) (md : RwLock.Mode) :
+  ⊢@{IProp GF} rwGuardFrac γP md q1_2 -∗ rwGuardFrac γP md q1_2 -∗ rwGuard γP md := by
+  rw [rwGuard_eq γP md, ← q1_2_add_q1_2]
+  iintro H₁ H₂
+  iapply (RwLock.rwGuardFrac_split γP md q1_2 q1_2).mpr
+  iframe
+
 /-- The read permit splits three ways: half is the borrow deposit, a quarter is
     parked in the cell's slot while it is locked, and a quarter stays in hand to
     witness that the platform really is read-held. -/
@@ -4187,7 +4213,145 @@ theorem revoke_spec
     icases hlookup with %hlookup
     wp_pures
     by_cases hin : id ∈ σ.cells.map (·.1)
-    · sorry
+    · -- the cell is live: detach the suffix, free it, and truncate the chain
+      obtain ⟨pre, xv, post, hsplit⟩ := Arr.exists_split_id hin
+      obtain ⟨hpre, hpost⟩ := Arr.nodup_split_id pre post id xv (hsplit ▸ hwf.idUqi)
+      have hrev := Arr.revoke_eq_of_split σ pre post id xv hsplit hpre
+      have hnd0 : ((pre ++ (id, xv) :: post).map (·.1)).Nodup := hsplit ▸ hwf.idUqi
+      rw [List.map_append, List.map_cons, List.nodup_append] at hnd0
+      obtain ⟨-, hnd1, hdisj⟩ := hnd0
+      rw [List.nodup_cons] at hnd1
+      obtain ⟨hidpost, hndpost⟩ := hnd1
+      iunfold isGhost at Hghost
+      ihave Hghost : isGhostHelp nodeSlotExclusive γ.l none (pre ++ (id, xv) :: post)
+          $$ [Hghost]
+      · rw [← hsplit]
+        iexact Hghost
+      ihave ⟨Hslot, Hpost, Hrebuild⟩ :=
+        isGhostHelpAccTruncate γ.l d nodeSlotExclusive none id xv post pre
+          $$ Hmeta Hghost
+      iunfold aliveSlot at Hslot
+      iunfold nodeSlotExclusive at Hslot
+      icases Hslot with ⟨Hlock, Hchain, Hpayload⟩
+      icases rwGuard_split2 γP RwLock.Mode.write $$ Hwguard with ⟨Hw1, Hw2⟩
+      wp_bind &Weak.tryUpgrade _
+      iapply wp_wand $$ [Hnode Hweak Hw1 Hchain]
+      · iapply borrow_write_spec γ γP platform node id d (nextIdOr post none)
+          $$ Hinv Hnode Hweak Hw1 Hchain
+      iintro %r ⟨%hr, Hweak, Harc, Hmine, Hkeep2⟩
+      subst hr
+      wp_pures
+      wp_bind &Arc.get _
+      iapply Arc.get_spec (γ := d.arc) node d.mux $$ Harc
+      iintro !> Harc
+      wp_pures
+      wp_bind &RwLock.write_acquire _
+      iapply RwLock.write_acquire_owned_spec d.rw d.mux hl_val(#d.ptr) $$ Hlock
+      iintro !> ⟨Hlock, Hwg⟩
+      wp_pures
+      ihave ⟨%nv, Hptr, Hnext⟩ :
+          (∃ nv : Val, d.ptr ↦ hl_val((#d.val, &nv)) ∗ chainHead γ.l post nv)
+          $$ [Hpayload]
+      · cases post with
+        | nil =>
+            simp only [nextIdOr]
+            iunfold payload at Hpayload
+            iexists hl_val(none())
+            iframe Hpayload
+            simp only [chainHead]
+            itrivial
+        | cons c' cs' =>
+            rcases c' with ⟨i', x'⟩
+            simp only [nextIdOr]
+            iunfold payload at Hpayload
+            icases Hpayload with ⟨%w, Hp, Hsucc⟩
+            iexists hl_val(some(&w))
+            iframe Hp
+            simp only [chainHead]
+            iexists w
+            iframe Hsucc
+            itrivial
+      wp_bind !_
+      iapply wp_load $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      wp_bind (_ ← _)
+      iapply wp_store $$ Hptr
+      iintro !> Hptr
+      wp_pures
+      wp_bind &RwLock.write_release _
+      iapply RwLock.write_release_owned_spec d.rw d.mux hl_val(#d.ptr) $$ [Hlock Hwg]
+      · iframe
+      iintro !> Hlock
+      wp_pures
+      -- free the detached suffix; the tombstones come back in `deadNodes`
+      wp_bind &revokeSuffix _
+      iapply revokeSuffix_spec γ γP platform M (pre ++ [(id, xv)]) post nv
+        (by
+          intro j hj
+          simp only [List.map_append, List.map_cons, List.map_nil,
+            List.mem_append, List.mem_singleton]
+          rintro (h | h)
+          · exact hdisj j h j (List.mem_cons_of_mem id hj) rfl
+          · subst h
+            exact hidpost hj)
+        hndpost
+        $$ Hinv [Hpost Hnext Hw2 HM Hdead]
+      · iframe Hpost Hnext Hw2 HM
+        iapply deadNodes_congr M σ.cells (post ++ (pre ++ [(id, xv)]))
+          (by
+            intro j
+            rw [hsplit]
+            simp only [List.map_append, List.map_cons, List.map_nil,
+              List.mem_append, List.mem_cons, List.not_mem_nil, _root_.or_false]
+            grind)
+        iexact Hdead
+      inext
+      iintro ⟨Hw2, HM, Hdead⟩
+      wp_pures
+      -- give the borrow back, retargeting the successor to `none`
+      wp_bind &Arc.drop _ _
+      iapply (wp_wand (Φ := fun _r => iprop%
+        cellAlive d.cell q3_4 none ∗ rwGuardFrac γP RwLock.Mode.write q1_2 ∗
+        rwGuardFrac γP RwLock.Mode.write q1_2))
+        $$ [Hnode Harc Hmine Hkeep2 Hw2]
+      · iapply return_write_spec γ γP platform node id d (nextIdOr post none) none
+          $$ Hinv Hnode Harc Hmine Hkeep2 Hw2
+      iintro %u2 ⟨Hchain, Hw1, Hw2⟩
+      wp_pures
+      -- rebuild the chain, now stopping at `node`
+      ihave Hghost := Hrebuild $$ [Hlock Hchain Hptr]
+      · unfold aliveSlot nodeSlotExclusive payload
+        iframe Hlock Hchain Hptr
+      iapply fupd_intro
+      iapply HΦ'
+      iexists (Arr.revoke σ id).1
+      isplitl [HM Hghost Hdead]
+      · unfold arrContent arrContentAt
+        iexists M
+        rw [hrev]
+        iframe HM Hdead
+        isplit
+        · ipureintro
+          exact hrev ▸ Arr.revoke_wellFormed σ hwf id
+        isplit
+        · ipureintro
+          intro j
+          rw [hdom j]
+        · unfold isGhost
+          iexact Hghost
+      isplitl [Hw1 Hw2]
+      · iapply rwGuard_join2 γP RwLock.Mode.write $$ Hw1 Hw2
+      unfold revokeQ
+      rw [hrev]
+      isplit
+      · ipureintro; rfl
+      isplitl [Hweak]
+      · unfold Arr.isId
+        iexists d
+        iframe Hweak
+        iexact Hnode
+      · ipureintro; rfl
     · -- the handle is stale: the cell has left the list, so the revoke is a no-op
       ihave #Hcd : cellDead d.cell $$ [Hdead]
       · iapply deadNodes_lookup M σ.cells id d hlookup hin
