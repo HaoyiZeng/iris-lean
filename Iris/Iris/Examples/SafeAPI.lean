@@ -863,6 +863,13 @@ private theorem arcStrongRes_included_positive (a x : Val) (n m : Nat)
   change n = 1 + rest.2.1 at hs
   omega
 
+private theorem arcStrongRes_included_two (a x : Val) (n m : Nat)
+    (h : (arcStrongRes • arcStrongRes) ≼ arcStateRes a x n m) : 2 ≤ n := by
+  obtain ⟨rest, hrest⟩ := h
+  have hs := congrArg (fun r : ArcRes => r.2.1) (eq_of_eqv hrest)
+  change n = 1 + 1 + rest.2.1 at hs
+  omega
+
 private theorem arcWeakRes_included_positive (a x : Val) (n m : Nat)
     (h : arcWeakRes ≼ arcStateRes a x n m) : m > 0 := by
   obtain ⟨rest, hrest⟩ := h
@@ -919,6 +926,31 @@ private theorem arcMetaOwn_agree (γ : GName) (a₁ a₂ x₁ x₂ : Val) :
     congrArg LeibnizO.car (toAgree_op_valid_iff_eq.mp Hagree)
   ipureintro
   exact ⟨congrArg Prod.fst Hpair, congrArg Prod.snd Hpair⟩
+
+/-- Two strong tokens require a strong count of at least two.  This is what lets a
+    thread that has upgraded a weak handle conclude that releasing its temporary
+    reference cannot be the last drop, provided some structure still holds one. -/
+theorem arcAuth_isArc_two (γ : GName) (n m : Nat) (a x : Val) :
+    arcAuth γ n m ∗ isArc γ a x ∗ isArc γ a x ⊢@{IProp GF} ⌜2 ≤ n⌝ := by
+  unfold arcAuth isArc arcStateOwn arcMetaOwn arcStrongOwn
+  iintro ⟨Hauth, Harc1, Harc2⟩
+  icases Hauth with ⟨%_, %_, %a₀, %x₀, %_, _, Hown⟩
+  icases Harc1 with ⟨%_, %_, %_, _, Hstrong1⟩
+  icases Harc2 with ⟨%_, %_, %_, _, Hstrong2⟩
+  ihave Hstrong := (iOwn_op (F := ArcF) (γ := γ)
+    (a1 := (◯ arcStrongRes : Auth ArcRes))
+    (a2 := (◯ arcStrongRes : Auth ArcRes))).mpr $$ [Hstrong1 Hstrong2]
+  · isplitl [Hstrong1] <;> iassumption
+  ihave HvI := (iOwn_cmraValid_op (F := ArcF)
+    (a1 := (● arcStateRes a₀ x₀ n m : Auth ArcRes))
+    (a2 := ((◯ arcStrongRes : Auth ArcRes) • (◯ arcStrongRes : Auth ArcRes)))) $$
+    [Hown Hstrong]
+  · isplitl [Hown] <;> iassumption
+  icases internalCmraValid_discrete (A := Auth ArcRes) $$ HvI with %Hv
+  ipureintro
+  refine arcStrongRes_included_two a₀ x₀ n m ?_
+  rw [← Auth.frag_op] at Hv
+  exact (Auth.auth_both_valid_discrete.mp Hv).1
 
 /-- The exact physical/authoritative Arc state is linear. -/
 theorem arcAuth_exclusive (γ : GName) (n₁ m₁ n₂ m₂ : Nat) :

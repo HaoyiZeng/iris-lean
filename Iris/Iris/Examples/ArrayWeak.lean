@@ -506,6 +506,124 @@ theorem handle_spec (γ : Arrγ) (node : Val) (id : Nat) :
         iframe Hweak
         iexact Hnode
 
+
+/-! ### Logically atomic specifications
+
+`Arr.insert σ id x` already returns `none` exactly when `id` is not in the list, and
+"the upgrade failed" is precisely that case — so the abstract model needs no change
+at all.  What *does* need justifying, and is the subject of the review below, is the
+implication in the other direction: that a handle on a cell which is still in the
+list can always be upgraded. -/
+
+section Atomic
+
+variable {H : Type → Type}
+variable {GF : BundledGFunctors} [LawfulFiniteMap H Nat]
+variable [HeapLangGS hlc GF] [RwLockG GF] [ArcG GF] [ArrG GF H]
+
+/-- Run `f` under the platform read lock.  Identical to `Array`'s, except that
+    there is no retired-cell view to carry along. -/
+theorem execute_shared_spec
+    (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    (isArrInv γ γP platform -∗ rwGuard γP .read -∗
+       ⟪ ∀ σ, arrFrag γ σ ⟫
+         hl(&f #()) @ ↑arrN
+       ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r ∗ rwGuard γP .read | RET r ⟫) -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&execute &platform #false &f) @ ↑arrN
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
+  sorry
+
+/-- Run `f` under the platform write lock.  The body is an ordinary Hoare triple on
+    `arrContent`: it has the whole list to itself. -/
+theorem execute_exclusive_spec
+    (γ : Arrγ) (γP : GName) (platform f : Val) (Q : Arr → Arr → Val → IProp GF) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    (∀ σ,
+       ⦃ arrContent γ σ ⦄
+         hl(&f #())
+       ⦃ r, RET r; ∃ σ', arrContent γ σ' ∗ Q σ σ' r ⦄) -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&execute &platform #true &f) @ ↑arrN
+    ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
+  sorry
+
+/-- Splice a cell in after `node`.
+
+    The handle is weak, so the return value can in principle be `none` because the
+    cell was freed rather than because it was never there — but those are the same
+    thing: a cell leaves the list exactly by being freed.  So the postcondition is
+    still indexed by `Arr.insert` alone, with no extra failure case. -/
+theorem insert_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
+  ⊢@{IProp GF}
+    isArrInv γ γp platform -∗
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&insert &platform &node #x) @ ↑arrN
+    ⟪ ∃ ret,
+        arrFrag γ (Arr.insert σ id x).1 ∗
+        Arr.isId γ node id ∗
+        match (Arr.insert σ id x).2 with
+        | none => iprop% ⌜ret = hl_val(none())⌝
+        | some nid => iprop%
+            ∃ newNode : Val,
+              ⌜ret = hl_val(some(&newNode))⌝ ∗
+              Arr.isId γ newNode nid
+      | RET ret
+    ⟫ := by
+  sorry
+
+/-- Detach and free everything strictly after `node`.
+
+    Unlike `Array`'s, this postcondition says nothing about surviving cells, because
+    there are none: the handles a client holds on the revoked suffix all go stale. -/
+theorem revoke_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γp platform -∗
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&revoke &platform &node) @ ↑arrN
+    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
+      | RET match (Arr.revoke σ id).2 with
+            | none => hl_val(none())
+            | some _ => hl_val(some(#()))
+    ⟫ := by
+  sorry
+
+/-- A handle on the successor.  Reading the list does not move it, so `σ` is
+    unchanged and the result is read off `σ.cells` directly. -/
+theorem getChild_spec
+    (γ : Arrγ) (γp : GName) (platform node : Val) (id : Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γp platform -∗
+    Arr.isId γ node id -∗
+    ⟪ ∀ σ, arrFrag γ σ ⟫
+      hl(&getChild &platform &node) @ ↑arrN
+    ⟪ ∃ ret,
+        arrFrag γ σ ∗ Arr.isId γ node id ∗
+        (⌜ret = hl_val(none())⌝ ∨
+         ∃ (w : Val) (cid : Nat),
+           ⌜ret = hl_val(some(&w))⌝ ∗ Arr.isId γ w cid)
+      | RET ret ⟫ := by
+  sorry
+
+/-- Duplicating a handle: no platform lock, because the reference counts are not
+    under it. -/
+theorem isId_clone_spec (γ : Arrγ) (node : Val) (id : Nat) :
+  ⊢@{IProp GF}
+    ⦃ Arr.isId γ node id ⦄
+      hl(&Weak.clone &node)
+    ⦃ w, RET w;
+      ⌜w = node⌝ ∗ Arr.isId γ node id ∗ Arr.isId γ w id ⦄ := by
+  sorry
+
+end Atomic
+
 end Specs
 
 end Iris.Examples.HeapLang.WeakList
