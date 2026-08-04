@@ -26,7 +26,27 @@ nothing inside the list owns it, so dropping it frees the whole list.
 
 The abstract model (`Arr`, `Arr.insert`, `Arr.revoke`) is shared with `Array`
 unchanged: `Arr.insert` already returns `none` exactly when the identifier is not
-in the list, and "the upgrade failed" is precisely that case. -/
+in the list, and "the upgrade failed" is precisely that case.
+
+## What is proved, and where
+
+The programs below translate `clist_weak.rs`.  Its module documentation claims
+exactly the three points above; each is discharged by a named theorem:
+
+* *revocation frees deterministically* — `drop_last_spec`.  Under the platform write
+  lock no read permit exists anywhere, so `arcCell_write_last` forces the count to
+  one and the drop really is the last.  `revokeSuffix_spec` applies it once per cell.
+* *the revoked flag is unnecessary* — `arrPhysPart_frag_dead` and `isArc_mem`, which
+  between them say that a handle upgrades if and only if its cell is in the abstract
+  list.  Nothing in this file mentions a revoked state.
+* *a strong reference cannot outlive a critical section* — `borrow_read_spec` and
+  `borrow_write_spec` take one, `return_read_spec` and `return_write_spec` give it
+  back, and the deposit each leaves behind is what the first point consumes.
+
+Two things about the translation are worth knowing.  Rust's `&Platform` becomes an
+`Arc`, since HeapLang has no borrow checker and the sharing has to be modelled
+explicitly.  And `getChild` locks a node for writing where the Rust locks it for
+reading; see the note on its definition. -/
 
 @[expose] public section
 namespace Iris.Examples.HeapLang.WeakList
