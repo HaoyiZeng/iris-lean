@@ -1276,6 +1276,26 @@ theorem write_acquire_spec (γ : GName) (l x : Val) :
       wp_pure
       iapply IH $$ HAU
 
+/-- Sequential view of `write_acquire_spec`, for a client that owns the lock
+    outright — a thread holding a whole data structure under an outer lock, say,
+    which therefore does not have to go through an invariant to reach a cell. -/
+theorem write_acquire_seq_spec (γ : GName) (l x : Val) :
+  ⊢@{IProp GF}
+    ⦃ isRwLock γ l .free x ⦄
+      hl(&write_acquire &l)
+    ⦃ RET x; isRwLock γ l .write x ∗ rwGuard γ .write ⦄ := by
+  iintro %Φ Hlock HΦ
+  ihave Hspec := write_acquire_spec γ l x
+  iapply atomicWP_seq_step _ _ _ _ _ _ (by rfl) $$ Hspec %Φ
+    %(⟨RwLock.State.free, ⟨⟩⟩) [Hlock] [HΦ]
+  · itele_reduce
+    iframe Hlock
+  · inext
+    itele_reduce
+    iintro ⟨Hlock, Hguard, -⟩
+    iapply HΦ
+    iframe
+
 theorem write_release_spec (γ : GName) (l x : Val) :
   ⊢@{IProp GF}
     rwGuard γ .write -∗
@@ -1316,6 +1336,23 @@ theorem write_release_spec (γ : GName) (l x : Val) :
     · iframe
   imodintro
   itrivial
+
+/-- Sequential view of `write_release_spec`. -/
+theorem write_release_seq_spec (γ : GName) (l x : Val) :
+  ⊢@{IProp GF}
+    ⦃ isRwLock γ l .write x ∗ rwGuard γ .write ⦄
+      hl(&write_release &l)
+    ⦃ RET hl_val(#()); isRwLock γ l .free x ⦄ := by
+  iintro %Φ ⟨Hlock, Hguard⟩ HΦ
+  ihave Hspec := write_release_spec γ l x $$ Hguard
+  iapply atomicWP_seq_step _ _ _ _ _ _ (by rfl) $$ Hspec %Φ %(⟨⟩) [Hlock] [HΦ]
+  · itele_reduce
+    iframe Hlock
+  · inext
+    itele_reduce
+    iintro Hlock
+    iapply HΦ $$ Hlock
+
 
 theorem read_acquire_spec (γ : GName) (l x : Val) :
   ⊢@{IProp GF}
