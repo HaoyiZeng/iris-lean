@@ -548,7 +548,8 @@ theorem arcDeposit_read (γP : GName) (n : Nat) (h : 2 ≤ n) :
 def arcCell (γP : GName) (d : WData) : IProp GF := iprop%
   ∃ n m : Nat, arcAuth d.arc n m ∗ refAuth d n ∗
     ((refTok d ∗ arcDeposit γP n)
-     ∨ (refTok d ∗ ⌜n = 2⌝ ∗ ∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt)
+     ∨ (refTok d ∗ ⌜n = 2⌝ ∗ (∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt) ∗
+          rwGuardFrac γP RwLock.Mode.write q1_2)
      ∨ (cellDead d.cell ∗ ⌜n = 0⌝))
 
 instance instArcCellTimeless (γP : GName) (d : WData) :
@@ -685,7 +686,7 @@ def nodeSlotExclusive (d : WData) (C : Qp → IProp GF) (P : IProp GF) : IProp G
     the list is quiescent again once the platform lock is released. -/
 def nodeSlotSharedBody (γP : GName) (C : Qp → IProp GF) (P : IProp GF) :
     RwLock.State → IProp GF
-  | .write  => iprop% rwGuardFrac γP RwLock.Mode.read q1_2 ∗ C q1_4
+  | .write  => iprop% rwGuardFrac γP RwLock.Mode.read q1_4 ∗ C q1_4
   | .read _ => iprop% False
   | .free   => iprop% P ∗ C 1
 
@@ -1579,7 +1580,8 @@ repacking. -/
 
 abbrev arcLedger (γP : GName) (d : WData) (n : Nat) : IProp GF := iprop%
   (refTok d ∗ arcDeposit γP n)
-  ∨ (refTok d ∗ ⌜n = 2⌝ ∗ ∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt)
+  ∨ (refTok d ∗ ⌜n = 2⌝ ∗ (∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt) ∗
+       rwGuardFrac γP RwLock.Mode.write q1_2)
   ∨ (cellDead d.cell ∗ ⌜n = 0⌝)
 
 theorem arcCell_unpack (γP : GName) (d : WData) :
@@ -1605,7 +1607,7 @@ theorem arcCell_live_pos (γP : GName) (d : WData) (n : Nat) (q : Qp) (nxt : Opt
       ⌜0 < n⌝ ∗ refAuth d n ∗ arcLedger γP d n ∗ cellAlive d.cell q nxt := by
   unfold arcLedger
   iintro ⟨Hcnt, Hled, Halive⟩
-  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq⟩ | ⟨#Hcd, -⟩)
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq, Hw⟩ | ⟨#Hcd, -⟩)
   · ihave #Hpos : ⌜0 < n⌝ $$ [Hcnt Htok]
     · iapply refTok_pos d n
       isplitl [Hcnt] <;> iassumption
@@ -1616,7 +1618,7 @@ theorem arcCell_live_pos (γP : GName) (d : WData) (n : Nat) (q : Qp) (nxt : Opt
     isplit
     · ipureintro; omega
     iright; ileft
-    iframe Htok Hq
+    iframe Htok Hq Hw
     ipureintro; exact hn
   · iexfalso
     iapply cellAlive_dead_False d.cell q nxt
@@ -1630,7 +1632,7 @@ theorem arcCell_two (γP : GName) (d : WData) (n : Nat) :
       ⌜2 ≤ n⌝ ∗ refAuth d n ∗ arcLedger γP d n ∗ refTok d := by
   unfold arcLedger
   iintro ⟨Hcnt, Hled, Hmine⟩
-  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq⟩ | ⟨-, %hz⟩)
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq, Hw⟩ | ⟨-, %hz⟩)
   · ihave #Hge : ⌜2 ≤ n⌝ $$ [Hcnt Htok Hmine]
     · iapply refTok_two d n
       isplitl [Hcnt]
@@ -1643,7 +1645,7 @@ theorem arcCell_two (γP : GName) (d : WData) (n : Nat) :
     isplit
     · ipureintro; omega
     iright; ileft
-    iframe Htok Hq
+    iframe Htok Hq Hw
     ipureintro; exact hn
   · subst hz
     iexfalso
@@ -1665,7 +1667,7 @@ theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val)
         cellAlive d.cell 1 nxt := by
   unfold arcLedger
   iintro ⟨Hplat, Hcnt, Hled, Halive⟩
-  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hn, %nxt', Hq⟩ | ⟨#Hcd, %hz⟩)
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hn, ⟨%nxt', Hq⟩, -⟩ | ⟨#Hcd, %hz⟩)
   · ihave #Hle : ⌜n ≤ 1⌝ $$ [Hplat Hdep]
     · by_cases hn : 2 ≤ n
       · iexfalso
@@ -1689,6 +1691,35 @@ theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val)
     isplitl []
     · iexact Hcd
     · ipureintro; rfl
+
+/-- A reader inside a platform read critical section can rule out the exclusive-mode
+    borrow: it needs the platform write-held, and a read permit says otherwise. -/
+theorem arcLedger_no_write_borrow (γP : GName) (d : WData) (n : Nat)
+    (s : RwLock.State) (platform : Val) (q : Qp) :
+    isPlatform (GF := GF) γP s platform ∗ rwGuardFrac γP RwLock.Mode.read q ∗
+      arcLedger γP d n ⊢
+      isPlatform γP s platform ∗ rwGuardFrac γP RwLock.Mode.read q ∗
+      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) := by
+  unfold arcLedger isPlatform
+  iintro ⟨Hplat, Hread, Hled⟩
+  icases Hled with (Hleft | ⟨-, -, -, Hwrite⟩ | Hright)
+  · iframe Hplat Hread
+    ileft; iexact Hleft
+  · iexfalso
+    icases Hplat with ⟨%α, %gate, %cell, -, -, Hlock, -⟩
+    ihave #Hr : ⌜RwLock.GuardCompatible s .read⌝ $$ [Hlock Hread]
+    · iapply RwLock.rwGuardFrac_valid _ _ _ _ _ q
+      isplitl [Hlock] <;> iassumption
+    ihave #Hw : ⌜RwLock.GuardCompatible s .write⌝ $$ [Hlock Hwrite]
+    · iapply RwLock.rwGuardFrac_valid _ _ _ _ _ q1_2
+      isplitl [Hlock] <;> iassumption
+    icases Hr with %hr
+    icases Hw with %hw
+    ipureintro
+    cases hr
+    cases hw
+  · iframe Hplat Hread
+    iright; iexact Hright
 
 /-- Handing out a reference costs a `refTok` and, above the first, half a read
     permit — which the taker can afford, because it is inside a platform read
@@ -1723,7 +1754,7 @@ theorem arcLedger_kill (γP : GName) (d : WData) (nxt : Option Nat) :
       |==> (refAuth d 0 ∗ arcLedger γP d 0 ∗ cellDead d.cell) := by
   unfold arcLedger
   iintro ⟨Hcnt, Hled, Halive⟩
-  icases Hled with (⟨Htok, -⟩ | ⟨-, %hn, -⟩ | ⟨-, %hz⟩)
+  icases Hled with (⟨Htok, -⟩ | ⟨-, %hn, -, -⟩ | ⟨-, %hz⟩)
   · imod refAuth_give d 0 $$ [Hcnt Htok] with Hcnt
     · isplitl [Hcnt] <;> iassumption
     imod cellAlive_full_kill d.cell nxt $$ Halive with #Hcd
@@ -2169,6 +2200,211 @@ theorem execute_exclusive_spec
         · itele_reduce
           wp_pures
           iexact HΦ
+
+/-! ### Borrowing a strong reference through a weak handle
+
+Every operation on a cell starts by upgrading the client's weak handle and ends by
+dropping the result.  Both halves have to go through the invariant — the counts live
+there — so they are packaged here once and reused.
+
+The read permit is the currency: a borrow costs half of it, a return gives it back.
+That is the whole content of the deposit, and it is what a thread holding the
+platform exclusively can observe the absence of. -/
+
+/-- Take a temporary strong reference.  Fails exactly when the cell has been
+    revoked, and then says so persistently. -/
+theorem borrow_read_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isWeak d.arc node d.mux -∗
+    rwGuardFrac γP RwLock.Mode.read q1_2 -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    WP hl(&Weak.tryUpgrade &node)
+      {{ r,
+        rwGuardFrac γP RwLock.Mode.read q1_4 ∗
+        ((⌜r = hl_val(none())⌝ ∗ cellDead d.cell ∗
+            rwGuardFrac γP RwLock.Mode.read q1_2) ∨
+         (⌜r = hl_val(some(&node))⌝ ∗ isArc d.arc node d.mux ∗ refTok d)) }} := by
+  iintro #Hinv #Hnode Hweak Hdep Hkeep
+  iapply Weak.tryUpgrade_atomic_spec (γ := d.arc) node d.mux $$ Hweak
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  icases arcLedger_no_write_borrow γP d n s platform q1_4 $$ [Hplat Hkeep Hled]
+    with ⟨Hplat, Hkeep, Hled⟩
+  · isplitl [Hplat]
+    · iassumption
+    · isplitl [Hkeep] <;> iassumption
+  iaaccintro' with Hauth
+  · iintro Hauth
+    imodintro
+    isplitl [Hauth Hcnt Hled Hback Hplat Hrest]
+    · unfold arrInvBody arrPhysPart
+      isplitl [Hback Hauth Hcnt Hled]
+      · iapply Hback
+        iapply arcCell_pack γP d n m
+        iframe Hauth Hcnt
+        unfold arcLedger
+        icases Hled with (H | H)
+        · ileft; iexact H
+        · iright; iright; iexact H
+      · iexists s, M, σ
+        iframe
+    · iframe Hdep Hkeep
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro %r ⟨Hweak, Hcases⟩
+    icases Hcases with (⟨%hz, %hr, Hauth⟩ | ⟨%hpos, %hr, Hauth, Harc⟩)
+    · subst hz
+      ihave ⟨Hcnt, #Hcd⟩ : (refAuth d 0 ∗ cellDead d.cell) $$ [Hcnt Hled]
+      · icases Hled with (⟨Htok, -⟩ | ⟨Hcd, -⟩)
+        · iexfalso
+          icases refTok_pos d 0 $$ [Hcnt Htok] with %h
+          · isplitl [Hcnt] <;> iassumption
+          exact absurd h (Nat.lt_irrefl 0)
+        · iframe Hcnt Hcd
+      imodintro
+      isplitl [Hauth Hcnt Hback Hplat Hrest]
+      · unfold arrInvBody arrPhysPart
+        isplitl [Hback Hauth Hcnt]
+        · iapply Hback
+          iapply arcCell_pack γP d 0 m
+          iframe Hauth Hcnt
+          unfold arcLedger
+          iright; iright
+          isplitl []
+          · iexact Hcd
+          · ipureintro; rfl
+        · iexists s, M, σ
+          iframe
+      · iframe Hkeep
+        ileft
+        iframe Hdep
+        isplit
+        · ipureintro; exact hr
+        · iexact Hcd
+    · ihave Hled : (refAuth d n ∗ refTok d ∗ arcDeposit γP n ∗ ⌜1 ≤ n⌝) $$ [Hcnt Hled]
+      · icases Hled with (⟨Htok, Hdep'⟩ | ⟨-, %hz⟩)
+        · iframe Hcnt Htok Hdep'
+          ipureintro; omega
+        · exact absurd hz (by omega)
+      icases Hled with ⟨Hcnt, Htok, Hdep', %hge⟩
+      imod refAuth_take d n $$ Hcnt with ⟨Hcnt, Hmine⟩
+      imodintro
+      isplitl [Hauth Hcnt Htok Hdep' Hdep Hback Hplat Hrest]
+      · unfold arrInvBody arrPhysPart
+        isplitl [Hback Hauth Hcnt Htok Hdep' Hdep]
+        · iapply Hback
+          iapply arcCell_pack γP d (n + 1) m
+          iframe Hauth Hcnt
+          unfold arcLedger
+          ileft
+          iframe Htok
+          iapply (arcDeposit_succ γP n hge).mpr
+          iframe Hdep' Hdep
+        · iexists s, M, σ
+          iframe
+      · iframe Hkeep
+        iright
+        iframe Harc Hmine
+        ipureintro; exact hr
+
+/-- Give the temporary reference back and recover the half permit.  The drop is
+    never the last one, so no cell is freed here. -/
+theorem return_read_spec
+    (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) (d : WData) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    Arr.isNode γ id d -∗
+    isArc d.arc node d.mux -∗
+    refTok d -∗
+    rwGuardFrac γP RwLock.Mode.read q1_4 -∗
+    WP hl(&Arc.drop &RwLock.drop &node)
+      {{ _r,
+        rwGuardFrac γP RwLock.Mode.read q1_2 ∗
+        rwGuardFrac γP RwLock.Mode.read q1_4 }} := by
+  iintro #Hinv #Hnode Harc Hmine Hkeep
+  iapply Arc.drop_nonlast_spec (γ := d.arc) hl_val(&RwLock.drop) node d.mux $$ Harc
+  iunfold isArrInv at Hinv
+  iauintro
+  iinv Hinv as Hbody
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  icases arcCell_unpack γP d $$ Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrPhysPart at Hphys
+  icases Hphys with ⟨%s, %M, %σ, Hplat, Hrest⟩
+  icases arcLedger_no_write_borrow γP d n s platform q1_4 $$ [Hplat Hkeep Hled]
+    with ⟨Hplat, Hkeep, Hled⟩
+  · isplitl [Hplat]
+    · iassumption
+    · isplitl [Hkeep] <;> iassumption
+  ihave ⟨Hcnt, Hmine, Htok, Hdep', %hge⟩ :
+      (refAuth d n ∗ refTok d ∗ refTok d ∗ arcDeposit γP n ∗ ⌜2 ≤ n⌝)
+      $$ [Hcnt Hled Hmine]
+  · icases Hled with (⟨Htok, Hdep'⟩ | ⟨-, %hz⟩)
+    · ihave #Hge : ⌜2 ≤ n⌝ $$ [Hcnt Htok Hmine]
+      · iapply refTok_two d n
+        isplitl [Hcnt]
+        · iassumption
+        isplitl [Htok] <;> iassumption
+      iframe Hcnt Hmine Htok Hdep' Hge
+    · subst hz
+      iexfalso
+      icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
+      · isplitl [Hcnt] <;> iassumption
+      exact absurd h (Nat.lt_irrefl 0)
+  ihave Hpre : (arcAuth d.arc n m ∗ ⌜2 ≤ n⌝) $$ [Hauth]
+  · iframe Hauth
+    ipureintro; exact hge
+  iaaccintro' with Hpre
+  · iintro Hpre
+    icases Hpre with ⟨Hauth, -⟩
+    imodintro
+    isplitl [Hauth Hcnt Htok Hdep' Hback Hplat Hrest]
+    · unfold arrInvBody arrPhysPart
+      isplitl [Hback Hauth Hcnt Htok Hdep']
+      · iapply Hback
+        iapply arcCell_pack γP d n m
+        iframe Hauth Hcnt
+        unfold arcLedger
+        ileft
+        iframe
+      · iexists s, M, σ
+        iframe
+    · iframe Hmine Hkeep
+      repeat' first | (imodintro; iassumption) | isplitl []
+  · itele_reduce
+    iintro Hauth
+    imod refAuth_give d (n - 1) $$ [Hcnt Hmine] with Hcnt
+    · rw [Nat.sub_add_cancel (by omega)]
+      isplitl [Hcnt] <;> iassumption
+    ihave ⟨Hdep', Hback'⟩ :
+        (arcDeposit γP (n - 1) ∗ rwGuardFrac γP RwLock.Mode.read q1_2) $$ [Hdep']
+    · iapply (arcDeposit_succ γP (n - 1) (by omega)).mp
+      rw [Nat.sub_add_cancel (by omega)]
+      iexact Hdep'
+    imodintro
+    isplitl [Hauth Hcnt Htok Hdep' Hback Hplat Hrest]
+    · unfold arrInvBody arrPhysPart
+      isplitl [Hback Hauth Hcnt Htok Hdep']
+      · iapply Hback
+        iapply arcCell_pack γP d (n - 1) m
+        iframe Hauth Hcnt
+        unfold arcLedger
+        ileft
+        iframe
+      · iexists s, M, σ
+        iframe
+    · iframe Hback' Hkeep
 
 /-- Splice a cell in after `node`.
 
