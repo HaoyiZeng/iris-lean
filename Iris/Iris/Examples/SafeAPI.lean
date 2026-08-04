@@ -297,15 +297,21 @@ class API (GF : BundledGFunctors) [HeapLangGS hlc GF] where
   /-- The borrowing counterpart of `weak_upgrade_spec`, and the one that matches
       Rust: the weak handle survives and the weak count is untouched.  A client
       whose only handle on a node is weak needs this, since consuming the handle
-      to look at the node would leave it with nothing. -/
-  weak_tryUpgrade_spec (γ : name) (w x : Val) (n m : Nat) :
+      to look at the node would leave it with nothing.
+
+      It is also the only one of the two that is *atomic*.  `weak_upgrade` is
+      `weak_tryUpgrade` followed by a weak drop — two linearisation points — so it
+      can never be given an atomic spec, and is therefore unusable once `arcAuth`
+      lives in an invariant. -/
+  weak_tryUpgrade_spec (γ : name) (w x : Val) :
     ⊢@{IProp GF}
-      ⦃ isWeak γ w x ∗ arcAuth γ n m ⦄
-        hl(&weak_tryUpgrade &w)
-      ⦃ r, RET r;
-          (⌜n = 0⌝ ∗ ⌜r = hl_val(none())⌝ ∗ isWeak γ w x ∗ arcAuth γ n m) ∨
-          (⌜n > 0⌝ ∗ ⌜r = hl_val(some(&w))⌝ ∗
-            isWeak γ w x ∗ arcAuth γ (n + 1) m ∗ isArc γ w x) ⦄
+      isWeak γ w x -∗
+      ⟪ ∀ n, ∀ m, arcAuth γ n m ⟫
+        hl(&weak_tryUpgrade &w) @ ∅
+      ⟪ ∃ r, isWeak γ w x ∗
+          ((⌜n = 0⌝ ∗ ⌜r = hl_val(none())⌝ ∗ arcAuth γ 0 m) ∨
+           (⌜n > 0⌝ ∗ ⌜r = hl_val(some(&w))⌝ ∗ arcAuth γ (n + 1) m ∗ isArc γ w x))
+        | RET r ⟫
 
 instance instAPINameInhabited [HeapLangGS hlc GF] [api : API GF] :
     Inhabited api.name :=
@@ -2425,6 +2431,239 @@ private theorem dropWeak_spec (w x : Val) (n m : Nat) :
     iintro Hβ
     iapply HΦ $$ Hβ
 
+/-- Unpack the authority into its physical counters.  A weak handle pins the
+    control block's identity and forces `m > 0`, so both counters really are there
+    — `arcPhysical` degenerates to `True` only at `(0, 0)`. -/
+private theorem arcAuth_weak_split (γ : GName) (ps pw : Loc) (x : Val) (n m : Nat) :
+    iprop(arcAuth γ n m ∗ isWeak γ hl_val(((#ps, #pw), &x)) x) ⊢@{IProp GF}
+      ∃ x₀ : Val, ⌜m > 0⌝ ∗
+        arcPhysical ps pw n m ∗
+        arcStateOwn γ hl_val(((#ps, #pw), &x₀)) x₀ n m ∗
+        arcMetaOwn γ hl_val(((#ps, #pw), &x)) x ∗
+        isWeak γ hl_val(((#ps, #pw), &x)) x := by
+  iintro ⟨Hauth, Hweak⟩
+  ihave Hvalid := (arcAuth_isWeak_valid_l γ n m
+    hl_val(((#ps, #pw), &x)) x) $$ [Hauth Hweak]
+  · isplitl [Hauth] <;> iassumption
+  icases Hvalid with ⟨%Hm, Hresources⟩
+  icases Hresources with ⟨Hauth, Hweak⟩
+  unfold arcAuth isWeak
+  icases Hauth with ⟨%ps₀, %pw₀, %a₀, %x₀, %Ha₀, Hphysical, Hown⟩
+  icases Hweak with ⟨%ps₁, %pw₁, %Hw₁, Hmeta, Htoken⟩
+  ihave Hagree := (Arc.arcStateOwn_meta_agree_l γ a₀
+    hl_val(((#ps, #pw), &x)) x₀ x n m) $$ [Hown Hmeta]
+  · isplitl [Hown] <;> iassumption
+  icases Hagree with ⟨%Hagree, Hresources⟩
+  icases Hresources with ⟨Hown, Hmeta⟩
+  rcases Hagree with ⟨Ha₀eq, Hx₀eq⟩
+  have Hruntime₀ :
+      hl_val(((#ps, #pw), &x)) = hl_val(((#ps₀, #pw₀), &x)) := by
+    calc
+      _ = a₀ := Ha₀eq.symm
+      _ = hl_val(((#ps₀, #pw₀), &x₀)) := Ha₀
+      _ = _ := by rw [Hx₀eq]
+  have ⟨Hps₀, Hpw₀⟩ := Arc.arcControl_injective Hruntime₀
+  subst ps₀
+  subst pw₀
+  subst x₀
+  icases Arc.arcMetaOwn_dup γ hl_val(((#ps, #pw), &x)) x $$ Hmeta with ⟨Hmeta1, Hmeta2⟩
+  iexists x
+  isplit
+  · ipureintro; exact Hm
+  isplitl [Hphysical]
+  · iexact Hphysical
+  isplitl [Hown]
+  · rw [← Ha₀eq]
+    iexact Hown
+  isplitl [Hmeta1]
+  · iexact Hmeta1
+  · iexists ps₁, pw₁
+    isplit
+    · ipureintro; exact Hw₁
+    · iframe
+
+/-- Logically atomic `Weak::upgrade`.
+
+    `tryUpgrade` retries on CAS failure, but it still has a *single* linearisation
+    point — the read that sees `0`, or the successful exchange — so unlike the
+    composite `upgrade` (`tryUpgrade` followed by a weak drop) it can be given an
+    atomic spec at all.  That matters as soon as `arcAuth` lives in an invariant,
+    which is the case for any client whose only handle on a node is weak.
+
+    The retry is also why this cannot be stated as a *one-shot* atomic triple: the
+    failing branch has to hand the update back and go round again. -/
+theorem tryUpgrade_atomic_spec (w x : Val) :
+  ⊢@{IProp GF}
+    isWeak γ w x -∗
+    ⟪ ∀ n, ∀ m, arcAuth γ n m ⟫
+      hl(&tryUpgrade &w) @ ∅
+    ⟪ ∃ r, isWeak γ w x ∗
+        ((⌜n = 0⌝ ∗ ⌜r = hl_val(none())⌝ ∗ arcAuth γ 0 m) ∨
+         (⌜n > 0⌝ ∗ ⌜r = hl_val(some(&w))⌝ ∗ arcAuth γ (n + 1) m ∗ isArc γ w x))
+      | RET r ⟫ := by
+  iintro Hweak %Φ HAU
+  icases isWeak_copyRuntime γ w x $$ Hweak with ⟨Hruntime, Hweak⟩
+  icases Hruntime with ⟨%ps, %pw, %Hw⟩
+  subst w
+  iloeb as IH
+  unfold tryUpgrade Arc.strongPtr
+  wp_rec
+  wp_pures
+  wp_bind !#ps
+  iapply wp_atomic (E2 := ∅)
+  iauopen HAU with ⟨%n, %m, Hauth, Hclose⟩
+  icases arcAuth_weak_split γ ps pw x n m $$ [Hauth Hweak]
+    with ⟨%x₀, %Hm, Hphysical, Hown, Hmeta, Hweak⟩
+  · isplitl [Hauth] <;> iassumption
+  cases m with
+  | zero => omega
+  | succ m =>
+  cases n with
+  | zero =>
+      -- Nothing to upgrade.  The read of `0` *is* the linearisation point, and the
+      -- authority goes back untouched.
+      icases (Arc.arcPhysical_zero_weak ps pw m).mp $$ Hphysical with ⟨Hps, Hpw⟩
+      imodintro
+      iapply wp_load $$ Hps
+      iintro !> Hps
+      icases Hclose with ⟨-, Hcommit⟩
+      imod Hcommit $$ %(hl_val(none())) [Hps Hpw Hown Hweak] with Hcommit
+      · iframe Hweak
+        ileft
+        isplit
+        · itrivial
+        isplit
+        · itrivial
+        · unfold arcAuth
+          iexists ps, pw, hl_val(((#ps, #pw), &x₀)), x₀
+          isplit
+          · ipureintro; rfl
+          · simp only [arcPhysical]
+            iframe
+      imodintro
+      wp_pures
+      simp
+      wp_pures
+      itrivial
+  | succ n =>
+      -- Somebody still holds a strong reference, but the read is not the
+      -- linearisation point: the count may move again before the exchange lands.
+      icases (Arc.arcPhysical_positive ps pw n (m + 1)).mp $$ Hphysical with ⟨Hps, Hpw⟩
+      imodintro
+      iapply wp_load $$ Hps
+      iintro !> Hps
+      icases Hclose with ⟨Habort, -⟩
+      imod Habort $$ [Hps Hpw Hown] with HAU
+      · unfold arcAuth
+        iexists ps, pw, hl_val(((#ps, #pw), &x₀)), x₀
+        isplit
+        · ipureintro; rfl
+        · simp only [arcPhysical]
+          iframe
+      imodintro
+      wp_pures
+      simp
+      have Hzero :
+          (hl_val(#((n : Int) + (1 : Int))) == hl_val(#(0 : Int))) = false := by
+        simp
+        omega
+      rw [Hzero]
+      wp_pures
+      wp_bind cmpXchg(_, _, _)
+      iapply wp_atomic (E2 := ∅)
+      iauopen HAU with ⟨%n', %m', Hauth, Hclose⟩
+      icases arcAuth_weak_split γ ps pw x n' m' $$ [Hauth Hweak]
+        with ⟨%x₁, %Hm', Hphysical, Hown, Hmeta, Hweak⟩
+      · isplitl [Hauth] <;> iassumption
+      imodintro
+      by_cases Hhit : n' = n + 1
+      · -- The exchange lands: this is the linearisation point.
+        subst n'
+        icases (Arc.arcPhysical_positive ps pw n m').mp $$ Hphysical with ⟨Hps, Hpw⟩
+        iapply wp_wand $$ [Hps]
+        · iapply wp_cmpXchg_true rfl rfl $$ Hps <;>
+            simp [Val.compareSafe, Val.isUnboxed, BaseLit.isUnboxed]
+        iintro %v ⟨%Hv, Hps⟩
+        icases Hclose with ⟨-, Hcommit⟩
+        imod Arc.strongAlloc γ hl_val(((#ps, #pw), &x₁)) x₁ (n + 1) m'
+          $$ Hown with ⟨Hown, Hnew⟩
+        imod Hcommit $$ %(hl_val(some(((#ps, #pw), &x)))) [Hps Hpw Hown Hnew Hmeta Hweak]
+          with Hcommit
+        · iframe Hweak
+          iright
+          isplit
+          · ipureintro; omega
+          isplit
+          · itrivial
+          isplitl [Hps Hpw Hown]
+          · unfold arcAuth
+            iexists ps, pw, hl_val(((#ps, #pw), &x₁)), x₁
+            isplit
+            · ipureintro; rfl
+            · simp only [arcPhysical]
+              have Hcounter : (((n + 1 + 1 : Nat)) : Int) = ((n : Int) + 1 + 1) := by
+                omega
+              rw [Hcounter]
+              iframe
+          · unfold isArc
+            iexists ps, pw
+            isplit
+            · ipureintro; rfl
+            · iframe Hmeta Hnew
+        imodintro
+        rw [Hv]
+        wp_pures
+        itrivial
+      · -- Somebody moved the count first: give the update back and retry.
+        cases m' with
+        | zero => omega
+        | succ m' =>
+        cases n' with
+        | zero =>
+            icases (Arc.arcPhysical_zero_weak ps pw m').mp $$ Hphysical
+              with ⟨Hps, Hpw⟩
+            iapply wp_wand $$ [Hps]
+            · iapply wp_cmpXchg_fail rfl rfl $$ Hps
+              · simp [Val.compareSafe, Val.isUnboxed, BaseLit.isUnboxed]
+              · simp
+                omega
+            iintro %v ⟨%Hv, Hps⟩
+            icases Hclose with ⟨Habort, -⟩
+            imod Habort $$ [Hps Hpw Hown] with HAU
+            · unfold arcAuth
+              iexists ps, pw, hl_val(((#ps, #pw), &x₁)), x₁
+              isplit
+              · ipureintro; rfl
+              · simp only [arcPhysical]
+                iframe
+            imodintro
+            rw [Hv]
+            wp_pure
+            wp_pure
+            iapply IH $$ HAU Hweak
+        | succ k =>
+            icases (Arc.arcPhysical_positive ps pw k (m' + 1)).mp $$ Hphysical
+              with ⟨Hps, Hpw⟩
+            iapply wp_wand $$ [Hps]
+            · iapply wp_cmpXchg_fail rfl rfl $$ Hps
+              · simp [Val.compareSafe, Val.isUnboxed, BaseLit.isUnboxed]
+              · simp
+                omega
+            iintro %v ⟨%Hv, Hps⟩
+            icases Hclose with ⟨Habort, -⟩
+            imod Habort $$ [Hps Hpw Hown] with HAU
+            · unfold arcAuth
+              iexists ps, pw, hl_val(((#ps, #pw), &x₁)), x₁
+              isplit
+              · ipureintro; rfl
+              · simp only [arcPhysical]
+                iframe
+            imodintro
+            rw [Hv]
+            wp_pure
+            wp_pure
+            iapply IH $$ HAU Hweak
+
 theorem tryUpgrade_spec (w x : Val) (n m : Nat) :
     ⊢@{IProp GF}
       ⦃ isWeak γ w x ∗ arcAuth γ n m ⦄
@@ -2806,7 +3045,7 @@ noncomputable def instAPI [HeapLangGS hlc GF] [ArcG GF] : API GF where
   weak_clone_spec γ w x := Weak.clone_spec (γ := γ) w x
   weak_drop_spec γ w x := Weak.drop_spec (γ := γ) w x
   weak_upgrade_spec γ w x n m := Weak.upgrade_spec (γ := γ) w x n m
-  weak_tryUpgrade_spec γ w x n m := Weak.tryUpgrade_spec (γ := γ) w x n m
+  weak_tryUpgrade_spec γ w x := Weak.tryUpgrade_atomic_spec (γ := γ) w x
 
 end Arc
 
