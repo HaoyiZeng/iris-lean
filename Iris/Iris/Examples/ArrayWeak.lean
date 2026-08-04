@@ -205,8 +205,12 @@ structure WArrγ where
 section Defs
 variable [WArrG GF H]
 
-def wMetaMap (γ : GName) (M : H WData) : IProp GF :=
-  γ ↪●MAP M
+/-- The metadata map, held at a fraction.  Half stays pinned in the invariant at all
+    times, the other half travels with the list content — so a thread holding the
+    platform exclusively cannot register a cell behind the reference counters' back,
+    and the counters always describe the map the list is actually using. -/
+def wMetaMap (γ : GName) (q : Qp) (M : H WData) : IProp GF :=
+  γ ↪●MAP{DFrac.own q} M
 def wMetaAt (γ : GName) (id : Nat) (d : WData) : IProp GF :=
   γ ↪◯MAP[id]{.discard} d
 
@@ -225,8 +229,8 @@ def refTok (d : WData) : IProp GF := iOwn (F := CntRF) d.cnt (◯ (1 : Credit))
 def refAuth (d : WData) (n : Nat) : IProp GF :=
   iOwn (F := CntRF) d.cnt (● ((n : Nat) : Credit))
 
-instance instWMetaMapTimeless (γ : GName) (M : H WData) :
-    Timeless (wMetaMap (GF := GF) γ M) := by unfold wMetaMap; infer_instance
+instance instWMetaMapTimeless (γ : GName) (q : Qp) (M : H WData) :
+    Timeless (wMetaMap (GF := GF) γ q M) := by unfold wMetaMap; infer_instance
 instance instWMetaAtTimeless (γ : GName) (id : Nat) (d : WData) :
     Timeless (wMetaAt (GF := GF) γ id d) := by unfold wMetaAt; infer_instance
 instance instWStateVarTimeless (γ : GName) (q : Qp) (σ : Arr) (M : H WData) :
@@ -236,12 +240,27 @@ instance instRefTokTimeless (d : WData) :
 instance instRefAuthTimeless (d : WData) (n : Nat) :
     Timeless (refAuth (GF := GF) d n) := by unfold refAuth; infer_instance
 
-theorem wMetaMap_alloc : ⊢@{IProp GF} |==> ∃ γ, wMetaMap γ (∅ : H WData) := by
+theorem wMetaMap_alloc : ⊢@{IProp GF} |==> ∃ γ, wMetaMap γ 1 (∅ : H WData) := by
   unfold wMetaMap
   iapply ghost_map_alloc_empty
 
-theorem wMetaMap_lookup (γ : GName) (M : H WData) (id : Nat) (d : WData) :
-    ⊢@{IProp GF} wMetaMap γ M -∗ wMetaAt γ id d -∗
+theorem wMetaMap_split (γ : GName) (M : H WData) :
+    wMetaMap (GF := GF) γ 1 M ⊣⊢ wMetaMap γ q1_2 M ∗ wMetaMap γ q1_2 M := by
+  unfold wMetaMap ghost_map_auth
+  have hq : DFrac.own (1 : Qp) = DFrac.own q1_2 • DFrac.own q1_2 := by
+    show _ = DFrac.own (q1_2 + q1_2)
+    rw [q1_2_add_q1_2]
+  rw [hq]
+  refine .trans (BI.equiv_iff.mp ?_) (iOwn_op (γ := γ))
+  exact iOwn_ne.eqv HeapView.auth_dfrac_op_eqv
+
+theorem wMetaMap_agree (γ : GName) (q₁ q₂ : Qp) (M₁ M₂ : H WData) :
+    ⊢@{IProp GF} wMetaMap γ q₁ M₁ -∗ wMetaMap γ q₂ M₂ -∗ ⌜M₁ = M₂⌝ := by
+  unfold wMetaMap
+  iapply ghost_map_auth_agree
+
+theorem wMetaMap_lookup (γ : GName) (q : Qp) (M : H WData) (id : Nat) (d : WData) :
+    ⊢@{IProp GF} wMetaMap γ q M -∗ wMetaAt γ id d -∗
       ⌜get? M id = some d⌝ := by
   unfold wMetaMap wMetaAt
   iapply ghost_map_lookup
@@ -262,8 +281,8 @@ theorem wMetaAt_agree (γ : GName) (id : Nat) (d₁ d₂ : WData) :
 
 theorem wMetaMap_insert (γ : GName) (M : H WData) (id : Nat) (d : WData)
     (fresh : get? M id = none) :
-    ⊢@{IProp GF} wMetaMap γ M ==∗
-      wMetaMap γ (Std.insert M id d) ∗ wMetaAt γ id d := by
+    ⊢@{IProp GF} wMetaMap γ 1 M ==∗
+      wMetaMap γ 1 (Std.insert M id d) ∗ wMetaAt γ id d := by
   unfold wMetaMap wMetaAt
   iapply ghost_map_insert_persist id d fresh
 
@@ -289,15 +308,15 @@ theorem wMetaMap_insert_counter_dom (M : H WData) (counter : Nat) (d : WData)
 
 theorem wMetaMap_insert_counter (γ : GName) (M : H WData) (counter : Nat) (d : WData)
     (hdom : ∀ id, dom M id ↔ id < counter) :
-    ⊢@{IProp GF} wMetaMap γ M ==∗
-      wMetaMap γ (Std.insert M counter d) ∗ wMetaAt γ counter d := by
+    ⊢@{IProp GF} wMetaMap γ 1 M ==∗
+      wMetaMap γ 1 (Std.insert M counter d) ∗ wMetaAt γ counter d := by
   iapply wMetaMap_insert γ M counter d (wMetaMap_counter_fresh M counter hdom)
 
-theorem wMetaMap_lookup_lt (γ : GName) (M : H WData) (counter id : Nat) (d : WData)
+theorem wMetaMap_lookup_lt (γ : GName) (q : Qp) (M : H WData) (counter id : Nat) (d : WData)
     (hdom : ∀ id, dom M id ↔ id < counter) :
-    ⊢@{IProp GF} wMetaMap γ M -∗ wMetaAt γ id d -∗ ⌜id < counter⌝ := by
+    ⊢@{IProp GF} wMetaMap γ q M -∗ wMetaAt γ id d -∗ ⌜id < counter⌝ := by
   iintro HM Hid
-  ihave %hlookup := wMetaMap_lookup γ M id d $$ HM Hid
+  ihave %hlookup := wMetaMap_lookup γ q M id d $$ HM Hid
   ipureintro
   exact (hdom id).mp (by simp [dom, hlookup])
 
@@ -437,24 +456,14 @@ noncomputable section
 /-- The array invariant's namespace. -/
 def arrN : Namespace := ndot nroot "wlist"
 
-/-- Every cell's reference counts live here, in a namespace of their own.  They are
-    deliberately *not* under the platform lock: duplicating a weak handle takes no
-    lock at all, so `arcAuth` has to be reachable while another thread holds the
-    platform exclusively.  One namespace serves every cell — no two cells' counts
-    are ever needed at the same time. -/
-def arcN : Namespace := ndot nroot "wlistarc"
-
-theorem arcN_disjoint : (↑arcN : CoPset) ## (↑arrN : CoPset) :=
-  ndot_ne_disjoint nroot (by decide : "wlistarc" ≠ "wlist")
-
 /-- `k + 1` halves.  Used to size the read-permit deposit below; `Qp` is strictly
     positive, so there is no `0` case. -/
 def qHalvesSucc : Nat → Qp
   | 0 => q1_2
   | k + 1 => qHalvesSucc k + q1_2
 
-/-- The platform read credit parked in a cell's reference-count invariant: half a
-    permit for every reference beyond the one the list itself holds.
+/-- The platform read credit parked in a cell's reference-count ledger: half a permit
+    for every reference beyond the one the list itself holds.
 
     This is the crux of the design.  Reference counts have to live *outside* the
     platform lock, because duplicating a weak handle takes no lock at all.  But
@@ -476,8 +485,8 @@ instance instArcDepositTimeless (γP : GName) (n : Nat) :
   | 1 => unfold arcDeposit; infer_instance
   | _ + 2 => unfold arcDeposit; infer_instance
 
-/-- Taking on one more reference costs half a read permit — for every count at which
-    a reference can actually be taken on. -/
+/-- Taking on one more reference costs half a read permit — at every count at which a
+    reference can actually be taken on. -/
 theorem arcDeposit_succ (γP : GName) (n : Nat) (h : 1 ≤ n) :
     arcDeposit (GF := GF) γP (n + 1) ⊣⊢
       arcDeposit γP n ∗ rwGuardFrac γP RwLock.Mode.read q1_2 := by
@@ -499,29 +508,62 @@ theorem arcDeposit_read (γP : GName) (n : Nat) (h : 2 ≤ n) :
       iexists (qHalvesSucc k)
       iexact H
 
-/-- A cell's reference counts, in an invariant of their own.
+/-- One cell's reference-count ledger.
 
-    `arcAuth γ 0 m` owns no memory, so this body stays true after the cell is freed
-    and the invariant never has to be torn down — which is what lets revocation
-    actually deallocate.
+    `arcAuth γ 0 m` owns no memory, so this stays true after the cell is freed and
+    nothing ever has to be torn down — which is what lets revocation actually
+    deallocate.
 
     The disjunction is the ledger.  While the cell is in the list, the list's own
     reference is represented by the `refTok` held *here*; a thread holding a
     temporary reference holds a second one, so `refTok_two` tells it its drop is not
     the last.  Once the cell has been revoked the count is zero for good, and
-    `cellDead` records that so a stale weak handle can be shown to fail to
+    `cellDead` records that, so a stale weak handle can be shown to fail to
     upgrade. -/
-def arcInvBody (γP : GName) (d : WData) : IProp GF := iprop%
+def arcCell (γP : GName) (d : WData) : IProp GF := iprop%
   ∃ n m : Nat, arcAuth d.arc n m ∗ refAuth d n ∗
     ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝))
 
-instance instArcInvBodyTimeless (γP : GName) (d : WData) :
-    Timeless (arcInvBody (GF := GF) γP d) := by unfold arcInvBody; infer_instance
+instance instArcCellTimeless (γP : GName) (d : WData) :
+    Timeless (arcCell (GF := GF) γP d) := by unfold arcCell; infer_instance
 
-def isArcInv (γP : GName) (d : WData) : IProp GF := inv arcN (arcInvBody γP d)
+/-- Every allocated cell's ledger, indexed by the metadata map.
 
-instance instIsArcInvPersistent (γP : GName) (d : WData) :
-    Persistent (isArcInv (GF := GF) γP d) := by unfold isArcInv; infer_instance
+    This is the half of the array invariant that does **not** depend on the platform
+    lock: duplicating a weak handle takes no lock, so the counts have to be reachable
+    while another thread holds the platform exclusively.  Keeping it in the *same*
+    invariant as the physical state is what makes `arcDeposit`'s argument work —
+    opening the invariant once yields both the count and the platform's lock
+    state. -/
+def arcNodes (γP : GName) (M : H WData) : IProp GF := iprop%
+  [∗map] id ↦ d ∈ M, arcCell γP d
+
+instance instArcNodesTimeless (γP : GName) (M : H WData) :
+    Timeless (arcNodes (GF := GF) (H := H) γP M) := by
+  unfold arcNodes
+  exact BigSepM.bigSepM_timeless (M := H)
+    (Φ := fun (_ : Nat) (e : WData) => arcCell (GF := GF) γP e)
+    (fun {_} {_} _ => inferInstance)
+
+theorem arcNodes_acc (γP : GName) (M : H WData) (id : Nat) (d : WData)
+    (hlookup : get? M id = some d) :
+    arcNodes (GF := GF) γP M ⊢ arcCell γP d ∗ (arcCell γP d -∗ arcNodes γP M) :=
+  (BigSepM.bigSepM_lookup_acc (M := H)
+    (Φ := fun (_ : Nat) (e : WData) => arcCell (GF := GF) γP e) hlookup).mp
+
+theorem arcNodes_insert (γP : GName) (M : H WData) (id : Nat) (d : WData)
+    (hfresh : get? M id = none) :
+    arcNodes (GF := GF) γP M ∗ arcCell γP d ⊢ arcNodes γP (Std.insert M id d) := by
+  unfold arcNodes
+  refine .trans ?_ (BigSepM.bigSepM_insert (M := H)
+    (Φ := fun (_ : Nat) (e : WData) => arcCell (GF := GF) γP e) hfresh).mpr
+  iintro ⟨H₁, H₂⟩
+  iframe
+
+theorem arcNodes_empty (γP : GName) :
+    ⊢@{IProp GF} arcNodes (H := H) γP ∅ :=
+  (BigSepM.bigSepM_eqv_empty (M := H)
+    (Φ := fun (_ : Nat) (e : WData) => arcCell (GF := GF) γP e) rfl).mpr
 
 /-- Cells that have left the list are dead.  Persistent, so unlike `Array`'s
     retired-cell table this costs nothing to carry around: a revoked cell leaves no
@@ -634,44 +676,124 @@ abbrev aliveSlot (slot : Slot (H := H) GF) (γ : GName) (d : WData) (nxt : Optio
 /-- The chain.  There is no companion big-op over retired cells: a cell that leaves
     the list is freed, and all that remains of it is `arcAuth _ 0 _` inside its own
     invariant. -/
-def isGhostHelp (γP : GName) (slot : Slot (H := H) GF) (γ : GName)
+def isGhostHelp (slot : Slot (H := H) GF) (γ : GName)
     (tail : Option Nat) : List (Nat × Int) → IProp GF
   | [] => iprop% emp
   | (id, x) :: cells => iprop%
       ∃ d : WData,
-        ⌜x = d.val⌝ ∗ wMetaAt γ id d ∗ isArcInv γP d ∗
+        ⌜x = d.val⌝ ∗ wMetaAt γ id d ∗
         aliveSlot slot γ d (nextIdOr cells tail) ∗
-        isGhostHelp γP slot γ tail cells
+        isGhostHelp slot γ tail cells
 
-def isGhost (γP : GName) (slot : Slot (H := H) GF) (γ : GName)
+def isGhost (slot : Slot (H := H) GF) (γ : GName)
     (cells : List (Nat × Int)) : IProp GF :=
-  isGhostHelp γP slot γ none cells
+  isGhostHelp slot γ none cells
 
-def arrContentAt (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) : IProp GF := iprop%
-  wMetaMap γ.l M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
-  deadNodes M σ.cells ∗ isGhost γP nodeSlotExclusive γ.l σ.cells
+/-- "This slot interpretation is timeless whenever the resources it is applied to
+    are."  Has to be a class: Lean's instance search does not look through a `∀`. -/
+class SlotTimeless (slot : Slot (H := H) GF) : Prop where
+  out : ∀ (d : WData) (C : Qp → IProp GF) (P : IProp GF),
+    (∀ q, Timeless (C q)) → Timeless P → Timeless (slot d C P)
 
-def arrContent (γ : WArrγ) (γP : GName) (σ : Arr) : IProp GF := iprop%
-  ∃ M : H WData, arrContentAt γ γP M σ
+instance instNodeSlotSharedBodyTimeless (γP : GName) (C : Qp → IProp GF) (P : IProp GF)
+    [∀ q, Timeless (C q)] [Timeless P] (s : RwLock.State) :
+    Timeless (nodeSlotSharedBody (GF := GF) γP C P s) := by
+  cases s <;> simp only [nodeSlotSharedBody] <;> infer_instance
+
+instance instNodeSlotSharedTimeless (γP : GName) (d : WData)
+    (C : Qp → IProp GF) (P : IProp GF) [∀ q, Timeless (C q)] [Timeless P] :
+    Timeless (nodeSlotShared (GF := GF) γP d C P) := by
+  unfold nodeSlotShared; infer_instance
+
+instance instNodeSlotExclusiveTimeless (d : WData)
+    (C : Qp → IProp GF) (P : IProp GF) [∀ q, Timeless (C q)] [Timeless P] :
+    Timeless (nodeSlotExclusive (GF := GF) d C P) := by
+  unfold nodeSlotExclusive; infer_instance
+
+instance instNodeSlotSharedSlotTimeless (γP : GName) :
+    SlotTimeless (H := H) (nodeSlotShared (GF := GF) γP) :=
+  ⟨fun _ _ _ hC hP => by haveI := hC; haveI := hP; infer_instance⟩
+
+instance instNodeSlotExclusiveSlotTimeless :
+    SlotTimeless (GF := GF) (H := H) nodeSlotExclusive :=
+  ⟨fun _ _ _ hC hP => by haveI := hC; haveI := hP; infer_instance⟩
+
+instance instAliveSlotTimeless (slot : Slot (H := H) GF) [inst : SlotTimeless slot]
+    (γ : GName) (d : WData) (nxt : Option Nat) :
+    Timeless (aliveSlot slot γ d nxt) :=
+  inst.out d _ _ (fun _ => inferInstance) inferInstance
+
+instance instIsGhostHelpTimeless (slot : Slot (H := H) GF)
+    [inst : SlotTimeless slot] (γ : GName) (tail : Option Nat) :
+    ∀ cells, Timeless (isGhostHelp slot γ tail cells)
+  | [] => by unfold isGhostHelp; infer_instance
+  | (_, _) :: cs => by
+      have := instIsGhostHelpTimeless slot (inst := inst) γ tail cs
+      unfold isGhostHelp
+      infer_instance
+
+instance instIsGhostTimeless (slot : Slot (H := H) GF)
+    [inst : SlotTimeless slot] (γ : GName) (cells : List (Nat × Int)) :
+    Timeless (isGhost slot γ cells) := by
+  unfold isGhost
+  exact instIsGhostHelpTimeless slot (inst := inst) γ none cells
+
+def arrContentAt (γ : WArrγ) (M : H WData) (σ : Arr) : IProp GF := iprop%
+  wMetaMap γ.l q1_2 M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
+  deadNodes M σ.cells ∗ isGhost nodeSlotExclusive γ.l σ.cells
+
+def arrContent (γ : WArrγ) (σ : Arr) : IProp GF := iprop%
+  ∃ M : H WData, arrContentAt γ M σ
 
 def arrShared (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) : IProp GF := iprop%
-  wMetaMap γ.l M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
-  deadNodes M σ.cells ∗ isGhost γp (nodeSlotShared γp) γ.l σ.cells
+  wMetaMap γ.l q1_2 M ∗ ⌜σ.wellFormed⌝ ∗ ⌜∀ id, dom M id ↔ id < σ.counter⌝ ∗
+  deadNodes M σ.cells ∗ isGhost (nodeSlotShared γp) γ.l σ.cells
 
 def isPhysical (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) :
     RwLock.State → IProp GF
   | .write  => iprop% emp
   | .read _ => iprop% arrShared γ γp M σ ∗ wStateVar γ.s q3_4 σ M
-  | .free   => iprop% arrContentAt γ γp M σ ∗ wStateVar γ.s q3_4 σ M
+  | .free   => iprop% arrContentAt γ M σ ∗ wStateVar γ.s q3_4 σ M
 
 def isPlatform (ρ : GName) (s : RwLock.State) (platform : Val) : IProp GF := iprop%
   ∃ α : GName, ∃ gate : Val, ∃ cell : Loc,
     arcHasStrong α ∗ isArc α platform gate ∗
     isRwLock ρ gate s hl_val(#cell) ∗ cell ↦ hl_val(#())
 
-def arrInvBody (γ : WArrγ) (γp : GName) (platform : Val) : IProp GF := iprop%
+instance instArrContentAtTimeless (γ : WArrγ) (M : H WData) (σ : Arr) :
+    Timeless (arrContentAt (GF := GF) γ M σ) := by unfold arrContentAt; infer_instance
+instance instArrContentTimeless (γ : WArrγ) (σ : Arr) :
+    Timeless (arrContent (GF := GF) γ σ) := by unfold arrContent; infer_instance
+instance instArrSharedTimeless (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) :
+    Timeless (arrShared (GF := GF) γ γp M σ) := by unfold arrShared; infer_instance
+instance instIsPhysicalTimeless (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr)
+    (s : RwLock.State) :
+    Timeless (isPhysical (GF := GF) γ γp M σ s) := by
+  cases s <;> simp only [isPhysical] <;> infer_instance
+instance instIsPlatformTimeless (ρ : GName) (s : RwLock.State) (platform : Val) :
+    Timeless (isPlatform (GF := GF) ρ s platform) := by unfold isPlatform; infer_instance
+
+/-- The half of the invariant the platform lock does not touch. -/
+def arcPart (γ : WArrγ) (γP : GName) : IProp GF := iprop%
+  ∃ M : H WData, wMetaMap γ.l q1_2 M ∗ arcNodes γP M
+
+/-- …and the half it does. -/
+def arrPhysPart (γ : WArrγ) (γp : GName) (platform : Val) : IProp GF := iprop%
   ∃ s : RwLock.State, ∃ M : H WData, ∃ σ : Arr,
     isPlatform γp s platform ∗ isPhysical γ γp M σ s
+
+/-- Splitting the body vertically rather than putting the counts in an invariant of
+    their own is what keeps everything timeless — an invariant nested inside an
+    invariant body is not, and `aacc_inv` needs it to be. -/
+def arrInvBody (γ : WArrγ) (γp : GName) (platform : Val) : IProp GF := iprop%
+  arcPart γ γp ∗ arrPhysPart γ γp platform
+
+instance instArcPartTimeless (γ : WArrγ) (γP : GName) :
+    Timeless (arcPart (GF := GF) γ γP) := by unfold arcPart; infer_instance
+instance instArrPhysPartTimeless (γ : WArrγ) (γp : GName) (platform : Val) :
+    Timeless (arrPhysPart (GF := GF) γ γp platform) := by unfold arrPhysPart; infer_instance
+instance instArrInvBodyTimeless (γ : WArrγ) (γp : GName) (platform : Val) :
+    Timeless (arrInvBody (GF := GF) γ γp platform) := by unfold arrInvBody; infer_instance
 
 def isArrInv (γ : WArrγ) (γp : GName) (platform : Val) : IProp GF :=
   inv arrN (arrInvBody γ γp platform)
@@ -685,25 +807,26 @@ def arrFrag (γ : WArrγ) (σ : Arr) : IProp GF := iprop%
 
 /-- A list that has not been handed to a platform yet. -/
 def Arr.isList (γ : WArrγ) (γP : GName) (σ : Arr) : IProp GF := iprop%
-  ∃ M : H WData, arrContentAt γ γP M σ ∗ wStateVar γ.s 1 σ M
+  ∃ M : H WData,
+    wMetaMap γ.l q1_2 M ∗ arcNodes γP M ∗ arrContentAt γ M σ ∗ wStateVar γ.s 1 σ M
 
 /-- Persistent knowledge that `id` names the cell described by `d`. -/
-def Arr.isNode (γ : WArrγ) (γP : GName) (id : Nat) (d : WData) : IProp GF := iprop%
-  wMetaAt γ.l id d ∗ isArcInv γP d
+def Arr.isNode (γ : WArrγ) (id : Nat) (d : WData) : IProp GF := iprop%
+  wMetaAt γ.l id d
 
-instance instIsNodePersistent (γ : WArrγ) (γP : GName) (id : Nat) (d : WData) :
-    Persistent (Arr.isNode (GF := GF) (H := H) γ γP id d) := by
+instance instIsNodePersistent (γ : WArrγ) (id : Nat) (d : WData) :
+    Persistent (Arr.isNode (GF := GF) (H := H) γ id d) := by
   unfold Arr.isNode; infer_instance
 
 /-- A client's handle: **weak**.  Holding one does not keep the cell alive, which is
     exactly why revocation can free it. -/
-def Arr.isId (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) : IProp GF := iprop%
-  ∃ d : WData, Arr.isNode γ γP id d ∗ isWeak d.arc node d.mux
+def Arr.isId (γ : WArrγ) (node : Val) (id : Nat) : IProp GF := iprop%
+  ∃ d : WData, Arr.isNode γ id d ∗ isWeak d.arc node d.mux
 
 /-- The strong reference to the root, held by whoever called `init`.  Nothing inside
     the list owns it: dropping it frees the whole list. -/
-def Arr.isRoot (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) : IProp GF := iprop%
-  ∃ d : WData, Arr.isNode γ γP id d ∗ isArc d.arc node d.mux
+def Arr.isRoot (γ : WArrγ) (node : Val) (id : Nat) : IProp GF := iprop%
+  ∃ d : WData, Arr.isNode γ id d ∗ isArc d.arc node d.mux
 
 end
 
@@ -751,8 +874,8 @@ theorem platformNew_spec :
   omega
 
 /-- Allocate a cell.  Ownership of the successor link is moved in; what comes back
-    holds the only strong reference to the new cell, and the reference-count
-    invariant has been installed. -/
+    holds the only strong reference to the new cell, and its ledger entry, ready to
+    be added to `arcNodes`. -/
 theorem new_spec (γ : GName) (γP : GName) (x : Int) (next : Val) (nxt : Option Nat) :
   ⊢@{IProp GF}
     ⦃ match nxt with
@@ -762,7 +885,7 @@ theorem new_spec (γ : GName) (γP : GName) (x : Int) (next : Val) (nxt : Option
     ⦃ node, RET node;
       ∃ d : WData,
         ⌜x = d.val⌝ ∗
-        isArcInv γP d ∗
+        arcCell γP d ∗
         isArc d.arc node d.mux ∗
         isRwLock d.rw d.mux .free hl_val(#d.ptr) ∗
         cellAlive d.cell 1 nxt ∗
@@ -785,8 +908,8 @@ theorem new_spec (γ : GName) (γP : GName) (x : Int) (next : Val) (nxt : Option
   iintro %a !> ⟨%γarc, Hauth, Harc⟩
   imod cellAlive_alloc nxt with ⟨%γcell, Hcell⟩
   imod refAuth_alloc_one with ⟨%γcnt, Hcnt, Htok⟩
-  ihave Hbody : arcInvBody γP ⟨⟨γarc, γrw, γcell, l, p, x⟩, γcnt⟩ $$ [Hauth Hcnt Htok]
-  · unfold arcInvBody refAuth refTok
+  ihave Hbody : arcCell γP ⟨⟨γarc, γrw, γcell, l, p, x⟩, γcnt⟩ $$ [Hauth Hcnt Htok]
+  · unfold arcCell refAuth refTok
     iexists 1, 0
     iframe Hauth Hcnt
     ileft
@@ -794,16 +917,13 @@ theorem new_spec (γ : GName) (γP : GName) (x : Int) (next : Val) (nxt : Option
     · iexact Htok
     · unfold arcDeposit
       itrivial
-  imod inv_alloc arcN ⊤ (arcInvBody γP ⟨⟨γarc, γrw, γcell, l, p, x⟩, γcnt⟩)
-    $$ Hbody with #Hinv
   imodintro
   iapply HΦ
   iexists ⟨⟨γarc, γrw, γcell, l, p, x⟩, γcnt⟩
   isplit
   · ipureintro; rfl
-  isplitl []
-  · unfold isArcInv
-    iexact Hinv
+  isplitl [Hbody]
+  · iexact Hbody
   isplitl [Harc]
   · iexact Harc
   iframe Hlock Hcell
@@ -827,7 +947,7 @@ theorem init_spec (γP : GName) (x : Int) :
     ⦃ True ⦄
       hl(&init #x)
     ⦃ root, RET root;
-      ∃ γ : WArrγ, Arr.isList γ γP (Arr.init x) ∗ Arr.isRoot γ γP root 0 ⦄ := by
+      ∃ γ : WArrγ, Arr.isList γ γP (Arr.init x) ∗ Arr.isRoot γ root 0 ⦄ := by
   iintro %Φ - HΦ
   iapply wp_fupd
   unfold init
@@ -835,18 +955,25 @@ theorem init_spec (γP : GName) (x : Int) :
   imod wMetaMap_alloc with ⟨%γl, HM⟩
   iapply new_spec γl γP x hl_val(none()) none
   · ipureintro; rfl
-  iintro %root !> ⟨%d, %hval, #Hinv, Harc, Hlock, Hcell, Hpay⟩
+  iintro %root !> ⟨%d, %hval, Hcnt, Harc, Hlock, Hcell, Hpay⟩
   subst hval
   imod wMetaMap_insert γl (∅ : H WData) 0 d (by simp [get?_empty]) $$ HM with ⟨HM, #Hat⟩
   imod wStateVar_alloc (Arr.init d.val) (Std.insert (∅ : H WData) 0 d) with ⟨%γs, Hstate⟩
   imodintro
   iapply HΦ
   iexists ⟨γl, γs⟩
-  isplitl [HM Hstate Hlock Hcell Hpay]
+  icases (wMetaMap_split γl (Std.insert (∅ : H WData) 0 d)).mp $$ HM with ⟨HM₁, HM₂⟩
+  isplitl [HM₁ HM₂ Hstate Hcnt Hlock Hcell Hpay]
   · unfold Arr.isList arrContentAt Arr.init
     iexists (Std.insert (∅ : H WData) 0 d)
-    isplitl [HM Hlock Hcell Hpay]
-    · iframe HM
+    iframe HM₁
+    isplitl [Hcnt]
+    · iapply arcNodes_insert γP (∅ : H WData) 0 d (get?_empty 0)
+      isplitl []
+      · iapply arcNodes_empty
+      · iexact Hcnt
+    isplitl [HM₂ Hlock Hcell Hpay]
+    · iframe HM₂
       isplit
       · ipureintro; exact Arr.init_wellFormed d.val
       isplit
@@ -861,9 +988,6 @@ theorem init_spec (γP : GName) (x : Int) :
         isplit
         · ipureintro; rfl
         iframe Hat
-        isplitl []
-        · unfold isArcInv
-          iexact Hinv
         isplitl [Hlock Hcell Hpay]
         · unfold aliveSlot nodeSlotExclusive nextIdOr
           iframe Hlock Hcell Hpay
@@ -874,40 +998,69 @@ theorem init_spec (γP : GName) (x : Int) :
     dsimp only []
     iexists d
     iframe Harc
-    isplitl []
-    · iexact Hat
-    · unfold isArcInv
-      iexact Hinv
+    iexact Hat
 
-/-- Take a weak handle on a cell the caller owns outright.  No lock is involved:
-    the reference counts are not under the platform lock, which is the whole point
-    of putting them in their own invariant. -/
-theorem handle_spec (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) :
+/-- Reach one cell's ledger through the invariant body.  `Arr.isNode` is persistent
+    and the map is half-pinned in the invariant, so this needs nothing but the
+    handle. -/
+theorem arcPart_acc (γ : WArrγ) (γP : GName) (id : Nat) (d : WData) :
   ⊢@{IProp GF}
-    ⦃ Arr.isRoot γ γP node id ⦄
+    arcPart γ γP -∗ Arr.isNode γ id d -∗
+      arcCell γP d ∗ (arcCell γP d -∗ arcPart γ γP) := by
+  iintro Hpart #Hnode
+  iunfold arcPart at Hpart
+  icases Hpart with ⟨%M, HM, Hnodes⟩
+  iunfold Arr.isNode at Hnode
+  ihave #Hlookup : ⌜get? M id = some d⌝ $$ [HM Hnode]
+  · iapply wMetaMap_lookup γ.l q1_2 M id d $$ HM Hnode
+  icases Hlookup with %hlookup
+  icases arcNodes_acc γP M id d hlookup $$ Hnodes with ⟨Hcell, Hback⟩
+  iframe Hcell
+  iintro Hcell
+  unfold arcPart
+  iexists M
+  iframe HM
+  iapply Hback $$ Hcell
+
+/-- Reassemble the invariant body from its two halves. -/
+theorem arrInvBody_intro (γ : WArrγ) (γP : GName) (platform : Val) :
+  ⊢@{IProp GF}
+    arcPart γ γP -∗ arrPhysPart γ γP platform -∗ arrInvBody γ γP platform := by
+  iintro H₁ H₂
+  unfold arrInvBody
+  iframe
+
+/-- Take a weak handle on a cell the caller owns outright.  No *platform* lock is
+    involved: the counts sit in the half of the invariant the platform lock does not
+    govern, so this works even while another thread holds the list exclusively. -/
+theorem handle_spec (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
+  ⊢@{IProp GF}
+    isArrInv γ γP platform -∗
+    ⦃ Arr.isRoot γ node id ⦄
       hl(&handle &node)
     ⦃ w, RET w;
-      Arr.isRoot γ γP node id ∗ Arr.isId γ γP w id ⦄ := by
-  iintro %Φ Hroot HΦ
+      Arr.isRoot γ node id ∗ Arr.isId γ w id ⦄ := by
+  iintro #Hinv %Φ Hroot HΦ
   iunfold Arr.isRoot at Hroot
   icases Hroot with ⟨%d, #Hnode, Harc⟩
-  ihave #Hinv : isArcInv γP d $$ [Hnode]
-  · iunfold Arr.isNode at Hnode
-    icases Hnode with ⟨-, Hinv⟩
-    iexact Hinv
   unfold handle
   wp_pures
   iapply Arc.downgrade_spec (γ := d.arc) node d.mux $$ Harc
-  iunfold isArcInv at Hinv
+  iunfold isArrInv at Hinv
   iauintro
   iinv Hinv as Hbody
-  iunfold arcInvBody at Hbody
-  icases Hbody with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  iunfold arcCell at Hcell
+  icases Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
   iaaccintro' with Hauth
   · iintro Hauth
     imodintro
-    isplitl [Hauth Hcnt Hled]
-    · unfold arcInvBody
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      unfold arcCell
       iexists n, m
       iframe
     · iframe
@@ -915,8 +1068,10 @@ theorem handle_spec (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) :
   · itele_reduce
     iintro ⟨Hauth, Harc, Hweak⟩
     imodintro
-    isplitl [Hauth Hcnt Hled]
-    · unfold arcInvBody
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      unfold arcCell
       iexists n, (m + 1)
       iframe
     · iapply HΦ
@@ -945,6 +1100,254 @@ variable {H : Type → Type}
 variable {GF : BundledGFunctors} [LawfulFiniteMap H Nat]
 variable [HeapLangGS hlc GF] [RwLockG GF] [ArcG GF] [ArrG GF H] [WArrG GF H]
 
+/-! ### Moving the chain between the exclusive and the shared view
+
+A cell's slot looks different depending on whether the platform is held exclusively
+(nobody else can be part-way through anything) or shared (somebody might be).  These
+lemmas are the two directions; the interesting one is `…Upgrade`, which uses the
+platform lock itself to rule out the intermediate states. -/
+
+theorem nodeSlotSharedUpgrade (γP : GName) (d : WData) (C : Qp → IProp GF) (P : IProp GF)
+    (mux ptr : Val) :
+  ⊢@{IProp GF}
+    nodeSlotShared γP d C P -∗ isRwLock γP mux .free ptr -∗
+      nodeSlotExclusive d C P ∗ isRwLock γP mux .free ptr := by
+  iintro Hslot Hlock
+  unfold nodeSlotShared nodeSlotExclusive
+  icases Hslot with ⟨%s, H1, H2⟩
+  rcases s with ⟨h1 | h2 | h3⟩ <;> dsimp only [nodeSlotSharedBody]
+  · icases H2 with ⟨HP, HC⟩
+    iframe
+  · iframe
+    iexfalso
+    itrivial
+  · icases H2 with ⟨Hg, HC⟩
+    ihave Hf := (RwLock.rwGuardFrac_valid) $$ [Hlock Hg]
+    iframe Hlock Hg
+    icases Hf with %Hf
+    cases Hf
+
+theorem isGhostHelpUpgrade (γP : GName) (γ : GName) (tail : Option Nat)
+    (mux ptr : Val) (cells : List (Nat × Int)) :
+  ⊢@{IProp GF}
+    isGhostHelp (nodeSlotShared γP) γ tail cells -∗
+    isRwLock γP mux .free ptr -∗
+      isGhostHelp nodeSlotExclusive γ tail cells ∗ isRwLock γP mux .free ptr := by
+  induction cells with
+  | nil =>
+      simp only [isGhostHelp]
+      iintro Hempty Hlock
+      iframe
+  | cons cell cells ih =>
+      simp only [isGhostHelp]
+      iintro Hghost Hlock
+      icases Hghost with ⟨%d, Hd, Hmeta, Hslot, Hrest⟩
+      ihave Hslot' := nodeSlotSharedUpgrade γP d _ _ mux ptr $$ Hslot Hlock
+      icases Hslot' with ⟨Hslot, Hlock⟩
+      ihave Hrest' := ih $$ Hrest Hlock
+      icases Hrest' with ⟨Hrest, Hlock⟩
+      iframe
+      iexists d
+      iframe
+
+theorem nodeSlotExclusiveDowngrad (γP : GName) (d : WData) (C : Qp → IProp GF) (P : IProp GF) :
+    nodeSlotExclusive d C P ⊢@{IProp GF} nodeSlotShared γP d C P := by
+  unfold nodeSlotExclusive nodeSlotShared
+  iintro H
+  icases H with ⟨Hlock, HC, HP⟩
+  iexists .free
+  dsimp only [nodeSlotSharedBody]
+  iframe
+
+theorem isGhostHelpDowngrad (γP : GName) (γ : GName) (tail : Option Nat)
+    (cells : List (Nat × Int)) :
+    isGhostHelp (H := H) nodeSlotExclusive γ tail cells ⊢@{IProp GF}
+      isGhostHelp (nodeSlotShared γP) γ tail cells := by
+  induction cells with
+  | nil => simp only [isGhostHelp]; iintro H; iexact H
+  | cons cell cells ih =>
+      simp only [isGhostHelp]
+      iintro H
+      icases H with ⟨%d, Hd, Hmeta, Hslot, Hrest⟩
+      iexists d
+      iframe
+      isplitl [Hslot]
+      · iapply nodeSlotExclusiveDowngrad γP $$ Hslot
+      · iapply ih $$ Hrest
+
+theorem arrSharedUpgrade (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) (mux ptr : Val) :
+  ⊢@{IProp GF}
+    arrShared γ γP M σ -∗ isRwLock γP mux .free ptr -∗
+      arrContentAt γ M σ ∗ isRwLock γP mux .free ptr := by
+  unfold arrShared arrContentAt isGhost
+  iintro H Hlock
+  icases H with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  ihave Hres := isGhostHelpUpgrade γP γ.l none mux ptr σ.cells $$ Hghost Hlock
+  icases Hres with ⟨Hghost, Hlock⟩
+  iframe HM Hlock Hghost Hdead
+  isplit
+  · ipureintro; exact hwf
+  · ipureintro; exact hdom
+
+theorem arrContentAtDowngrad (γ : WArrγ) (γP : GName) (M : H WData) (σ : Arr) :
+    arrContentAt γ M σ ⊢@{IProp GF} arrShared γ γP M σ := by
+  unfold arrShared arrContentAt isGhost
+  iintro H
+  icases H with ⟨HM, %hwf, %hdom, #Hdead, Hghost⟩
+  iframe HM Hdead
+  isplit
+  · ipureintro; exact hwf
+  isplit
+  · ipureintro; exact hdom
+  · iapply isGhostHelpDowngrad γP γ.l none σ.cells $$ Hghost
+
+/-! ### The platform lock's effect on the invariant body -/
+
+theorem isPhysical_read_acquire_first (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) :
+    isPhysical γ γp M σ .free ⊢@{IProp GF} isPhysical γ γp M σ (.read 1) := by
+  simp only [isPhysical]
+  iintro H
+  icases H with ⟨Hcontent, Hstate⟩
+  iframe Hstate
+  iapply arrContentAtDowngrad γ γp M σ $$ Hcontent
+
+theorem isPhysical_read_acquire_more (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) (n : Nat) :
+    isPhysical γ γp M σ (.read n) ⊢@{IProp GF} isPhysical γ γp M σ (.read (n + 1)) := .rfl
+
+theorem isPhysical_read_release_nonlast (γ : WArrγ) (γp : GName) (M : H WData)
+    (σ : Arr) (n : Nat) :
+    isPhysical γ γp M σ (.read (n + 1)) ⊢@{IProp GF} isPhysical γ γp M σ (.read n) := .rfl
+
+theorem isPhysical_read_release_last (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr)
+    (mux ptr : Val) :
+  ⊢@{IProp GF}
+    isPhysical γ γp M σ (.read 1) -∗ isRwLock γp mux .free ptr -∗
+      isPhysical γ γp M σ .free ∗ isRwLock γp mux .free ptr := by
+  simp only [isPhysical]
+  iintro H Hlock
+  icases H with ⟨Hshared, Hstate⟩
+  ihave Hres := arrSharedUpgrade γ γp M σ mux ptr $$ Hshared Hlock
+  icases Hres with ⟨Hcontent, Hlock⟩
+  iframe
+
+theorem isPhysical_write_acquire (γ : WArrγ) (γp : GName) (M : H WData) (σ : Arr) :
+    isPhysical γ γp M σ .free ⊢@{IProp GF}
+      (arrContentAt γ M σ ∗ wStateVar γ.s q3_4 σ M) ∗ isPhysical γ γp M σ .write := by
+  simp only [isPhysical]
+  iintro H
+  iframe
+
+/-- Releasing the platform write lock is the linearisation point: the writer's `3/4`
+    receipt only becomes a whole once the client's `1/4` arrives through the atomic
+    update, and only a whole can advance the abstract state. -/
+theorem isPhysical_write_release (γ : WArrγ) (γp : GName)
+    (M M' : H WData) (σ σ' : Arr) :
+  ⊢@{IProp GF}
+    arrContentAt γ M' σ' -∗ wStateVar γ.s q3_4 σ M -∗ arrFrag γ σ ==∗
+      isPhysical γ γp M' σ' .free ∗ arrFrag γ σ' := by
+  simp only [isPhysical]
+  iintro Hview Hout Hfrag
+  iunfold arrFrag at Hfrag
+  icases Hfrag with ⟨%M₀, Hinv⟩
+  ihave #hag : ⌜σ = σ ∧ M₀ = M⌝ $$ [Hinv Hout]
+  · iapply wStateVar_agree γ.s q1_4 q3_4 σ σ M₀ M
+    isplitl [Hinv] <;> iassumption
+  icases hag with ⟨-, %hM⟩
+  subst hM
+  ihave Hfull := (wStateVar_split γ.s σ M₀).mpr $$ [Hinv Hout]
+  · isplitl [Hinv] <;> iassumption
+  ihave Hupd := wStateVar_full_update γ.s σ σ' M₀ M' $$ Hfull
+  imod Hupd with Hfull
+  icases (wStateVar_split γ.s σ' M').mp $$ Hfull with ⟨Hinv', Hout'⟩
+  imodintro
+  iframe Hview Hout'
+  unfold arrFrag
+  iexists M'
+  iframe
+
+theorem arrFrag_agree (γ : WArrγ) (σ σ' : Arr) (M : H WData) :
+    arrFrag γ σ ∗ wStateVar γ.s q3_4 σ' M ⊢@{IProp GF} ⌜σ = σ'⌝ := by
+  unfold arrFrag
+  iintro ⟨⟨%M₀, Hfrag⟩, Hout⟩
+  icases wStateVar_agree γ.s q1_4 q3_4 σ σ' M₀ M $$ [Hfrag Hout] with %h
+  · isplitl [Hfrag] <;> iassumption
+  ipureintro
+  exact h.1
+
+/-- The `3/4` share is the platform write lock's receipt: no other lock state leaves
+    that much of `wStateVar` unclaimed. -/
+theorem isPhysical_write_pinned (γ : WArrγ) (γp : GName) (M M' : H WData)
+    (σ σ' : Arr) (s : RwLock.State) :
+    isPhysical γ γp M σ s ∗ wStateVar γ.s q3_4 σ' M' ⊢@{IProp GF} ⌜s = .write⌝ := by
+  cases s <;> simp only [isPhysical] <;> iintro ⟨Hphys, Hout⟩
+  · iexfalso
+    icases Hphys with ⟨-, Hstate⟩
+    icases wStateVar_frac_valid γ.s q3_4 q3_4 σ σ' M M' $$ [Hstate Hout] with %h
+    · isplitl [Hstate] <;> iassumption
+    exact absurd h q3_4_add_q3_4_invalid
+  · iexfalso
+    icases Hphys with ⟨-, Hstate⟩
+    icases wStateVar_frac_valid γ.s q3_4 q3_4 σ σ' M M' $$ [Hstate Hout] with %h
+    · isplitl [Hstate] <;> iassumption
+    exact absurd h q3_4_add_q3_4_invalid
+  · ipureintro; trivial
+
+/-- A positive read credit says the platform is read-held.  Borrowed, not consumed:
+    the conclusion is pure. -/
+theorem isPlatform_read_guard_valid (ρ : GName) (s : RwLock.State) (platform : Val) (q : Qp) :
+    isPlatform ρ s platform ∗ rwGuardFrac ρ RwLock.Mode.read q ⊢@{IProp GF}
+      ⌜∃ n, s = .read (n + 1)⌝ := by
+  unfold isPlatform
+  iintro H
+  icases H with ⟨Hplatform, Hguard⟩
+  icases Hplatform with ⟨%α, %gate, %cell, Harc, Hhandle, Hlock, Hcell⟩
+  ihave #Hcompat : ⌜RwLock.GuardCompatible s .read⌝ $$ [Hlock Hguard]
+  · iapply RwLock.rwGuardFrac_valid _ _ _ _ _ q
+    isplitl [Hlock] <;> iassumption
+  icases Hcompat with %Hvalid
+  ipureintro
+  cases Hvalid with
+  | read n => exact ⟨n, rfl⟩
+
+theorem rwGuard_toFrac (γ : GName) :
+    ⊢@{IProp GF} rwGuard γ RwLock.Mode.read -∗ rwGuardFrac γ RwLock.Mode.read 1 := by
+  iintro H
+  rw [← rwGuard_eq γ RwLock.Mode.read]
+  iexact H
+
+/-- Reassembling the physical half while the platform lock is read-held. -/
+theorem arrPhysPart_read (γ : WArrγ) (γp : GName) (platform : Val) (n : Nat)
+    (M : H WData) (σ : Arr) :
+  ⊢@{IProp GF}
+    isPlatform γp (.read (n + 1)) platform -∗ arrShared γ γp M σ -∗
+      wStateVar γ.s q3_4 σ M -∗ arrPhysPart γ γp platform := by
+  iintro Hplat Hshared Hstate
+  unfold arrPhysPart
+  iexists (RwLock.State.read (n + 1)), M, σ
+  simp only [isPhysical]
+  iframe
+
+theorem Arr.isId_lookup (γ : WArrγ) (q : Qp) (M : H WData) (node : Val) (id : Nat) :
+    wMetaMap γ.l q M ∗ Arr.isId γ node id ⊢@{IProp GF}
+      wMetaMap γ.l q M ∗
+      ∃ d : WData,
+        ⌜get? M id = some d⌝ ∗ Arr.isNode γ id d ∗ isWeak d.arc node d.mux := by
+  unfold Arr.isId
+  iintro H
+  icases H with ⟨HM, Hid⟩
+  icases Hid with ⟨%d, #Hnode, Hweak⟩
+  ihave #Hmeta : wMetaAt γ.l id d $$ [Hnode]
+  · iunfold Arr.isNode at Hnode
+    iexact Hnode
+  ihave #Hlookup : ⌜get? M id = some d⌝ $$ [HM Hmeta]
+  · iapply wMetaMap_lookup γ.l q M id d $$ HM Hmeta
+  icases Hlookup with %hlookup
+  isplitl [HM]
+  · iexact HM
+  · iexists d
+    iframe Hweak %hlookup
+    iexact Hnode
+
 /-- Run `f` under the platform read lock.  Identical to `Array`'s, except that
     there is no retired-cell view to carry along. -/
 theorem execute_shared_spec
@@ -958,7 +1361,205 @@ theorem execute_shared_spec
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&execute &platform #false &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
-  sorry
+  iintro #Hinv Hf %Φ HAU
+  ihave #Hinvraw : inv arrN (arrInvBody γ γP platform) $$ [Hinv]
+  · iunfold isArrInv at Hinv
+    iexact Hinv
+  have Hfull : (↑arrN : CoPset) ⊆ (⊤ : CoPset) := CoPset.subseteq_top
+  have Hfull' : (↑arrN : CoPset) ⊆ ((⊤ : CoPset) \ (∅ : CoPset)) :=
+    fun _ _ => CoPset.in_diff.mpr ⟨CoPset.mem_full, CoPset.mem_empty⟩
+  iapply fupd_wp
+  imod inv_acc Hfull $$ Hinvraw with ⟨>HI, Hcl⟩
+  iunfold arrInvBody at HI
+  icases HI with ⟨Hpart, HP⟩
+  iunfold arrPhysPart at HP
+  icases HP with ⟨%s0, %M0, %σ0, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α, %gate, %cell, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hshape : ⌜∃ ps pw p c : Loc, platform = hl_val(((#ps, #pw), (#p, #c)))⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α platform gate $$ Harc with ⟨⟨%ps, %pw, %hp⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate hl_val(#cell) s0 $$ Hlock with ⟨⟨%p, %hg⟩, -⟩
+    ipureintro
+    exact ⟨ps, pw, p, cell, by rw [hp, hg]⟩
+  ihave HI : arrInvBody γ γP platform $$ [Hpart Hphys Hstrong Harc Hlock Hcell]
+  · unfold arrInvBody arrPhysPart isPlatform
+    iframe Hpart
+    iexists s0, M0, σ0
+    isplitl [Hstrong Harc Hlock Hcell]
+    · iexists α, gate, cell
+      iframe
+    · iframe
+  imod Hcl $$ HI with -
+  imodintro
+  icases hshape with ⟨%ps, %pw, %p, %c, %hplat⟩
+  subst hplat
+  unfold execute Arc.get
+  wp_pures
+  wp_bind &RwLock.read_acquire _
+  iapply RwLock.read_acquire_spec γP hl_val((#p, #c)) hl_val(#c)
+  iauintro
+  iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+  iintro HI
+  iunfold arrInvBody at HI
+  icases HI with ⟨Hpart, HP⟩
+  iunfold arrPhysPart at HP
+  icases HP with ⟨%s1, %M1, %σ1, Hplat, Hphys⟩
+  iunfold isPlatform at Hplat
+  icases Hplat with ⟨%α1, %gate1, %cell1, Hstrong, Harc, Hlock, Hcell⟩
+  ihave #hg1 : ⌜gate1 = hl_val((#p, #c)) ∧ cell1 = c⌝ $$ [Harc Hlock]
+  · icases Arc.isArc_copyRuntime α1 hl_val(((#ps, #pw), (#p, #c))) gate1 $$ Harc
+      with ⟨⟨%u1, %u2, %hu⟩, -⟩
+    icases RwLock.isRwLock_copyRuntime γP gate1 hl_val(#cell1) s1 $$ Hlock with ⟨⟨%u3, %hv⟩, -⟩
+    ipureintro
+    simp only [Val.pair.injEq, Val.lit.injEq] at hu hv
+    grind
+  icases hg1 with ⟨%hg1a, %hg1b⟩
+  subst hg1a
+  subst cell1
+  ihave Hα : isRwLock γP hl_val((#p, #c)) s1 hl_val(#c) $$ [Hlock]
+  · iframe
+  iaaccintro' with Hα
+  · iintro Hlock
+    imodintro
+    isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody arrPhysPart isPlatform
+      iframe Hpart
+      iexists s1, M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · iframe
+      isplitl []
+      · imodintro; iexact Hinv
+      · imodintro; iexact Hinvraw
+  · itele_reduce
+    iintro Hpost
+    icases Hpost with ⟨Hguard, Hcases⟩
+    ihave Hres : ∃ m : Nat,
+        isRwLock γP hl_val((#p, #c)) (.read (m + 1)) hl_val(#c) ∗
+        isPhysical γ γP M1 σ1 (.read (m + 1)) $$ [Hcases Hphys]
+    · icases Hcases with (⟨Hlock, %hs⟩ | ⟨%n, Hlock, %hs⟩)
+      · subst hs
+        iexists 0
+        iframe Hlock
+        iapply isPhysical_read_acquire_first γ γP M1 σ1
+        iexact Hphys
+      · subst hs
+        iexists n
+        iframe Hlock
+        iapply isPhysical_read_acquire_more γ γP M1 σ1 n
+        iexact Hphys
+    icases Hres with ⟨%m, Hlock, Hphys⟩
+    imodintro
+    isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+    · unfold arrInvBody arrPhysPart isPlatform
+      iframe Hpart
+      iexists (RwLock.State.read (m + 1)), M1, σ1
+      isplitl [Hstrong Harc Hlock Hcell]
+      · iexists α1, hl_val((#p, #c)), c
+        iframe
+      · iframe
+    · itele_reduce
+      wp_pures
+      wp_bind &f _
+      iapply Hf $$ Hinv Hguard
+      iauintro
+      simp only [atomicAcc]
+      iauopen HAU with ⟨%σc, Hfrag, Hclose⟩
+      imodintro
+      iexists σc
+      isplitl [Hfrag]
+      · iexact Hfrag
+      · isplit
+        · iintro Hfrag
+          icases Hclose with ⟨Habort, -⟩
+          imod Habort $$ Hfrag with HAU
+          imodintro
+          iframe
+          isplitl []
+          · imodintro; iexact Hinv
+          · imodintro; iexact Hinvraw
+        · itele_reduce
+          iintro %r Hbeta
+          icases Hbeta with ⟨%σ', Hfrag', HQ, Hguard⟩
+          icases Hclose with ⟨-, Hcommit⟩
+          ihave Hbeta : ∃ σ'', arrFrag γ σ'' ∗ Q σc σ'' r $$ [Hfrag' HQ]
+          · iexists σ'
+            iframe
+          imod Hcommit $$ Hbeta with HΦ
+          imodintro
+          wp_pures
+          wp_bind &RwLock.read_release _
+          iapply RwLock.read_release_spec γP hl_val((#p, #c)) hl_val(#c) $$ Hguard
+          iauintro
+          iapply aacc_inv _ _ _ _ Hfull' $$ Hinvraw
+          iintro HI
+          iunfold arrInvBody at HI
+          icases HI with ⟨Hpart, HP⟩
+          iunfold arrPhysPart at HP
+          icases HP with ⟨%s2, %M2, %σ2, Hplat, Hphys⟩
+          iunfold isPlatform at Hplat
+          icases Hplat with ⟨%α2, %gate2, %cell2, Hstrong, Harc, Hlock, Hcell⟩
+          ihave #hg2 : ⌜gate2 = hl_val((#p, #c)) ∧ cell2 = c⌝ $$ [Harc Hlock]
+          · icases Arc.isArc_copyRuntime α2 hl_val(((#ps, #pw), (#p, #c))) gate2 $$ Harc
+              with ⟨⟨%w1, %w2, %hw1⟩, -⟩
+            icases RwLock.isRwLock_copyRuntime γP gate2 hl_val(#cell2) s2 $$ Hlock
+              with ⟨⟨%w3, %hw2⟩, -⟩
+            ipureintro
+            simp only [Val.pair.injEq, Val.lit.injEq] at hw1 hw2
+            grind
+          icases hg2 with ⟨%hg2a, %hg2b⟩
+          subst hg2a
+          subst cell2
+          ihave Hα : isRwLock γP hl_val((#p, #c)) s2 hl_val(#c) $$ [Hlock]
+          · iframe
+          iaaccintro' with Hα
+          · iintro Hlock
+            imodintro
+            isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+            · unfold arrInvBody arrPhysPart isPlatform
+              iframe Hpart
+              iexists s2, M2, σ2
+              isplitl [Hstrong Harc Hlock Hcell]
+              · iexists α2, hl_val((#p, #c)), c
+                iframe
+              · iframe
+            · iframe
+              isplitl []
+              · imodintro; iexact Hinv
+              · imodintro; iexact Hinvraw
+          · itele_reduce
+            iintro %k Hpost
+            icases Hpost with ⟨%hs2, Hcases⟩
+            subst hs2
+            ihave Hres : ∃ s' : RwLock.State,
+                isRwLock γP hl_val((#p, #c)) s' hl_val(#c) ∗
+                isPhysical γ γP M2 σ2 s' $$ [Hcases Hphys]
+            · icases Hcases with (⟨Hlock, %hk⟩ | ⟨Hlock, %hk⟩)
+              · subst hk
+                iexists RwLock.State.free
+                ihave Hres := isPhysical_read_release_last γ γP M2 σ2
+                  hl_val((#p, #c)) hl_val(#c) $$ Hphys Hlock
+                icases Hres with ⟨Hphys, Hlock⟩
+                iframe
+              · iexists (RwLock.State.read k)
+                iframe Hlock
+                iapply isPhysical_read_release_nonlast γ γP M2 σ2 k
+                iexact Hphys
+            icases Hres with ⟨%s', Hlock, Hphys⟩
+            imodintro
+            isplitl [Hpart Hstrong Harc Hlock Hcell Hphys]
+            · unfold arrInvBody arrPhysPart isPlatform
+              iframe Hpart
+              iexists s', M2, σ2
+              isplitl [Hstrong Harc Hlock Hcell]
+              · iexists α2, hl_val((#p, #c)), c
+                iframe
+              · iframe
+            · itele_reduce
+              wp_pures
+              iexact HΦ
 
 /-- Run `f` under the platform write lock.  The body is an ordinary Hoare triple on
     `arrContent`: it has the whole list to itself. -/
@@ -967,9 +1568,9 @@ theorem execute_exclusive_spec
   ⊢@{IProp GF}
     isArrInv γ γP platform -∗
     (∀ σ,
-       ⦃ arrContent γ γP σ ⦄
+       ⦃ arrContent γ σ ⦄
          hl(&f #())
-       ⦃ r, RET r; ∃ σ', arrContent γ γP σ' ∗ Q σ σ' r ⦄) -∗
+       ⦃ r, RET r; ∃ σ', arrContent γ σ' ∗ Q σ σ' r ⦄) -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&execute &platform #true &f) @ ↑arrN
     ⟪ ∃ r, ∃ σ', arrFrag γ σ' ∗ Q σ σ' r | RET r ⟫ := by
@@ -985,18 +1586,18 @@ theorem insert_spec
     (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) (x : Int) :
   ⊢@{IProp GF}
     isArrInv γ γp platform -∗
-    Arr.isId γ γp node id -∗
+    Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&insert &platform &node #x) @ ↑arrN
     ⟪ ∃ ret,
         arrFrag γ (Arr.insert σ id x).1 ∗
-        Arr.isId γ γp node id ∗
+        Arr.isId γ node id ∗
         match (Arr.insert σ id x).2 with
         | none => iprop% ⌜ret = hl_val(none())⌝
         | some nid => iprop%
             ∃ newNode : Val,
               ⌜ret = hl_val(some(&newNode))⌝ ∗
-              Arr.isId γ γp newNode nid
+              Arr.isId γ newNode nid
       | RET ret
     ⟫ := by
   sorry
@@ -1009,10 +1610,10 @@ theorem revoke_spec
     (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
     isArrInv γ γp platform -∗
-    Arr.isId γ γp node id -∗
+    Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&revoke &platform &node) @ ↑arrN
-    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ γp node id
+    ⟪ arrFrag γ (Arr.revoke σ id).1 ∗ Arr.isId γ node id
       | RET match (Arr.revoke σ id).2 with
             | none => hl_val(none())
             | some _ => hl_val(some(#()))
@@ -1025,46 +1626,48 @@ theorem getChild_spec
     (γ : WArrγ) (γp : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
     isArrInv γ γp platform -∗
-    Arr.isId γ γp node id -∗
+    Arr.isId γ node id -∗
     ⟪ ∀ σ, arrFrag γ σ ⟫
       hl(&getChild &platform &node) @ ↑arrN
     ⟪ ∃ ret,
-        arrFrag γ σ ∗ Arr.isId γ γp node id ∗
+        arrFrag γ σ ∗ Arr.isId γ node id ∗
         (⌜ret = hl_val(none())⌝ ∨
          ∃ (w : Val) (cid : Nat),
-           ⌜ret = hl_val(some(&w))⌝ ∗ Arr.isId γ γp w cid)
+           ⌜ret = hl_val(some(&w))⌝ ∗ Arr.isId γ w cid)
       | RET ret ⟫ := by
   sorry
 
 /-- Duplicating a handle: no platform lock, because the reference counts are not
     under it.  This is what `Array` cannot offer — there `arcAuth` lives under the
     platform lock and vanishes entirely while a writer holds it. -/
-theorem isId_clone_spec (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) :
+theorem isId_clone_spec (γ : WArrγ) (γP : GName) (platform node : Val) (id : Nat) :
   ⊢@{IProp GF}
-    ⦃ Arr.isId γ γP node id ⦄
+    isArrInv γ γP platform -∗
+    ⦃ Arr.isId γ node id ⦄
       hl(&cloneHandle &node)
     ⦃ w, RET w;
-      ⌜w = node⌝ ∗ Arr.isId γ γP node id ∗ Arr.isId γ γP w id ⦄ := by
-  iintro %Φ Hid HΦ
+      ⌜w = node⌝ ∗ Arr.isId γ node id ∗ Arr.isId γ w id ⦄ := by
+  iintro #Hinv %Φ Hid HΦ
   iunfold Arr.isId at Hid
   icases Hid with ⟨%d, #Hnode, Hweak⟩
-  ihave #Hinv : isArcInv γP d $$ [Hnode]
-  · iunfold Arr.isNode at Hnode
-    icases Hnode with ⟨-, Hinv⟩
-    iexact Hinv
   unfold cloneHandle
   wp_pures
   iapply Weak.clone_spec (γ := d.arc) node d.mux $$ Hweak
-  iunfold isArcInv at Hinv
+  iunfold isArrInv at Hinv
   iauintro
   iinv Hinv as Hbody
-  iunfold arcInvBody at Hbody
-  icases Hbody with ⟨%n, %m, Hauth, Hcnt, Hled⟩
+  iunfold arrInvBody at Hbody
+  icases Hbody with ⟨Hpart, Hphys⟩
+  icases arcPart_acc γ γP id d $$ Hpart Hnode with ⟨Hcell, Hback⟩
+  iunfold arcCell at Hcell
+  icases Hcell with ⟨%n, %m, Hauth, Hcnt, Hled⟩
   iaaccintro' with Hauth
   · iintro Hauth
     imodintro
-    isplitl [Hauth Hcnt Hled]
-    · unfold arcInvBody
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      unfold arcCell
       iexists n, m
       iframe
     · iframe
@@ -1072,8 +1675,10 @@ theorem isId_clone_spec (γ : WArrγ) (γP : GName) (node : Val) (id : Nat) :
   · itele_reduce
     iintro ⟨Hauth, Hw1, Hw2⟩
     imodintro
-    isplitl [Hauth Hcnt Hled]
-    · unfold arcInvBody
+    isplitl [Hauth Hcnt Hled Hback Hphys]
+    · iapply arrInvBody_intro γ γP platform $$ [Hback Hauth Hcnt Hled] Hphys
+      iapply Hback
+      unfold arcCell
       iexists n, (m + 1)
       iframe
     · iapply HΦ
