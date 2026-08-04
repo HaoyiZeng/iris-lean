@@ -3547,11 +3547,11 @@ theorem node_release_spec
     · itele_reduce
       iframe Hpark Hkeep
 
-/-! ### What is left, and why it is not a matter of more proof script
+/-! ### Where the linearisation points are forced to sit
 
-`getChild` goes through because it does not move the abstract state: its
-linearisation point can sit at the very end, after both deposits have been reclaimed
-and the whole read permit is back in hand.
+`getChild` does not move the abstract state, so its linearisation point can sit at
+the very end, after both deposits have been reclaimed and the whole read permit is
+back in hand.
 
 `insert` and `revoke` cannot do that.  Their linearisation point is forced to the
 step that physically rewires the chain — the store, respectively the truncation —
@@ -3568,14 +3568,7 @@ shared state — it is the caller's private receipt.
 `Array` never runs into this, and the reason is instructive: it has no deposit at
 all.  Its only parked fraction belongs to a locked cell and comes back at exactly
 the release that *is* its linearisation point.  The deposit is the price of keeping
-reference counts outside the platform lock, and this is where that price is paid.
-
-What remains for the two specifications below is then the ordinary work: `insert`
-has to grow `M` (both halves of `wMetaMap` are inside the invariant under a read
-lock, so one opening suffices), splice with `isGhostHelpAccInsert`, and advance the
-abstract state at the store; `revoke` has to truncate with `isGhostHelpAccTruncate`
-and, because it frees cells, needs a placeholder in `arcNodes` so that the freeing
-thread can take `arcAuth` out of the invariant across the non-atomic `Arc.drop`. -/
+reference counts outside the platform lock, and this is where that price is paid. -/
 
 omit [RwLockG GF] [ArcG GF] in
 /-- A handle that fails to upgrade names a cell that is not in the list, and the
