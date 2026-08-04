@@ -462,6 +462,24 @@ def qHalvesSucc : Nat → Qp
   | 0 => q1_2
   | k + 1 => qHalvesSucc k + q1_2
 
+/-- Full ownership of the live witness excludes any other share.  This is what makes
+    the exclusive-mode deposit below work: a writer holding the chain owns `1` of
+    every live cell, so a ledger claiming a quarter of one is a contradiction. -/
+theorem cellAlive_full_excl (γ : GName) (q : Qp) (n₁ n₂ : Option Nat) :
+    cellAlive (GF := GF) γ 1 n₁ ∗ cellAlive γ q n₂ ⊢ False := by
+  unfold cellAlive
+  iintro ⟨H₁, H₂⟩
+  ihave H := iOwn_cmraValid_op $$ [H₁ H₂]
+  · isplitl [H₁] <;> iassumption
+  icases internalCmraValid_discrete $$ H with %Hvalid
+  iexfalso
+  ipureintro
+  have hd := (FracAgree.op_valid_L.mp Hvalid).1
+  have hq := q.2
+  have hone : (1 : Qp).val = 1 := rfl
+  have := DFrac.valid_own_op hd
+  grind
+
 /-- The platform read credit parked in a cell's reference-count ledger: half a permit
     for every reference beyond the one the list itself holds.
 
@@ -518,11 +536,20 @@ theorem arcDeposit_read (γP : GName) (n : Nat) (h : 2 ≤ n) :
     reference is represented by the `refTok` held *here*; a thread holding a
     temporary reference holds a second one, so `refTok_two` tells it its drop is not
     the last.  Once the cell has been revoked the count is zero for good, and
-    `cellDead` records that, so a stale weak handle can be shown to fail to
-    upgrade. -/
+    `cellDead` records that, so a stale weak handle can be shown to fail to upgrade.
+
+    The middle case is the *exclusive-mode* borrow, and it exists because `revoke`
+    upgrades a handle while holding the platform for writing, where a read-permit
+    deposit is impossible.  What it leaves instead is a quarter of the cell's live
+    witness — which only a thread holding the whole chain can afford, and which is
+    therefore unavailable for any *other* cell, since that thread still owns `1` of
+    each.  That is exactly the discrimination the read-permit deposit cannot make: it
+    says not merely "somebody is writing" but "somebody is writing *this* cell". -/
 def arcCell (γP : GName) (d : WData) : IProp GF := iprop%
   ∃ n m : Nat, arcAuth d.arc n m ∗ refAuth d n ∗
-    ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝))
+    ((refTok d ∗ arcDeposit γP n)
+     ∨ (refTok d ∗ ⌜n = 2⌝ ∗ ∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt)
+     ∨ (cellDead d.cell ∗ ⌜n = 0⌝))
 
 instance instArcCellTimeless (γP : GName) (d : WData) :
     Timeless (arcCell (GF := GF) γP d) := by unfold arcCell; infer_instance
@@ -1527,59 +1554,101 @@ theorem rwGuard_toFrac (γ : GName) :
 
 /-! ### Working the ledger
 
-These four are where the design pays off.  Each turns a fact about the *lock* into a
-fact about a *reference count*, or the other way round. -/
+These are where the design pays off.  Each turns a fact about a *lock* into a fact
+about a *reference count*, or the other way round.  They are stated on the unpacked
+ledger so that a caller which has just opened `arcCell` can use them without
+repacking. -/
+
+abbrev arcLedger (γP : GName) (d : WData) (n : Nat) : IProp GF := iprop%
+  (refTok d ∗ arcDeposit γP n)
+  ∨ (refTok d ∗ ⌜n = 2⌝ ∗ ∃ nxt : Option Nat, cellAlive d.cell q1_4 nxt)
+  ∨ (cellDead d.cell ∗ ⌜n = 0⌝)
+
+theorem arcCell_unpack (γP : GName) (d : WData) :
+    arcCell (GF := GF) γP d ⊢
+      ∃ n m : Nat, arcAuth d.arc n m ∗ refAuth d n ∗ arcLedger γP d n := by
+  unfold arcCell arcLedger
+  iintro H
+  iexact H
+
+theorem arcCell_pack (γP : GName) (d : WData) (n m : Nat) :
+    arcAuth (GF := GF) d.arc n m ∗ refAuth d n ∗ arcLedger γP d n ⊢ arcCell γP d := by
+  unfold arcCell arcLedger
+  iintro ⟨H₁, H₂, H₃⟩
+  iexists n, m
+  iframe
 
 /-- **Gap 1.**  A cell that is still in the list has a positive count, so a weak
     handle on it upgrades successfully.  The evidence is the `refTok` the ledger
-    itself holds while the cell is live. -/
-theorem arcCell_live_pos (γP : GName) (d : WData) (n m : Nat) :
-    arcAuth (GF := GF) d.arc n m ∗ refAuth d n ∗
-      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗
-      cellAlive d.cell q1_4 nxt ⊢ ⌜0 < n⌝ := by
-  iintro ⟨-, Hcnt, Hled, Halive⟩
-  icases Hled with (⟨Htok, -⟩ | ⟨#Hcd, -⟩)
-  · iapply refTok_pos d n
-    isplitl [Hcnt] <;> iassumption
+    itself holds while the cell is live; the live witness is only needed to rule out
+    the tombstone case. -/
+theorem arcCell_live_pos (γP : GName) (d : WData) (n : Nat) (q : Qp) (nxt : Option Nat) :
+    refAuth (GF := GF) d n ∗ arcLedger γP d n ∗ cellAlive d.cell q nxt ⊢
+      ⌜0 < n⌝ ∗ refAuth d n ∗ arcLedger γP d n ∗ cellAlive d.cell q nxt := by
+  unfold arcLedger
+  iintro ⟨Hcnt, Hled, Halive⟩
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq⟩ | ⟨#Hcd, -⟩)
+  · ihave #Hpos : ⌜0 < n⌝ $$ [Hcnt Htok]
+    · iapply refTok_pos d n
+      isplitl [Hcnt] <;> iassumption
+    iframe Hpos Hcnt Halive
+    ileft
+    iframe
+  · iframe Halive Hcnt
+    isplit
+    · ipureintro; omega
+    iright; ileft
+    iframe Htok Hq
+    ipureintro; exact hn
   · iexfalso
-    iapply cellAlive_dead_False d.cell q1_4 nxt
+    iapply cellAlive_dead_False d.cell q nxt
     isplitl [Halive] <;> iassumption
 
 /-- **Gap 2.**  A thread that has upgraded a weak handle holds a `refTok` of its own,
     so the ledger's copy proves the count is at least two and its own drop is not the
     last one. -/
 theorem arcCell_two (γP : GName) (d : WData) (n : Nat) :
-    refAuth (GF := GF) d n ∗
-      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗ refTok d ⊢
-      ⌜2 ≤ n⌝ ∗ refAuth d n ∗ refTok d ∗ arcDeposit γP n ∗ refTok d := by
+    refAuth (GF := GF) d n ∗ arcLedger γP d n ∗ refTok d ⊢
+      ⌜2 ≤ n⌝ ∗ refAuth d n ∗ arcLedger γP d n ∗ refTok d := by
+  unfold arcLedger
   iintro ⟨Hcnt, Hled, Hmine⟩
-  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hz⟩)
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨Htok, %hn, Hq⟩ | ⟨-, %hz⟩)
   · ihave #Hge : ⌜2 ≤ n⌝ $$ [Hcnt Htok Hmine]
     · iapply refTok_two d n
       isplitl [Hcnt]
       · iassumption
       isplitl [Htok] <;> iassumption
-    iframe Hge Hcnt Htok Hdep Hmine
+    iframe Hge Hcnt Hmine
+    ileft
+    iframe
+  · iframe Hcnt Hmine
+    isplit
+    · ipureintro; omega
+    iright; ileft
+    iframe Htok Hq
+    ipureintro; exact hn
   · subst hz
     iexfalso
     icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
     · isplitl [Hcnt] <;> iassumption
     exact absurd h (Nat.lt_irrefl 0)
 
-/-- **Gap 3**, the one `Array` never closes.  Under the platform *write* lock there
-    can be no read permit anywhere, so the deposit forces the count down to exactly
-    one: the reference revocation is about to drop really is the last. -/
-theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val) :
-    isPlatform (GF := GF) γP .write platform ∗ refAuth d n ∗
-      ((refTok d ∗ arcDeposit γP n) ∨ (cellDead d.cell ∗ ⌜n = 0⌝)) ∗ refTok d ⊢
-      ⌜n = 1⌝ ∗ isPlatform γP .write platform ∗ refAuth d n ∗ refTok d ∗ refTok d := by
-  iintro ⟨Hplat, Hcnt, Hled, Hmine⟩
-  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hz⟩)
-  · ihave #Hpos : ⌜0 < n⌝ $$ [Hcnt Htok]
-    · iapply refTok_pos d n
-      isplitl [Hcnt] <;> iassumption
-    icases Hpos with %hpos
-    ihave #Hle : ⌜n < 2⌝ $$ [Hplat Hdep]
+/-- **Gap 3**, the one `Array` never closes.
+
+    A thread holding the whole chain owns `1` of every live cell's witness, and the
+    platform being write-held means no read permit exists anywhere.  Between them the
+    two deposits are excluded, so the count is at most one: the reference revocation
+    is about to drop really is the last, and the cell really is freed. -/
+theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val)
+    (nxt : Option Nat) :
+    isPlatform (GF := GF) γP .write platform ∗ refAuth d n ∗ arcLedger γP d n ∗
+      cellAlive d.cell 1 nxt ⊢
+      ⌜n ≤ 1⌝ ∗ isPlatform γP .write platform ∗ refAuth d n ∗ arcLedger γP d n ∗
+        cellAlive d.cell 1 nxt := by
+  unfold arcLedger
+  iintro ⟨Hplat, Hcnt, Hled, Halive⟩
+  icases Hled with (⟨Htok, Hdep⟩ | ⟨-, %hn, %nxt', Hq⟩ | ⟨#Hcd, %hz⟩)
+  · ihave #Hle : ⌜n ≤ 1⌝ $$ [Hplat Hdep]
     · by_cases hn : 2 ≤ n
       · iexfalso
         icases arcDeposit_read γP n hn $$ Hdep with ⟨%q, Hq⟩
@@ -1588,15 +1657,20 @@ theorem arcCell_write_last (γP : GName) (d : WData) (n : Nat) (platform : Val) 
         rcases hcontra with ⟨k, hk⟩
         exact absurd hk (by simp)
       · ipureintro; omega
-    icases Hle with %hle
+    iframe Hle Hplat Hcnt Halive
+    ileft
+    iframe
+  · iexfalso
+    iapply cellAlive_full_excl d.cell q1_4 nxt nxt'
+    isplitl [Halive] <;> iassumption
+  · subst hz
+    iframe Hplat Hcnt Halive
     isplit
     · ipureintro; omega
-    iframe Hplat Hcnt Htok Hmine
-  · subst hz
-    iexfalso
-    icases refTok_pos d 0 $$ [Hcnt Hmine] with %h
-    · isplitl [Hcnt] <;> iassumption
-    exact absurd h (Nat.lt_irrefl 0)
+    iright; iright
+    isplitl []
+    · iexact Hcd
+    · ipureintro; rfl
 
 /-- Handing out a reference costs a `refTok` and, above the first, half a read
     permit — which the taker can afford, because it is inside a platform read
@@ -1605,8 +1679,6 @@ theorem refAuth_take (d : WData) (n : Nat) :
     refAuth (GF := GF) d n ⊢ |==> (refAuth d (n + 1) ∗ refTok d) :=
   refAuth_alloc d n
 
-/-- Giving one back.  `Credit` is cancellable, so the authority really does go
-    down. -/
 theorem refDeallocUpdate (n : Nat) :
     ((● ((n + 1 : Nat) : Credit) : Auth Credit) • ◯ (1 : Credit)) ~~>
       (● ((n : Nat) : Credit)) := by
@@ -1618,11 +1690,35 @@ theorem refDeallocUpdate (n : Nat) :
   rw [e1] at h
   exact h
 
+/-- Giving one back.  `Credit` is cancellable, so the authority really does go
+    down. -/
 theorem refAuth_give (d : WData) (n : Nat) :
     refAuth (GF := GF) d (n + 1) ∗ refTok d ⊢ |==> refAuth d n := by
   unfold refAuth refTok
   refine .trans (iOwn_op (F := CntRF) (γ := d.cnt)).mpr ?_
   exact iOwn_update (F := CntRF) (γ := d.cnt) (refDeallocUpdate n)
+
+/-- Retiring a cell's ledger: the count is zero for good, and the tombstone is
+    persistent, so a stale weak handle can still be shown to fail. -/
+theorem arcLedger_kill (γP : GName) (d : WData) (nxt : Option Nat) :
+    refAuth (GF := GF) d 1 ∗ arcLedger γP d 1 ∗ cellAlive d.cell 1 nxt ⊢
+      |==> (refAuth d 0 ∗ arcLedger γP d 0 ∗ cellDead d.cell) := by
+  unfold arcLedger
+  iintro ⟨Hcnt, Hled, Halive⟩
+  icases Hled with (⟨Htok, -⟩ | ⟨-, %hn, -⟩ | ⟨-, %hz⟩)
+  · imod refAuth_give d 0 $$ [Hcnt Htok] with Hcnt
+    · isplitl [Hcnt] <;> iassumption
+    imod cellAlive_full_kill d.cell nxt $$ Halive with #Hcd
+    imodintro
+    iframe Hcnt
+    isplitl []
+    · iright; iright
+      isplitl []
+      · iexact Hcd
+      ipureintro; rfl
+    · iexact Hcd
+  · exact absurd hn (by simp)
+  · exact absurd hz (by simp)
 
 /-- Reassembling the physical half while the platform lock is read-held. -/
 theorem arrPhysPart_read (γ : WArrγ) (γp : GName) (platform : Val) (n : Nat)
