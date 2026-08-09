@@ -184,7 +184,7 @@ end Frac
 
 @[rocq_alias dfrac_agreeRF]
 abbrev DFracAgreeRF (T : COFE.OFunctorPre) [RFunctor T] : COFE.OFunctorPre :=
-  ProdOF (constOF DFrac) (AgreeRF T)
+  ProdOF (constOF (ULift DFrac)) (AgreeRF T)
 
 end DFracAgree
 

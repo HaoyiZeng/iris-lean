@@ -6,6 +6,7 @@ Authors: Markus de Medeiros
 module
 
 public import Iris.ProofMode
+public import Iris.Algebra.ULiftInst
 public import Iris.Instances.IProp.Instance
 public import Iris.Instances.Lib.FUpd
 public import Iris.Instances.Lib.Invariants
@@ -25,7 +26,7 @@ open BI CMRA OFE Iris Std LawfulSet Excl COFE
 /-! # Cancelable Invariants -/
 
 abbrev CInvF : OFunctorPre :=
-  ProdOF (constOF (Option (Excl Unit))) (constOF (Option Qp))
+  ProdOF (constOF (ULift (Option (Excl Unit)))) (constOF (ULift (Option Qp)))
 
 @[rocq_alias cinvG]
 class CInvG (GF : BundledGFunctors) where
@@ -38,10 +39,10 @@ namespace CancelableInvariant
 variable {GF : BundledGFunctors} [InvGS_gen hlc GF] [W : CInvG GF]
 
 @[rocq_alias cinv_own]
-def own (γ : GName) (p : Qp) : IProp GF := iOwn (E := W.inv) γ (none, some p)
+def own (γ : GName) (p : Qp) : IProp GF := iOwn (E := W.inv) γ (⟨none⟩, ⟨some p⟩)
 
 @[rocq_alias cinv_excl]
-def excl (γ : GName) : IProp GF := iOwn (E := W.inv) γ (some (Excl.excl ()), none)
+def excl (γ : GName) : IProp GF := iOwn (E := W.inv) γ (⟨some (Excl.excl ())⟩, ⟨none⟩)
 
 @[rocq_alias cinv]
 def cinv (N : Namespace) (γ : GName) (P : IProp GF) : IProp GF :=
@@ -90,7 +91,7 @@ theorem own_valid {γ : GName} {q1 q2 : Qp} :
 instance instFractionalOwn (γ : GName) :
     Fractional (fun p : Qp => own (GF := GF) γ p) where
   fractional p q := by
-    show iOwn (E := W.inv) γ ((none, some (p + q))) ⊣⊢ _
+    show iOwn (E := W.inv) γ ((⟨none⟩, ⟨some (p + q)⟩)) ⊣⊢ _
     refine .trans ?_ iOwn_op
     exact equiv_iff.mp (NonExpansive.eqv (.of_eq rfl))
 
@@ -104,7 +105,8 @@ instance instAsFractionalOwn (γ : GName) (q : Qp) :
 theorem own_excl_alloc (P : GName → Prop) (HP : PredInfinite P) :
     ⊢@{IProp GF} |==> ∃ γ, ⌜P γ⌝ ∗ excl γ ∗ own γ (1 : Qp) := by
   imod iOwn_alloc_strong (E := W.inv)
-    ((some (Excl.excl ()), none) • (none, some (1 : Qp)) :
+    (((⟨some (Excl.excl ())⟩ : ULift (Option (Excl Unit))), (⟨none⟩ : ULift (Option Qp))) •
+      ((⟨none⟩ : ULift (Option (Excl Unit))), (⟨some (1 : Qp)⟩ : ULift (Option Qp))) :
       CInvF (IProp GF) (IProp GF)) P ?_
     ⟨trivial, Qp.valid_one⟩ with ⟨%γ, %HPγ, Hown⟩
   · intro N

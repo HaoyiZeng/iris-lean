@@ -6,6 +6,7 @@ Authors: Markus de Medeiros
 module
 
 public import Iris.ProofMode
+public import Iris.Algebra.ULiftInst
 public import Iris.Instances.IProp.Instance
 public import Iris.Instances.Lib.FUpd
 public import Iris.Instances.Lib.Invariants
@@ -20,7 +21,7 @@ namespace Iris
 open BI CMRA OFE Iris Std LawfulSet DisjointLeibnizSet COFE
 
 abbrev NaInvF : OFunctorPre :=
-  ProdOF (constOF CoPsetDisjL) (constOF (DisjointLeibnizSet PosSet))
+  ProdOF (constOF (ULift CoPsetDisjL)) (constOF (ULift (DisjointLeibnizSet PosSet)))
 
 @[rocq_alias na_invG]
 class NaInvG (GF : BundledGFunctors) where
@@ -37,10 +38,14 @@ abbrev NaInvPoolName := GName
 instance instNaInvF_discreteE {α β : Type _} (x : DisjointLeibnizSet α) (y : DisjointLeibnizSet β) :
     DiscreteE (x, y) := by infer_instance
 
-instance coreId_valid_empty_empty : CoreId ((valid (∅ : CoPset), valid (∅ : PosSet))) where
+instance coreId_valid_empty_empty :
+    CoreId ((⟨valid (∅ : CoPset)⟩, ⟨valid (∅ : PosSet)⟩) :
+      ULift CoPsetDisjL × ULift (DisjointLeibnizSet PosSet)) where
   core_id := by rfl
 
-instance isUnit_valid_empty_empty : IsUnit ((valid (∅ : CoPset), valid (∅ : PosSet))) where
+instance isUnit_valid_empty_empty :
+    IsUnit ((⟨valid (∅ : CoPset)⟩, ⟨valid (∅ : PosSet)⟩) :
+      ULift CoPsetDisjL × ULift (DisjointLeibnizSet PosSet)) where
   unit_valid := ⟨trivial, trivial⟩
   unit_left_id := ⟨unit_left_id, unit_left_id⟩
   pcore_unit := coreId_valid_empty_empty.core_id
@@ -51,12 +56,12 @@ variable {GF : BundledGFunctors} [InvGS_gen hlc GF] [W : NaInvG GF]
 
 @[rocq_alias na_own]
 def own (p : NaInvPoolName) (E : CoPset) : IProp GF :=
-  iOwn (E := W.inv) p (.valid E, .valid ∅)
+  iOwn (E := W.inv) p (⟨valid E⟩, ⟨valid ∅⟩)
 
 @[rocq_alias na_inv]
 nonrec def inv (p : NaInvPoolName) (N : Namespace) (P : IProp GF) : IProp GF :=
   iprop(∃ i, ⌜i ∈ (↑N : CoPset)⌝ ∧
-    inv N iprop(P ∗ iOwn (E := W.inv) p (.valid ∅, .valid {i}) ∨ own p {i}))
+    inv N iprop(P ∗ iOwn (E := W.inv) p (⟨valid ∅⟩, ⟨valid {i}⟩) ∨ own p {i}))
 
 @[rocq_alias na_own_timeless]
 instance instTimeless_own (p : NaInvPoolName) (E : CoPset) : Timeless (own (GF := GF) p E) := by
@@ -110,7 +115,7 @@ nonrec theorem inv_iff {p : NaInvPoolName} {N : Namespace} {P Q : IProp GF} :
 
 @[rocq_alias na_alloc]
 theorem alloc : ⊢@{IProp GF} |==> ∃ p : NaInvPoolName, own p ⊤ :=
-  iOwn_alloc (E := W.inv) (.valid (⊤ : CoPset), .valid (∅ : PosSet)) ⟨trivial, trivial⟩
+  iOwn_alloc (E := W.inv) (⟨valid (⊤ : CoPset)⟩, ⟨valid (∅ : PosSet)⟩) ⟨trivial, trivial⟩
 
 @[rocq_alias na_own_disjoint]
 theorem own_disjoint {p : NaInvPoolName} {E1 E2 : CoPset} :
@@ -151,15 +156,16 @@ theorem own_empty (p : NaInvPoolName) : ⊢@{IProp GF} |==> own p ∅ := iOwn_un
 nonrec theorem inv_alloc {p : NaInvPoolName} {E : CoPset} {N : Namespace} {P : IProp GF} :
     ⊢ ▷ P ={E}=∗ inv p N P := by
   iintro HP
-  imod (iOwn_unit (E := W.inv) (γ := p) (ε := (.valid ∅, .valid ∅))) with Hempty
-  have Hupd : (.valid (∅ : CoPset), .valid (∅ : PosSet)) ~~>:
-      fun y : NaInvF.ap (IProp GF) => ∃ i, y = (.valid ∅, .valid {i}) ∧ i ∈ (↑N : CoPset) :=
-    .prod (P := (· = .valid ∅)) (.id rfl) (alloc_empty_updateP_strong' (fresh_name · N))
-      (fun a b ha ⟨i, hb, hi⟩ => ⟨i, Prod.ext ha hb, hi⟩)
+  imod (iOwn_unit (E := W.inv) (γ := p) (ε := (⟨valid ∅⟩, ⟨valid ∅⟩))) with Hempty
+  have Hupd : (⟨valid (∅ : CoPset)⟩, ⟨valid (∅ : PosSet)⟩) ~~>:
+      fun y : NaInvF.ap (IProp GF) => ∃ i, y = (⟨valid ∅⟩, ⟨valid {i}⟩) ∧ i ∈ (↑N : CoPset) :=
+    .prod (P := (· = ⟨valid ∅⟩)) (.id rfl)
+      (Iris.Algebra.UpdateP.uLift (alloc_empty_updateP_strong' (fresh_name · N)))
+      (fun a b ha ⟨i, hb, hi⟩ => ⟨i, Prod.ext ha (congrArg ULift.up hb), hi⟩)
   imod iOwn_updateP Hupd $$ Hempty with ⟨%y, %Hy, Hown⟩
   obtain ⟨i, rfl, Hi⟩ := Hy
   unfold inv
-  imod inv_alloc N E iprop( P ∗ iOwn (E := W.inv) p (.valid ∅, .valid {i}) ∨ own p {i}) $$ [HP Hown]
+  imod inv_alloc N E iprop( P ∗ iOwn (E := W.inv) p (⟨valid ∅⟩, ⟨valid {i}⟩) ∨ own p {i}) $$ [HP Hown]
     with HI
   · inext; ileft; isplitl [HP] <;> iassumption
   imodintro
@@ -184,7 +190,7 @@ nonrec theorem inv_acc {p : NaInvPoolName} {E F : CoPset} {N : Namespace} {P : I
   · rw [← HNminusi]; iassumption
   imod inv_acc HNE $$ Hinv with ⟨Hcontent, Hclose⟩
   icases Hcontent with (⟨HP, >Hdis⟩ | >Htoki2)
-  · ihave Hreturn : ▷ (P ∗ iOwn (E := W.inv) p (.valid ∅, .valid {i}) ∨ own p {i}) $$ [Htoki]
+  · ihave Hreturn : ▷ (P ∗ iOwn (E := W.inv) p (⟨valid ∅⟩, ⟨valid {i}⟩) ∨ own p {i}) $$ [Htoki]
     · inext; iright; iassumption
     imod Hclose $$ Hreturn with _
     imodintro
@@ -200,7 +206,7 @@ nonrec theorem inv_acc {p : NaInvPoolName} {E F : CoPset} {N : Namespace} {P : I
       icases internalCmraValid_discrete $$ Hk with %Hbad
       have Hk := DisjointLeibnizSet.valid_op_iff_disj.mp Hbad.2
       exact Hk i ⟨mem_singleton.mpr rfl, mem_singleton.mpr rfl⟩ |>.elim
-    · ihave Hreturn2 : ▷ (P ∗ iOwn (E := W.inv) p (.valid ∅, .valid {i}) ∨ own p {i}) $$ [HPret Hdis]
+    · ihave Hreturn2 : ▷ (P ∗ iOwn (E := W.inv) p (⟨valid ∅⟩, ⟨valid {i}⟩) ∨ own p {i}) $$ [HPret Hdis]
       · inext; ileft; isplitl [HPret] <;> iassumption
       imod Hclose2 $$ Hreturn2 with _
       imodintro

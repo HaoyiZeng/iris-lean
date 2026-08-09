@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 module
 
 public import Iris.Algebra
+public import Iris.Algebra.ULiftInst
 public import Iris.ProofMode
 public import Iris.BI.InternalEq
 public import Iris.BI.BigOp.BigSepMap
@@ -36,8 +37,8 @@ abbrev InvMapF := HeapViewURF (H := InvMap) (AgreeRF (LaterOF IdOF))
 @[rocq_alias wsatGS.wsatGpreS]
 class WsatGpreS (GF : BundledGFunctors) where
   inv : ElemG GF InvMapF
-  enabled : ElemG GF (constOF CoPsetDisjL)
-  disabled : ElemG GF (constOF (DisjointLeibnizSet PosSet))
+  enabled : ElemG GF (constOF (ULift CoPsetDisjL))
+  disabled : ElemG GF (constOF (ULift (DisjointLeibnizSet PosSet)))
 
 attribute [reducible, instance] WsatGpreS.inv
 attribute [reducible, instance] WsatGpreS.enabled
@@ -68,11 +69,11 @@ def ownI (i : Pos) (P : IProp GF) : IProp GF :=
 
 @[rocq_alias ownE]
 def ownE (S : CoPset) : IProp GF :=
-  iOwn (E := W.enabled) W.enabled_name (valid S)
+  iOwn (E := W.enabled) W.enabled_name ⟨valid S⟩
 
 @[rocq_alias ownD]
 def ownD (S : PosSet) : IProp GF :=
-  iOwn (E := W.disabled) W.disabled_name (valid S)
+  iOwn (E := W.disabled) W.disabled_name ⟨valid S⟩
 
 abbrev liftInv (I : InvMap (IProp GF)) := map toAgree (map invariant_unfold I)
 
@@ -112,7 +113,7 @@ theorem ownE_empty : ⊢ |==> ownE (W := W) ∅ := iOwn_unit (ε := UCMRA.unit)
 @[rocq_alias ownE_op]
 theorem ownE_op {E1 E2} (Hdisj : E1 ## E2) : ownE (E1 ∪ E2) ⊣⊢@{IProp GF} ownE E1 ∗ ownE E2 := by
   refine .trans (.of_eq ?_) iOwn_op
-  rw [disj_op_union Hdisj]
+  rw [Iris.Algebra.uLift_op, disj_op_union Hdisj]
   rfl
 
 @[rocq_alias ownE_disjoint]
@@ -122,7 +123,7 @@ theorem ownE_disjoint {E1 E2} : ownE E1 ∗ ownE E2 ⊢@{IProp GF} ⌜E1 ## E2�
   · unfold ownE
     isplitl [H1] <;> iassumption
   ihave H := iOwn_cmraValid $$ H
-  icases internalCmraValid_discrete (A := CoPsetDisjL) $$ H with %H
+  icases internalCmraValid_discrete (A := ULift CoPsetDisjL) $$ H with %H
   ipureintro
   exact valid_op_iff_disj.mp H
 
@@ -156,7 +157,7 @@ theorem ownD_empty : ⊢@{IProp GF} |==> ownD ∅ := iOwn_unit (ε := UCMRA.unit
 @[rocq_alias ownD_op]
 theorem ownD_op {E1 E2} (Hdisj : E1 ## E2) : ownD (E1 ∪ E2) ⊣⊢@{IProp GF} ownD E1 ∗ ownD E2 := by
   refine .trans (.of_eq ?_) iOwn_op
-  rw [disj_op_union Hdisj]
+  rw [Iris.Algebra.uLift_op, disj_op_union Hdisj]
   rfl
 
 @[rocq_alias ownD_disjoint]
@@ -167,7 +168,7 @@ theorem ownD_disjoint (E1 E2 : PosSet) :
   icases iOwn_op $$ [H1 H2] with H
   · isplitl [H1] <;> iassumption
   ihave H := iOwn_cmraValid $$ H
-  icases internalCmraValid_discrete (A := DisjointLeibnizSet PosSet) $$ H with %H
+  icases internalCmraValid_discrete (A := ULift (DisjointLeibnizSet PosSet)) $$ H with %H
   ipureintro
   exact valid_op_iff_disj.mp H
 
@@ -280,8 +281,10 @@ theorem ownI_alloc [W : WsatGS GF] (φ : Pos → Prop) (P : IProp GF)
     obtain ⟨⟨HnotY, HnotDom⟩, Hφ⟩ := H
     have _ : get? I j = none := by simp [mem_dom_set] at HnotDom; assumption
     exists j
-  imod iOwn_updateP (alloc_empty_updateP_strong' HP) $$ HD with ⟨%X, %Hpure, HD⟩
+  imod iOwn_updateP (Iris.Algebra.UpdateP.uLift (alloc_empty_updateP_strong' HP)) $$ HD with ⟨%X, %Hpure, HD⟩
+  obtain ⟨X⟩ := X
   obtain ⟨j, HEQ, ⟨Hget, Hφ⟩⟩ := Hpure
+  dsimp only at HEQ
   -- FIXME: removing E causes a PM error
   imod iOwn_update (E := W.inv) (update_one_alloc (v1 := toAgree (invariant_unfold P)) _
       DFrac.valid_discard (fun _ => ⟨⟩)) $$ Hown with Hown
@@ -320,8 +323,10 @@ theorem ownI_alloc_open [W : WsatGS GF] (φ : Pos → Prop) (P : IProp GF)
     obtain ⟨⟨HnotY, HnotDom⟩, Hφ⟩ := H
     have _ : get? I j = none := by simp [mem_dom_set] at HnotDom; assumption
     exists j
-  imod iOwn_updateP (alloc_empty_updateP_strong' HP) $$ HD with ⟨%X, %Hpure, HD⟩
+  imod iOwn_updateP (Iris.Algebra.UpdateP.uLift (alloc_empty_updateP_strong' HP)) $$ HD with ⟨%X, %Hpure, HD⟩
+  obtain ⟨X⟩ := X
   obtain ⟨j, HEQ, ⟨Hget, Hφ⟩⟩ := Hpure
+  dsimp only at HEQ
   imod iOwn_update (E := W.inv) (update_one_alloc (v1 := toAgree (invariant_unfold P)) _
       DFrac.valid_discard (fun _ => ⟨⟩)) $$ Hown with Hown
   · simpa [get?_map]
@@ -349,8 +354,8 @@ theorem ownI_alloc_open [W : WsatGS GF] (φ : Pos → Prop) (P : IProp GF)
 theorem wsat_alloc [WP : WsatGpreS GF] :
     ⊢ |==> ∃ (W : WsatGS GF), wsat (W := W) ∗ ownE ⊤ := by
   imod (iOwn_alloc (E := WP.inv) (Auth (.own 1) ∅) auth_one_valid) with ⟨%γ, H⟩
-  imod (iOwn_alloc (E := WP.enabled) (valid ⊤) ⟨⟩) with ⟨%γe, He⟩
-  imod (iOwn_alloc (E := WP.disabled) (valid ∅) ⟨⟩) with ⟨%γd, Hd⟩
+  imod (iOwn_alloc (E := WP.enabled) ⟨valid ⊤⟩ ⟨⟩) with ⟨%γe, He⟩
+  imod (iOwn_alloc (E := WP.disabled) ⟨valid ∅⟩ ⟨⟩) with ⟨%γd, Hd⟩
   imodintro
   let W : WsatGS GF := {
     inv := WP.inv,

@@ -6,6 +6,7 @@ Authors: Sergei Stepanenko, Xiaoyang Lu, Zongyuan Liu
 module
 
 public import Iris.Algebra
+public import Iris.Algebra.ULiftInst
 public import Iris.Algebra.Lib.ExclAuth
 public import Iris.ProofMode
 public import Iris.Instances.IProp
@@ -24,7 +25,7 @@ abbrev BoolO := LeibnizO Bool
 variable (GF : BundledGFunctors)
 
 abbrev BoxF : OFunctorPre :=
-  ProdOF (AuthURF (OptionOF (ExclOF (constOF BoolO))))
+  ProdOF (AuthURF (OptionOF (ExclOF (constOF (ULift BoolO)))))
     (OptionOF (AgreeRF (LaterOF IdOF)))
 
 @[rocq_alias boxG]
@@ -39,12 +40,12 @@ variable {GF : BundledGFunctors} [InvGS_gen hlc GF] [BoxG GF]
 abbrev SliceName := GName
 
 @[rocq_alias box_own_auth]
-def box_own_auth (γ : SliceName) (a : Auth (Option (Excl BoolO))) : IProp GF :=
+def box_own_auth (γ : SliceName) (a : Auth (Option (Excl (ULift BoolO)))) : IProp GF :=
   iOwn (F := BoxF) γ (a, none)
 
-instance box_own_auth_timeless (γ : SliceName) (a : Auth (Option (Excl BoolO))) :
+instance box_own_auth_timeless (γ : SliceName) (a : Auth (Option (Excl (ULift BoolO)))) :
     BI.Timeless (box_own_auth (GF := GF) γ a) :=
-  iOwn_timeless (F := BoxF) (a := ((a, none) : BoxF.ap (IProp GF)))
+  iOwn_timeless (F := BoxF.{1,1}) (a := ((a, none) : BoxF.{1,1}.ap (IProp GF)))
 
 @[rocq_alias box_own_prop]
 def box_own_prop (γ : SliceName) (P : IProp GF) : IProp GF :=
@@ -64,7 +65,7 @@ instance box_own_prop_ne (γ : SliceName) : NonExpansive (box_own_prop (GF := GF
 
 @[rocq_alias slice_inv]
 def slice_inv (γ : SliceName) (P : IProp GF) : IProp GF :=
-  iprop% ∃ b : Bool, box_own_auth γ (●E (⟨b⟩ : BoolO)) ∗ if b then P else True
+  iprop% ∃ b : Bool, box_own_auth γ (●E (⟨⟨b⟩⟩ : ULift BoolO)) ∗ if b then P else True
 
 @[rocq_alias slice]
 def slice (N : Namespace) (γ : SliceName) (P : IProp GF) : IProp GF :=
@@ -75,7 +76,7 @@ def box {M : Type _ → Type _} [LawfulFiniteMap M SliceName] (N : Namespace) (f
   (P : IProp GF) : IProp GF :=
   iprop% ∃ Φ : SliceName → IProp GF,
     ▷ internalEq P ([∗map] γ ↦ _x ∈ f, Φ γ) ∗
-    [∗map] γ ↦ b ∈ f, box_own_auth γ (◯E (⟨b⟩ : BoolO)) ∗ box_own_prop γ (Φ γ) ∗ inv N (slice_inv γ (Φ γ))
+    [∗map] γ ↦ b ∈ f, box_own_auth γ (◯E (⟨⟨b⟩⟩ : ULift BoolO)) ∗ box_own_prop γ (Φ γ) ∗ inv N (slice_inv γ (Φ γ))
 
 @[rocq_alias box_inv_ne]
 instance slice_inv_ne (γ : SliceName) : NonExpansive (slice_inv (GF := GF) γ) :=
@@ -107,17 +108,17 @@ instance box_ne {M : Type _ → Type _} [LawfulFiniteMap M SliceName]
 
 @[rocq_alias box_own_auth_agree]
 theorem box_own_auth_agree {γ : SliceName} {b1 b2 : Bool} :
-    box_own_auth (GF := GF) γ (●E (⟨b1⟩ : BoolO)) ∗ box_own_auth γ (◯E ⟨b2⟩) ⊢ ⌜b1 = b2⌝ := by
+    box_own_auth (GF := GF) γ (●E (⟨⟨b1⟩⟩ : ULift BoolO)) ∗ box_own_auth γ (◯E (⟨⟨b2⟩⟩ : ULift BoolO)) ⊢ ⌜b1 = b2⌝ := by
   simp only [box_own_auth, ← iOwn_op.to_eq]
   iintro H
   icases iOwn_cmraValid $$ H with H
   icases (prod_validI _).mp $$ H with ⟨%H, -⟩
-  ipureintro; exact LeibnizO.eqv_inj $ Iris.ExclAuth.agree_L H
+  ipureintro; exact LeibnizO.eqv_inj (congrArg ULift.down (Iris.ExclAuth.agree_L H))
 
 @[rocq_alias box_own_auth_update]
 theorem box_own_auth_update {γ : SliceName} {b1 b2: Bool} (b3 : Bool) :
-    box_own_auth (GF := GF) γ (●E (⟨b1⟩ : BoolO)) ∗ box_own_auth γ (◯E ⟨b2⟩) ==∗
-    box_own_auth γ (●E ⟨b3⟩) ∗ box_own_auth γ (◯E ⟨b3⟩) := by
+    box_own_auth (GF := GF) γ (●E (⟨⟨b1⟩⟩ : ULift BoolO)) ∗ box_own_auth γ (◯E (⟨⟨b2⟩⟩ : ULift BoolO)) ==∗
+    box_own_auth γ (●E (⟨⟨b3⟩⟩ : ULift BoolO)) ∗ box_own_auth γ (◯E (⟨⟨b3⟩⟩ : ULift BoolO)) := by
   simp only [box_own_auth, ← iOwn_op.to_eq]
   iapply iOwn_update (Update.prod _ ExclAuth.update (Update.id (x := none)))
 
@@ -147,7 +148,7 @@ theorem slice_insert_empty {M : Type _ → Type _} [LawfulFiniteMap M SliceName]
       slice N γ Q ∗ ▷?q box N (insert f γ false) iprop(Q ∗ P) := by
   unfold box
   iintro ⟨%Φ, #Heq, H⟩
-  imod (iOwn_alloc_cofinite (F := BoxF) ((((●E (⟨false⟩ : BoolO)), none) • ((◯E (⟨false⟩ : BoolO)), none)) •
+  imod (iOwn_alloc_cofinite (F := BoxF.{1,1}) ((((●E (⟨⟨false⟩⟩ : ULift BoolO)), none) • ((◯E (⟨⟨false⟩⟩ : ULift BoolO)), none)) •
         (UCMRA.unit, some (toAgree (Later.next Q)))) ((toList f).map Prod.fst)) with ⟨%γ, %Hγ, Hown⟩
   · exact ⟨ExclAuth.valid, Agree.toAgree_valid⟩
   have hfresh : get? f γ = none := by
@@ -171,7 +172,7 @@ theorem slice_insert_empty {M : Type _ → Type _} [LawfulFiniteMap M SliceName]
     · exact ⟨fun _ _ _ H => (NonExpansive₂.ne_left internalEq _).ne ((sep_ne.ne_right _ _).ne H)⟩
     rw [(bigSepM_fn_insert_key hfresh).to_eq]; exact internalEq.refl
   · rw [(bigSepM_fn_insert (g := fun k b P' =>
-        iprop% box_own_auth k (◯E (⟨b⟩ : BoolO)) ∗ box_own_prop k P' ∗ inv N (slice_inv k P')) hfresh).to_eq]
+        iprop% box_own_auth k (◯E (⟨⟨b⟩⟩ : ULift BoolO)) ∗ box_own_prop k P' ∗ inv N (slice_inv k P')) hfresh).to_eq]
     unfold box_own_prop box_own_auth; iframe H Hfrag Hprop Hinv
 
 @[rocq_alias slice_delete_empty]
@@ -333,7 +334,7 @@ theorem box_empty {M : Type _ → Type _} [LawfulFiniteMap M SliceName]
   unfold box
   iintro ⟨%Φ, #Heq, Hbig⟩
   ihave >⟨HΦ, H⟩ : iprop(|={E}=> (([∗map] γ ↦ b ∈ f, ▷ Φ γ) ∗
-    [∗map] γ ↦ b ∈ f, box_own_auth γ (◯E ⟨false⟩) ∗  box_own_prop γ (Φ γ) ∗
+    [∗map] γ ↦ b ∈ f, box_own_auth γ (◯E (⟨⟨false⟩⟩ : ULift BoolO)) ∗  box_own_prop γ (Φ γ) ∗
       inv N (slice_inv γ (Φ γ)))) $$ [Hbig]
   · rw [←bigSepM_sep_eqv.to_eq]
     iapply bigSepM_fupd

@@ -6,6 +6,7 @@ Authors: Sergei Stepanenko, Zongyuan Liu
 module
 
 public import Iris.Std.TC
+public import Iris.Algebra.ULiftInst
 public import Iris.Algebra
 public import Iris.Algebra.Auth
 public import Iris.Algebra.Numbers
@@ -47,7 +48,7 @@ scoped instance {a : Credit} : CMRA.Cancelable a := inferInstance
 /-- Later credits inclusion typeclass (`GF` contains the necessary functors for later credits) -/
 @[rocq_alias lcGpreS]
 class LcGpreS (GF : BundledGFunctors) where
-  lc_elem : ElemG GF (AuthURF (constOF Credit))
+  lc_elem : ElemG GF (AuthURF (constOF (ULift Credit)))
 
 attribute [reducible, instance] LcGpreS.lc_elem
 
@@ -71,7 +72,7 @@ variable {GF : BundledGFunctors} {hlc : HasLC} [LC : LcGS hlc GF]
 @[rocq_alias lc]
 def lc (i : Credit) : IProp GF :=
   match hlc with
-  | .hasLC => iOwn (E := LC.lc_elem) LC.lc_name (◯ i)
+  | .hasLC => iOwn (E := LC.lc_elem) LC.lc_name (◯ ⟨i⟩)
   | .hasNoLC => iprop(True)
 
 notation:max "£ " i:40 => lc i
@@ -83,7 +84,7 @@ notation:max "£ " i:40 => lc i
 @[rocq_alias lc_supply]
 def lc_supply (i : Credit) : IProp GF :=
   match hlc with
-  | .hasLC => iOwn (E := LC.lc_elem) LC.lc_name (● i)
+  | .hasLC => iOwn (E := LC.lc_elem) LC.lc_name (● ⟨i⟩)
   | .hasNoLC => iprop(⌜i = 0⌝)
 
 end Definitions
@@ -128,16 +129,17 @@ theorem lc_supply_bound {n m} : ⊢@{IProp GF} lc_supply m -∗ £ n -∗ ⌜n �
   · unfold lc lc_supply
     isplitl [Hsupp] <;> iassumption
   ihave H := iOwn_cmraValid $$ H
-  ihave ⟨%H, H2⟩ := auth_both_validI m n $$ H
+  ihave ⟨%H, H2⟩ := auth_both_validI ⟨m⟩ ⟨n⟩ $$ H
   ipureintro
-  obtain ⟨k, rfl⟩ := H
-  exact n.le_add_right k
+  obtain ⟨k, hk⟩ := H
+  have hk : m = n + k.down := hk
+  exact hk ▸ n.le_add_right k.down
 
 @[rocq_alias lc_decrease_supply]
 theorem lc_decrease_supply {n m} : ⊢@{IProp GF} lc_supply (n + m) -∗ £ n -∗ |==> lc_supply m := by
   iintro H1 H2
   imod iOwn_update_op (E := LC.lc_elem)
-    (auth_update (leftCancelAdd_local_update ((Nat.add_assoc n m 0).trans (Nat.add_comm n m))))
+    (auth_update (Iris.Algebra.LocalUpdate.uLift (leftCancelAdd_local_update ((Nat.add_assoc n m 0).trans (Nat.add_comm n m)))))
     $$ [H1 H2] with H
   · unfold lc lc_supply
     isplitl [H1] <;> iassumption
@@ -150,7 +152,8 @@ theorem lc_increase_supply n m : lc_supply m ⊢@{IProp GF} |==> (lc_supply (n +
   unfold lc lc_supply
   iintro H
   imod iOwn_update $$ H with Hown
-  · exact auth_update_alloc (leftCancelAdd_local_update (y := 0) (x' := (n + m)) (y' := n) (by grind))
+  · exact auth_update_alloc (Iris.Algebra.LocalUpdate.uLift
+      (leftCancelAdd_local_update (y := 0) (x' := (n + m)) (y' := n) (by grind)))
   icases iOwn_op $$ Hown with ⟨Hm, _⟩
   iframe
 
@@ -483,7 +486,7 @@ end Internal
 
 @[rocq_alias le_upd.lc_alloc]
 theorem lc_alloc [H : LcGpreS GF] n : ⊢@{IProp GF} |==> ∃ _ : LcGS .hasLC GF, lc_supply n ∗ £ n := by
-  imod (iOwn_alloc (E := H.lc_elem) ((● n) • (◯ n)) (auth_both_valid.mpr ⟨fun _ => .rfl, ⟨⟩⟩))
+  imod (iOwn_alloc (E := H.lc_elem) ((● (⟨n⟩ : ULift Credit)) • (◯ (⟨n⟩ : ULift Credit))) (auth_both_valid.mpr ⟨fun _ => .rfl, ⟨⟩⟩))
     with ⟨%γLC, HOwn⟩
   icases iOwn_op $$ HOwn with ⟨HAuth, HFrag⟩
   let LC : LcGS .hasLC GF := { lc_elem := H.lc_elem, lc_name := γLC }

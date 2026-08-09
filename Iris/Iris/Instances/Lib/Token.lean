@@ -6,6 +6,7 @@ Authors: Markus de Medeiros, Sergei Stepanenko
 module
 
 public import Iris.ProofMode
+public import Iris.Algebra.ULiftInst
 public import Iris.Instances.IProp.Instance
 
 @[expose] public section
@@ -21,7 +22,7 @@ The `token γ` assertion provides ownership of the token named `γ`,
 and the key lemma `token_exclusive` proves only one token exists.
 -/
 
-abbrev TokenF : COFE.OFunctorPre := constOF (Excl Unit)
+abbrev TokenF : COFE.OFunctorPre := constOF (ULift (Excl Unit))
 
 @[rocq_alias tokenG]
 class TokenG (GF : BundledGFunctors) where [elemG : ElemG GF TokenF]
@@ -33,7 +34,7 @@ attribute [reducible, instance] TokenG.elemG
 variable {GF : BundledGFunctors} [TokenG GF]
 
 @[rocq_alias token]
-def token (γ : GName) : IProp GF := iOwn (F := TokenF) γ (excl ())
+def token (γ : GName) : IProp GF := iOwn (F := TokenF) γ (⟨excl ()⟩)
 
 #rocq_ignore token_aux "`token` is defined directly without `seal`/`unseal`."
 #rocq_ignore token_def "`token` is defined directly without `seal`/`unseal`."
@@ -60,7 +61,7 @@ theorem token_alloc_strong (P : GName → Prop) (HP : PredInfinite P) :
 @[rocq_alias token_alloc]
 theorem token_alloc : ⊢@{IProp GF} |==> ∃ γ, token γ := by
   unfold token
-  iapply iOwn_alloc (excl ()) trivial
+  iapply iOwn_alloc (⟨excl ()⟩) trivial
 
 @[rocq_alias token_exclusive]
 theorem token_exclusive (γ : GName) : token γ ∗ token γ ⊢@{IProp GF} False := by
@@ -68,7 +69,7 @@ theorem token_exclusive (γ : GName) : token γ ∗ token γ ⊢@{IProp GF} Fals
   iintro ⟨H1, H2⟩
   ihave H := iOwn_op $$ [H1 H2]; (isplitl [H1] <;> iassumption)
   ihave H := iOwn_cmraValid $$ H
-  icases internalCmraValid_discrete (A := Excl Unit) $$ H with %H
+  icases internalCmraValid_discrete (A := ULift (Excl Unit)) $$ H with %H
   exact H.elim
 
 @[rocq_alias token_combine_gives]

@@ -6,6 +6,7 @@ Authors: Markus de Medeiros
 module
 
 public import Iris.Algebra.CMRA
+public import Iris.Algebra.ULiftInst
 public import Iris.Algebra.OFE
 public import Iris.Algebra.UPred
 public import Iris.Algebra.GenMap
@@ -26,7 +27,7 @@ abbrev GFunctor := Σ F : OFunctorPre, RFunctorContractive F
 @[rocq_alias gFunctors]
 def BundledGFunctors := GType → GFunctor
 
-def BundledGFunctors.default : BundledGFunctors := fun _ => ⟨constOF Unit, by infer_instance⟩
+def BundledGFunctors.default : BundledGFunctors := fun _ => ⟨constOF (ULift Unit), by infer_instance⟩
 
 def BundledGFunctors.set (GF : BundledGFunctors) (i : Nat) (FB : GFunctor) :
     BundledGFunctors :=

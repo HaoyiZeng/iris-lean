@@ -6,6 +6,7 @@ Authors: Markus de Medeiros
 module
 
 public import Iris.Algebra.Auth
+public import Iris.Algebra.ULiftInst
 public import Iris.Algebra.IsOp
 import Iris.Algebra.LocalUpdates
 meta import Iris.Std.RocqPorting
@@ -272,10 +273,10 @@ theorem updateP_both_unpersist {q : Qp} {a b : A} :
 
 @[rocq_alias frac_authURF]
 abbrev FracAuthURF (T : COFE.OFunctorPre) [RFunctor T] : COFE.OFunctorPre :=
-  AuthURF (OptionOF (ProdOF (constOF (Qp)) T))
+  AuthURF (OptionOF (ProdOF (constOF (ULift Qp)) T))
 
 @[rocq_alias frac_authRF]
 abbrev FracAuthF (T : COFE.OFunctorPre) [RFunctor T] : COFE.OFunctorPre :=
-  AuthRF (OptionOF (ProdOF (constOF (Qp)) T))
+  AuthRF (OptionOF (ProdOF (constOF (ULift Qp)) T))
 
 end FracAuth

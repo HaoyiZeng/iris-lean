@@ -1501,7 +1501,7 @@ section constOF
 
 open COFE
 
-abbrev constOF (B : Type) : OFunctorPre := fun _ _ _ _ => B
+abbrev constOF (B : Type 1) : OFunctorPre := fun _ _ _ _ => B
 
 @[rocq_alias constOF]
 instance oFunctorConstOF [COFE B] : OFunctor (constOF B) where

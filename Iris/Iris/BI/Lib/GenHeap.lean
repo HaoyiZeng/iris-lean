@@ -1,5 +1,6 @@
 module
 public import Iris.Algebra
+public import Iris.Algebra.ULiftInst
 public import Iris.Algebra.ReservationMap
 public import Iris.BI.Lib.Fractional
 public import Iris.Instances.Lib.GhostMap
@@ -46,7 +47,7 @@ class genHeapPreS (L V : Type _) (GF : BundledGFunctors) (H : outParam <| Type _
     [Std.LawfulFiniteMap H L] where
   heap : GhostMapG GF L V H
   metaInfo : GhostMapG GF L GName H
-  metaData : ElemG GF (constOF MetaUR)
+  metaData : ElemG GF (constOF (ULift MetaUR))
 
 attribute [reducible, instance] genHeapPreS.heap
 attribute [reducible, instance] genHeapPreS.metaInfo
@@ -90,7 +91,7 @@ namespace mask `E` at location `l`. -/
 @[rocq_alias meta_token]
 def metaToken (l : L) (E : CoPset) : IProp GF := iprop%
   ∃ γm, (metaName ↪◯MAP[l]{.discard} γm) ∗
-    iOwn (E := genHeapPreS.metaData (L := L) (V := V)) γm (ReservationMap.mkToken E)
+    iOwn (E := genHeapPreS.metaData (L := L) (V := V)) γm ⟨ReservationMap.mkToken E⟩
 
 /-- Persistent assertion that the meta-data `x : A` has been associated with
 namespace `N` to the location `l`.  The type `A` must be `Pos.Countable`. -/
@@ -98,7 +99,7 @@ namespace `N` to the location `l`.  The type `A` must be `Pos.Countable`. -/
 def metaInfo [Pos.Countable A] (l : L) (N : Namespace) (x : A) : IProp GF := iprop%
   ∃ γm, (metaName ↪◯MAP[l]{.discard} γm) ∗
     iOwn (E := genHeapPreS.metaData (L := L) (V := V)) γm
-      (.singleton (CoPset.pick (↑N)) (toAgree ⟨Pos.Countable.encode x⟩))
+      ⟨ReservationMap.singleton (CoPset.pick (↑N)) (toAgree ⟨Pos.Countable.encode x⟩)⟩
 
 end definitions
 
@@ -211,7 +212,10 @@ theorem metaToken_union_1 {l : L} {E1 E2 : CoPset} (he : E1 ## E2) :
   unfold metaToken
   iintro ⟨%γm, #Hγm, Hm⟩
   -- TODO: why do we need to destruct in a second step?
-  icases (iOwn_ne.eqv (ReservationMap.token_union he).symm) $$ Hm with Hm
+  have htok : (⟨ReservationMap.mkToken (E1 ∪ E2)⟩ : ULift MetaUR)
+      ≡ (⟨ReservationMap.mkToken E1⟩ : ULift MetaUR) • ⟨ReservationMap.mkToken E2⟩ :=
+    Iris.Algebra.uLift_eqv (α := MetaUR) (ReservationMap.token_union he)
+  icases (iOwn_ne.eqv htok.symm) $$ Hm with Hm
   icases Hm with ⟨Hm1, Hm2⟩
   isplitl [Hm1]
   · iexists γm
@@ -287,6 +291,7 @@ theorem meta_agree {A : Type _} [Pos.Countable A] {l : L} {N : Namespace} {x1 x2
   subst Heq
   icombine Hm1 Hm2 gives %Hvalid
   ipureintro
+  rw [Iris.Algebra.uLift_valid] at Hvalid
   rw [valid_iff (ReservationMap.singleton_op _ _ _).symm
     , ReservationMap.valid_singleton, toAgree_op_valid_iff_eq] at Hvalid
   exact Pos.encode_inj (LeibnizO.eqv_inj Hvalid)
@@ -296,8 +301,9 @@ theorem meta_set {A : Type _} [Pos.Countable A] {l : L} {E : CoPset} {N : Namesp
     (he : (↑N : CoPset) ⊆ E) : metaToken (GF := GF) l E ==∗ metaInfo l N x := by
   unfold metaToken metaInfo
   iintro ⟨%γm, #Hγm, Hm⟩
-  imod iOwn_update (ReservationMap.alloc (a := toAgree (⟨Pos.Countable.encode x⟩ : LeibnizO Pos))
-    (he _ (coPpick_nclose N)) Agree.toAgree_valid) $$ Hm with Hm
+  imod iOwn_update (Iris.Algebra.Update.uLift
+    (ReservationMap.alloc (a := toAgree (⟨Pos.Countable.encode x⟩ : LeibnizO Pos))
+      (he _ (coPpick_nclose N)) Agree.toAgree_valid)) $$ Hm with Hm
   imodintro
   iexists γm
   iframe Hγm Hm
@@ -367,7 +373,7 @@ theorem genHeap_alloc [DecidableEq L] {σ : H V} {l : L} {v : V} (Hσl : get? σ
     · exact absurd (Hdom l (by simp [dom, h])) (by simp [dom, Hσl])
   imod ghost_map_insert l v Hσl $$ Hσ with ⟨Hσ, Hl⟩
   imod (iOwn_alloc (E := genHeapPreS.metaData L V)
-    (ReservationMap.mkToken ⊤) ReservationMap.valid_token) with ⟨%γm, Hγm⟩
+    ⟨ReservationMap.mkToken ⊤⟩ ReservationMap.valid_token) with ⟨%γm, Hγm⟩
   imod ghost_map_insert_persist l γm Hml $$ Hm with ⟨Hm, Hlm⟩
   imodintro
   iframe Hl
