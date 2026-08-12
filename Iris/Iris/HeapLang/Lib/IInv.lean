@@ -40,7 +40,7 @@ macro "iinv " h:ident " with " pat:icasesPat : tactic =>
 
 section AaccInv
 variable {hlc : HasLC} {GF : BundledGFunctors} [InvGS_gen hlc GF]
-variable {TA TB : Tele}
+variable {A B : Type _}
 
 /-- The core of Rocq's `elim_acc_aacc`: open a **timeless** invariant `inv N I`
 *inside* an atomic accessor goal `atomicAcc E1 E2 α Pas β Φ` (needs `↑N ⊆ E1`),
@@ -48,7 +48,7 @@ keeping the goal an accessor. You are handed the body `I` (already stripped of
 `▷`, since it is timeless) and must prove an accessor at the reduced mask
 `E1 \ ↑N` whose abort/commit each hand `I` back (to re-close the invariant). -/
 theorem aacc_inv {E1 E2 : CoPset} {N : Namespace} {I : IProp GF} [Timeless I]
-    (α : TA → IProp GF) (Pas : IProp GF) (β Φ : TA → TB → IProp GF) (Hsub : ↑N ⊆ E1) :
+    (α : A → IProp GF) (Pas : IProp GF) (β Φ : A → B → IProp GF) (Hsub : ↑N ⊆ E1) :
     inv N I -∗
     (I -∗ atomicAcc (E1 \ ↑N) E2 α iprop(I ∗ Pas) β (fun x y => iprop(I ∗ Φ x y))) -∗
     atomicAcc E1 E2 α Pas β Φ := by
@@ -96,50 +96,23 @@ macro "iinv " h:ident " as " body:ident : tactic =>
 
 end AaccInv
 
-section AaccIntroTele
+section AaccIntroPacked
 open Lean Lean.Elab Lean.Elab.Tactic Lean.Meta Qq Std Iris.ProofMode
 
-/-- Build a telescope-argument value `x : Tele.Arg TA` whose components are fresh
-metavariables (for a concrete `nil`/`cons` telescope `TA`). Unifying `α x` against
-a *reduced* hypothesis then solves those metavariables — this is what lets us
-select a concrete resource like `l ↦ #b` against a telescope-encoded `α`. -/
-meta partial def mkTeleArgMVar (TA : Expr) : MetaM Expr := do
-  let TA ← whnfD TA
-  let fn := TA.getAppFn
-  match fn.constName? with
-  | some ``Iris.Tele.nil =>
-      let u := fn.constLevels![0]!
-      return mkConst ``PUnit.unit [Level.succ u]
-  | some ``Iris.Tele.cons =>
-      let u := fn.constLevels![0]!
-      let args := TA.getAppArgs
-      let X := args[0]!
-      let b := args[1]!
-      let xmv ← mkFreshExprMVar X
-      let bx ← whnfD (mkApp b xmv)
-      let rest ← mkTeleArgMVar bx
-      let motive ← withLocalDeclD `x X fun x =>
-        mkLambdaFVars #[x] (mkApp (mkConst ``Iris.Tele.Arg [u]) (mkApp b x))
-      return mkAppN (mkConst ``Sigma.mk [u, u]) #[X, motive, xmv, rest]
-  | _ => throwError "iaaccintro': telescope is not a concrete nil/cons: {TA}"
-
-/-- Like the upstream `iaaccintro`, but it locates the telescope witness `x` by
-unifying `α x` with the selected hypothesis *up to telescope reduction* (via
-`mkTeleArgMVar`), so it also works when the resource is a concrete `pointsTo`
-(e.g. `l ↦ #b`) rather than a syntactic `α x`. -/
+/-- Like `iaaccintro`, but it locates the packed witness by unifying `α x` with
+the selected hypothesis. This handles notation-generated lambdas whose head symbol
+is not syntactically visible in the selected resource. -/
 elab "iaaccintro' " " with " h:ident : tactic => do
   let pmt ← liftMacroM <| PMTerm.parse (← `(pmTerm| $h:ident))
   ProofModeM.runTactic λ mvar g => do
     let { prop, hyps, goal, .. } := g
     let goal ← instantiateMVars goal
-    let_expr atomicAcc _ _ _ TA TB Eo Ei α P β Φ := goal |
+    let_expr atomicAcc _ _ _ A B Eo Ei α P β Φ := goal |
       throwError "iaaccintro': goal is not an atomic accessor"
-    let uTB := (← inferType TB).getAppFn.constLevels![0]!
     let ⟨_, hyps', p, out, Hsel⟩ ← iHave hyps pmt false
     unless p.isConstOf ``false do
       throwError "iaaccintro': selected hypothesis must be spatial"
-    -- find `x : Tele.Arg TA` with `α x` defeq to the selected hypothesis `out`
-    let x ← mkTeleArgMVar TA
+    let x ← mkFreshExprMVar A
     unless ← isDefEq (mkApp α x) out do
       throwError "iaaccintro': selected hypothesis does not match the atomic precondition"
     let x ← instantiateMVars x
@@ -153,19 +126,16 @@ elab "iaaccintro' " " with " h:ident : tactic => do
       Hsub.mvarId!
     for sideGoal in sideGoals do
       addMVarGoal sideGoal
-    -- Reduce telescope applications (`Tele.app … ⟨b,()⟩ y`) so the abort/commit
-    -- subgoals are clean — the user never has to sprinkle `itele_reduce`.
-    let αx ← reduceTeleApps (mkApp α x)
+    let αx := mkApp α x
     let fupdP ← mkAppM ``FUpd.fupd #[Eo, Eo, P]
     let abortGoal ← mkAppM ``BIBase.wand #[αx, fupdP]
-    let yTy := mkApp (mkConst ``Iris.Tele.Arg [uTB]) TB
-    let commitGoal ← withLocalDeclD `y yTy fun y => do
-      let βxy ← reduceTeleApps (mkApp2 β x y)
-      let Φxy ← reduceTeleApps (mkApp2 Φ x y)
+    let commitGoal ← withLocalDeclD `y B fun y => do
+      let βxy := mkApp2 β x y
+      let Φxy := mkApp2 Φ x y
       let fupdΦ ← mkAppM ``FUpd.fupd #[Eo, Eo, Φxy]
       let body ← mkAppM ``BIBase.wand #[βxy, fupdΦ]
       let lam ← mkLambdaFVars #[y] body
-      mkAppM ``biTforall #[lam]
+      mkAppM ``BIBase.forall #[lam]
     let some abortGoal ← checkTypeQ abortGoal prop |
       throwError "iaaccintro': internal error, malformed abort subgoal"
     let some commitGoal ← checkTypeQ commitGoal prop |
@@ -182,11 +152,7 @@ theorem iunfoldCast {PROP : Type _} [BI PROP] {e ty ty' : PROP} (h : ty = ty') :
   subst h
   exact persistently_emp_intro.trans (persistently_mono (wand_intro emp_sep.1))
 
-/-- `iunfold f at h` δ-unfolds the definition `f` inside the **proof-mode** hypothesis `h`.
-This is a purely definitional change (the hypothesis' proof term is unchanged; validity is
-witnessed by `wand_rfl`), working around the fact that `simp only [f] at h` / `unfold f at h`
-do not apply to virtual proof-mode hypotheses.  Only sound for defs whose unfolding is `rfl`
-(i.e. not well-founded recursion); do **not** use it on recursive predicates like `contents`. -/
+/-- `iunfold f at h` δ-unfolds the definition `f` inside the proof-mode hypothesis `h`. -/
 elab "iunfold " f:ident " at " h:ident : tactic => do
   let declName ← Lean.Elab.realizeGlobalConstNoOverloadWithInfo f
   ProofModeM.runTactic fun mvar g => do
@@ -207,7 +173,7 @@ elab "iunfold " f:ident " at " h:ident : tactic => do
     let pf' ← addBIGoal hyps' goal
     mvar.assign q(Entails.trans $pf $pf')
 
-end AaccIntroTele
+end AaccIntroPacked
 
 section Test
 variable {hlc : HasLC} {GF : BundledGFunctors} [InvGS_gen hlc GF]
@@ -228,8 +194,8 @@ Here the invariant holds the atomic resource `α x0`; opening it hands us `α x0
 which we give to the accessor. On abort we return it unchanged; on commit the
 accessor's own `β x0 y = α x0` gives it straight back. Both branches also hand
 back the invariant body (added by `aacc_inv`) so it can be re-closed. -/
-example {TA TB : Tele} (N : Namespace) (x0 : TA)
-    (α : TA → IProp GF) (Pas : IProp GF) (Φ : TA → TB → IProp GF) [BI.Timeless (α x0)] :
+example {A B : Type _} (N : Namespace) (x0 : A)
+    (α : A → IProp GF) (Pas : IProp GF) (Φ : A → B → IProp GF) [BI.Timeless (α x0)] :
     ⊢ inv N (α x0) -∗ Pas -∗
       atomicAcc ⊤ ∅ α Pas (fun x _ => α x) (fun x y => iprop(Φ x y ∨ True)) := by
   iintro #Hinv HPas

@@ -45,7 +45,7 @@ def box_own_auth (γ : SliceName) (a : Auth (Option (Excl (ULift BoolO)))) : IPr
 
 instance box_own_auth_timeless (γ : SliceName) (a : Auth (Option (Excl (ULift BoolO)))) :
     BI.Timeless (box_own_auth (GF := GF) γ a) :=
-  iOwn_timeless (F := BoxF.{1,1}) (a := ((a, none) : BoxF.{1,1}.ap (IProp GF)))
+  iOwn_timeless (F := BoxF) (a := ((a, none) : BoxF.ap (IProp GF)))
 
 @[rocq_alias box_own_prop]
 def box_own_prop (γ : SliceName) (P : IProp GF) : IProp GF :=
@@ -148,7 +148,7 @@ theorem slice_insert_empty {M : Type _ → Type _} [LawfulFiniteMap M SliceName]
       slice N γ Q ∗ ▷?q box N (insert f γ false) iprop(Q ∗ P) := by
   unfold box
   iintro ⟨%Φ, #Heq, H⟩
-  imod (iOwn_alloc_cofinite (F := BoxF.{1,1}) ((((●E (⟨⟨false⟩⟩ : ULift BoolO)), none) • ((◯E (⟨⟨false⟩⟩ : ULift BoolO)), none)) •
+  imod (iOwn_alloc_cofinite (F := BoxF) ((((●E (⟨⟨false⟩⟩ : ULift BoolO)), none) • ((◯E (⟨⟨false⟩⟩ : ULift BoolO)), none)) •
         (UCMRA.unit, some (toAgree (Later.next Q)))) ((toList f).map Prod.fst)) with ⟨%γ, %Hγ, Hown⟩
   · exact ⟨ExclAuth.valid, Agree.toAgree_valid⟩
   have hfresh : get? f γ = none := by

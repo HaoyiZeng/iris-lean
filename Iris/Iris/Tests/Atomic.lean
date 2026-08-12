@@ -31,12 +31,12 @@ end AtomicUpdateNotation
 section AtomicUpdateTactics
 
 variable {PROP : Type _} [BI PROP] [BIFUpdate PROP]
-variable {TA TB : Tele}
+variable {A B : Type _}
 variable (E : CoPset)
-variable (α : TA → PROP)
-variable (β Φ : TA → TB → PROP)
+variable (α : A → PROP)
+variable (β Φ : A → B → PROP)
 
-example (x : TA) :
+example (x : A) :
     α x -∗ (∀ y, β x y -∗ Φ x y) -∗
     atomicUpdate E ∅ α β Φ := by
   iintro Hα HΦ
@@ -143,8 +143,7 @@ theorem inc_spec (l : Loc) :
   iapply wp_atomic (E2 := ∅)
 
   -- one-step open+destruct (peeling `IntoExists` instances give an ordinary `n`,
-  -- no packed `Sigma`/`PUnit`); then reduce the applied telescope functions so
-  -- `Hl : l ↦ some hl_val(#n)`
+  -- no telescope reduction is required.
   iauopen HAU with ⟨%n, Hl, Hclose⟩
 
   -- remove the fancy upd introced by wp_atomic

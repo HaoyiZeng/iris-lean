@@ -117,11 +117,6 @@ instance intoWand_persistently_false (q : Bool) [BI PROP] (R P Q : PROP) [Absorb
 @[rocq_alias from_forall_forall]
 instance fromForall_forall [BI PROP] (Φ : α → PROP) : FromForall (BIBase.forall Φ) Φ := ⟨.rfl⟩
 
-@[rocq_alias from_forall_tforall]
-instance fromForall_biTforall [BI PROP] {TT : Tele} (Φ : TT → PROP) :
-    FromForall (biTforall Φ) Φ where
-  from_forall := (biTforall_forall Φ).2
-
 @[rocq_alias from_forall_pure]
 instance fromForall_pure [BI PROP] (Φ : α → Prop) :
   FromForall (PROP:=PROP) iprop(⌜∀ a, Φ a⌝) (λ a => iprop(⌜Φ a⌝)) :=
@@ -163,11 +158,6 @@ instance fromForall_persistently [BI PROP] [BIPersistentlyForall PROP] {A} P (Φ
 @[rocq_alias into_forall_forall]
 instance intoForall_forall [BI PROP] (Φ : α → PROP) : IntoForall iprop(∀ a, Φ a) Φ := ⟨.rfl⟩
 
-@[rocq_alias into_forall_tforall]
-instance intoForall_biTforall [BI PROP] {TT : Tele} (Φ : TT → PROP) :
-    IntoForall (biTforall Φ) Φ where
-  into_forall := (biTforall_forall Φ).1
-
 @[rocq_alias into_forall_affinely]
 instance intoForall_affinely [BI PROP] (P : PROP) (Φ : α → PROP) [h : IntoForall P Φ] :
     IntoForall iprop(<affine> P) (fun a => iprop(<affine> (Φ a))) where
@@ -194,11 +184,6 @@ instance intoForall_wand_pure [BI PROP] (P Q : PROP) Φ
 -- FromExists
 instance (priority := default + 10) fromExists_exists [BI PROP] (Φ : α → PROP) :
     FromExists iprop(∃ a, Φ a) Φ := ⟨.rfl⟩
-
-@[rocq_alias from_exist_texist]
-instance fromExists_biTexist [BI PROP] {TT : Tele} (Φ : TT → PROP) :
-    FromExists (biTexist Φ) Φ where
-  from_exists := (biTexist_exist Φ).2
 
 @[rocq_alias from_exist_pure]
 instance fromExists_pure (φ : α → Prop) [BI PROP] :
@@ -229,36 +214,17 @@ instance fromExists_persistently [BI PROP] (P : PROP) (Φ : α → PROP) [h : Fr
 @[rocq_alias into_exist_exist]
 instance intoExists_exists [BI PROP] (Φ : α → PROP) : IntoExists (BI.exists Φ) Φ := ⟨.rfl⟩
 
-@[rocq_alias into_exist_texist]
-instance intoExists_biTexist [BI PROP] {TT : Tele} (Φ : TT → PROP) :
-    IntoExists (biTexist Φ) Φ where
-  into_exists := (biTexist_exist Φ).1
-
-/-- Peel one ordinary head binder off a `Tele.cons` telescopic existential (Lean
-analogue of Rocq's `Arguments bi_texist {_ !_} _ /` reducing a `TeleS`): so
-`icases`/`imod … with ⟨%x, …⟩` binds `x` at its user type directly, with no packed
-`Sigma`/`PUnit` witness — for telescopes of any depth. Higher priority than
-`intoExists_biTexist` so it wins for concrete `cons` telescopes; abstract
-telescopes still fall back to the packed form. -/
-instance (priority := 10000) intoExists_biTexist_cons
-    [BI PROP] {X : Type u} {b : X → Tele} (Ψ : Tele.cons b → PROP) :
-    IntoExists (biTexist Ψ) (fun x : X => biTexist (fun xs => Ψ ⟨x, xs⟩)) where
-  into_exists := .rfl
-
-/-- Collapse a `Tele.nil` telescopic existential to its body, passing an `IntoSep`
-through: after all head binders are peeled the residual `biTexist` over `nil` is
-just the body, so its `∗` stays destructable. -/
-instance (priority := 10000) intoSep_biTexist_nil
-    [BI PROP] (Ψ : Tele.nil → PROP) (Q1 Q2 : PROP) [inst : IntoSep (Ψ PUnit.unit) Q1 Q2] :
-    IntoSep (biTexist Ψ) Q1 Q2 where
-  into_sep := inst.into_sep
-
-/-- Collapse a `Tele.nil` telescopic existential to its body, passing an `IntoAnd`
-through (for destructing the final body's `∧`). -/
-instance (priority := 10000) intoAnd_biTexist_nil
-    [BI PROP] (p) (Ψ : Tele.nil → PROP) (Q1 Q2 : PROP) [inst : IntoAnd p (Ψ PUnit.unit) Q1 Q2] :
-    IntoAnd p (biTexist Ψ) Q1 Q2 where
-  into_and := inst.into_and
+/-- Peel product existentials one component at a time.  Packed atomic updates use
+right-nested products for multi-binder `AU` notation, and proof-mode destructuring
+should expose the original binders rather than a single tuple witness. -/
+instance (priority := default + 10) intoExists_prod [BI PROP]
+    {A R : Type _} (Φ : A × R → PROP) :
+    IntoExists (iprop(∃ p : A × R, Φ p)) (fun a : A => iprop(∃ r : R, Φ (a, r))) where
+  into_exists := by
+    refine exists_elim fun p => ?_
+    rcases p with ⟨a, r⟩
+    exact exists_intro_trans (Ψ := fun a => iprop(∃ r : R, Φ (a, r))) a
+      (exists_intro (Ψ := fun r : R => Φ (a, r)) r)
 
 @[rocq_alias into_exist_pure]
 instance intoExists_pure (φ : α → Prop) [BI PROP] :

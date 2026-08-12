@@ -392,8 +392,8 @@ atomic specs that open an invariant.
 * `atomicWP_inv`:在原子步周围打开 invariant(把 `▷ I` 加进原子的 pre/post)。
 * `tacAupdIntro`:把 `⊢ atomicUpdate ...` 目标降解为 `⊢ atomicAcc ...`(即"要造一个 AU,
   只需给出一次 atomic access")。
-* `iauopen HAU`:打开 client 手里的抽象 atomic update(= `imod` + `itele_reduce`),
-  拿到它的 α(已清掉 telescope 噪音),并得到 abort/commit 两个 closer。
+* `iauopen HAU`:打开 client 手里的抽象 atomic update(= `imod`),
+  拿到它的 α,并得到 abort/commit 两个 closer。
 
 派生 spec 带 mask `@ ↑plockN`,因为它要打开名字空间 `plockN` 的 invariant
 (logically-atomic spec 打开 invariant 的标准写法)。
@@ -453,7 +453,7 @@ pins `s = Free`) and updated to `Locked`.
 用 Rocq idiom `iauintro; iinv …; iaaccintro' …`(见 `release_plock_spec`)。
 和 release 的唯一区别在 commit:physical spec 交回 `⌜b = false⌝`,于是(经 agreement)
 推出抽象状态 `s = Free`,既满足 postcondition 的 `⌜s = Free⌝`,又能做 update `Free → Locked`。
-注意 client 这侧 pre 是 `∀ s`(telescope 多一个 `s`),打开 AU 时会拿到 `%s`。 -/
+注意 client 这侧 pre 是 `∀ s`,打开 AU 时会拿到 `%s`。 -/
 theorem acquire_plock_spec (γ : GName) (l : Loc) :
     ⊢@{IProp GF} plock_is_lock γ l -∗
       ⟪ ∀ s, plock_state γ s ⟫
@@ -507,7 +507,7 @@ theorem acquire_plock_spec (γ : GName) (l : Loc) :
     · iexact HΦ                                   -- Φ
 
 /-- **Clean, Rocq-style derivation** of the release spec, using the ported
-`elim_acc_aacc` (`aacc_inv`) and the telescope-aware `iaaccintro'`:
+`elim_acc_aacc` (`aacc_inv`) and packed `iaaccintro'`:
 `iauintro` turns the goal into a physical accessor, `aacc_inv` opens the lock
 invariant *inside* the accessor (keeping it an accessor), and `iaaccintro'`
 selects the physical cell and splits abort/commit — mirroring Rocq's
@@ -533,7 +533,7 @@ theorem release_plock_spec (γ : GName) (l : Loc) :
     · iframe HAU; iexact Hinv
   · -- commit: fire the client AU, ghost-update `Locked → Free`, rebuild the invariant
     iintro %y Hl
-    iauopen HAU with ⟨Hst3, Hclose⟩   -- open client AU (nil telescope)
+    iauopen HAU with ⟨Hst3, Hclose⟩   -- open client AU (Unit witness)
     cases b
     · -- physical `false` contradicts the client's `Locked`
       simp only [bToState]
