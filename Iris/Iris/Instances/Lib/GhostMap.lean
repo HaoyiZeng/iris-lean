@@ -100,7 +100,8 @@ theorem ghost_map_elems_unseal [DecidableEq K] γ (m : H V) dq :
     simp only [BigOpM.bigOpM_empty]
     iapply iOwn_unit (γ := γ) (ε := unit)
   · imodintro
-    iapply bigOpM_iOwn _ _ _ h
+    iapply bigOpM_iOwn (F := constOF (HeapView K (Agree (LeibnizO V)) H))
+      (URF := OFunctor.constOF_URFunctorContractive) (E := GhostMapG.elem) _ _ _ h
     unfold ghost_map_elem
     iexact H
 
@@ -207,7 +208,8 @@ theorem ghost_map_alloc_strong [DecidableEq K] (P : GName → Prop) (m : H V) :
     (Auth (DFrac.own 1) (V := Agree (LeibnizO V)) (∅ : H _)) P Hinf with ⟨%γ, %HP, G⟩
   · simpa only [auth_valid_iff] using DFrac.valid_own_one
   · iexists γ; iframe %HP
-    iapply BIUpdate.mono <| sep_mono_right <| bigOpM_iOwn_entail γ _ m
+    iapply BIUpdate.mono <| sep_mono_right <| bigOpM_iOwn_entail (F := constOF (HeapView K (Agree (LeibnizO V)) H))
+      (URF := OFunctor.constOF_URFunctorContractive) (E := GhostMapG.elem) γ _ m
     iapply BIUpdate.mono <| iOwn_op.mp
     iapply iOwn_update $$ G
     refine Update.equiv_right ?_
@@ -408,7 +410,8 @@ theorem ghost_map_insert_big [DecidableEq K] {γ m} (m' : H V) (Hdisj : m' ##ₘ
     · iapply iOwn_mono $$ H
       exact auth_inc_of_map_eq _ (map_equiv ((union_equiv h rfl).trans union_empty_left))
     · iapply (BigSepM.bigSepM_eqv_empty h).mpr; itrivial
-  · rw [←(bigOpM_iOwn γ _ _ h).to_eq, ←iOwn_op.to_eq]
+  · rw [←(bigOpM_iOwn (F := constOF (HeapView K (Agree (LeibnizO V)) H))
+      (URF := OFunctor.constOF_URFunctorContractive) (E := GhostMapG.elem) γ _ _ h).to_eq, ←iOwn_op.to_eq]
     imod iOwn_update (E := GhostMapG.elem) (update_big_alloc _
         (Std.PartialMap.map (fun x ↦ toAgree ⟨x⟩) m') (DFrac.own 1)
         (disjoint_map Hdisj) DFrac.valid_own_one
@@ -458,7 +461,8 @@ theorem ghost_map_update_big [DecidableEq K] {γ m} (m0 m1 : H V) (Heq : dom m0 
     · iapply (BigSepM.bigSepM_eqv_empty h).mpr; itrivial
   · unfold ghost_map_elem ghost_map_auth
     icombine H1 H2 as H
-    rw [←(bigOpM_iOwn γ _ _ h).to_eq, ←iOwn_op.to_eq]
+    rw [←(bigOpM_iOwn (F := constOF (HeapView K (Agree (LeibnizO V)) H))
+      (URF := OFunctor.constOF_URFunctorContractive) (E := GhostMapG.elem) γ _ _ h).to_eq, ←iOwn_op.to_eq]
     iapply iOwn_update $$ H
     refine Update.equiv_left (CMRA.op_right_eqv _ (BigOpM.bigOpM_map_eqv _ _ m0)) ?_
     have Heq' : dom (Std.PartialMap.map (fun x : V => toAgree (LeibnizO.mk x)) m0) =

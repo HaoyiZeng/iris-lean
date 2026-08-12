@@ -1765,6 +1765,23 @@ instance cmraProd : CMRA (α × β) where
     let ⟨z₂, w₂, hx₂, hz₂, hw₂⟩ := CMRA.extend vx₂ (OFE.dist_snd e)
     ⟨(z₁, z₂), (w₁, w₂), ⟨hx₁, hx₂⟩, ⟨hz₁, hz₂⟩, ⟨hw₁, hw₂⟩⟩
 
+#rocq_ignore prod_unit_instance "Use UCMRA instance"
+#rocq_ignore prod_ucmra_mixin "Use UCMRA instance"
+
+@[rocq_alias prodUR]
+instance ucmraProd {α β : Type _} [UCMRA α] [UCMRA β] : UCMRA (α × β) where
+  unit := (UCMRA.unit, UCMRA.unit)
+  unit_valid := ⟨UCMRA.unit_valid, UCMRA.unit_valid⟩
+  unit_left_id := ⟨UCMRA.unit_left_id, UCMRA.unit_left_id⟩
+  pcore_unit := by
+    simp only [CMRA.pcore, pcore]
+    exact OFE.equiv_dist.mpr fun _ =>
+      Option.bind_ne
+        (fun _ _ ha => Option.bind_ne
+          (fun _ _ hb => some_dist_some.mpr (dist_prod_ext ha hb))
+          (UCMRA.pcore_unit (α := β)).dist)
+        (UCMRA.pcore_unit (α := α)).dist
+
 theorem valid_fst {x : α × β} (h : ✓ x) : ✓ x.fst := h.left
 theorem valid_snd {x : α × β} (h : ✓ x) : ✓ x.snd := h.right
 

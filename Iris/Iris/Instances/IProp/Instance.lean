@@ -821,7 +821,7 @@ section big_op_instances
 open IProp OFE UPred BI GenMap ProofMode Algebra Std
 open scoped Iris.Std.PartialMap
 
-variable {GF F} [URFunctorContractive F] [E : ElemG GF F]
+variable {GF F} [URF : URFunctorContractive F] [E : ElemG GF F]
 
 @[rocq_alias own_cmra_sep_homomorphism]
 instance iOwn_cmra_sep_homomorphism (γ : GName) :
