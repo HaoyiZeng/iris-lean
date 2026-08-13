@@ -8,6 +8,7 @@ module
 public import Iris.BI
 public import Iris.ProofMode.Classes
 public import Iris.ProofMode.ModalityInstances
+public import Iris.Std.Delab
 public import Iris.Std.TC
 public import Iris.Std.RocqPorting
 
@@ -91,9 +92,39 @@ instance intoWand_forall (p q : Bool) [BI PROP] (Φ : α → PROP) (P Q : PROP) 
     [h : IntoWand p q (Φ x) ioP P ioQ Q] : IntoWand p q iprop(∀ x, Φ x) ioP P ioQ Q where
   into_wand := (intuitionisticallyIf_mono <| BI.forall_elim x).trans h.1
 
+/- Peel a packed atomic-update binder one component at a time.
+
+The counterpart of `intoExists_prod` for wands.  `intoWand_forall` supplies the
+witness as a metavariable and lets unification recover it from the body.  That
+fails for packed atomic-update binders, whose body is `auUncurry F ?x`: the
+family pattern-matches its argument, and a metavariable matches nothing, so the
+application is stuck and no unification is possible.
+
+Splitting the binder first makes the argument a *literal* pair `(a, ?r)`, which
+the family can reduce; the remaining component is then recovered the ordinary
+way.  Packing is right-nested, so a deeper packing just applies this instance
+again.
+
+Deliberately keyed on `auUncurry` under a wand rather than on any
+product-typed `∀`.  The general form matches goals whose binder type is still a
+metavariable, assigning it `?A × ?R` and then looping on `?R` forever --
+`BI/Lib/Fixpoint.lean` hits exactly that.
+
+Priority is *below* `intoWand_forall` so this is only ever a fallback.  Keying
+alone is not enough: when the wand's left side is itself a metavariable it
+happily unifies with `auUncurry ?F x`, which is again what `Fixpoint.lean` does.
+Ordering it last means it is reached only where the ordinary instance has
+already failed, which is exactly the packed case. -/
+set_option synthInstance.checkSynthOrder false in
+instance (priority := default - 10) intoWand_forall_auUncurry (p q : Bool) [BI PROP]
+    {A R : Type _} (F : A → R → PROP) (Ψ : A × R → PROP) (P Q : PROP) (a : A)
+    [h : IntoWand p q iprop(∀ r : R, auUncurry F (a, r) -∗ Ψ (a, r)) ioP P ioQ Q] :
+    IntoWand p q iprop(∀ x : A × R, auUncurry F x -∗ Ψ x) ioP P ioQ Q where
+  into_wand :=
+    (intuitionisticallyIf_mono <| forall_intro fun r => BI.forall_elim (a, r)).trans h.1
+
 @[rocq_alias into_wand_affine]
-instance intoWand_affinely (p q : Bool) [BI PROP] (R P Q : PROP) [h : IntoWand p q R ioP P ioQ Q] :
-    IntoWand p q iprop(<affine> R) ioP iprop(<affine> P) ioQ iprop(<affine> Q) where
+instance intoWand_affinely (p q : Bool) [BI PROP] (R P Q : PROP) [h : IntoWand p q R ioP P ioQ Q] :    IntoWand p q iprop(<affine> R) ioP iprop(<affine> P) ioQ iprop(<affine> Q) where
   into_wand := wand_intro <|
     (sep_congr intuitionisticallyIf_affinely intuitionisticallyIf_affinely).1.trans <|
     affinely_sep_mpr.trans <| affinely_mono <| wand_elim h.1
