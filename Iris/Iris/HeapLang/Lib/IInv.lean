@@ -137,6 +137,16 @@ elab "iaaccintro' " " with " h:ident : tactic => do
       if ← isDefEq (mkApp α xp₂) out then return some xp₂ else return none
     let some x ← packedWitness A |
       throwError "iaaccintro': selected hypothesis does not match the atomic precondition"
+    /- A binder group the precondition ignores -- an empty group, which the
+    notation encodes as `Unit` -- is not determined by matching, so its
+    component of the witness comes back unassigned.  Nothing downstream can
+    ever determine it either, and it would surface much later as a stray
+    `⊢ Unit` obligation attached to whichever block happens to close last.
+    There is exactly one inhabitant, so fill it in here. -/
+    for mvarId in ← getMVars x do
+      unless ← mvarId.isAssigned do
+        if ← isDefEq (← mvarId.getType) (mkConst ``Unit) then
+          mvarId.assign (mkConst ``Unit.unit)
     let x ← instantiateMVars x
     let some Eiq ← checkTypeQ Ei q(CoPset) |
       throwError "iaaccintro': malformed atomic accessor inner mask"
