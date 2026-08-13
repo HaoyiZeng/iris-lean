@@ -112,8 +112,30 @@ elab "iaaccintro' " " with " h:ident : tactic => do
     let ⟨_, hyps', p, out, Hsel⟩ ← iHave hyps pmt false
     unless p.isConstOf ``false do
       throwError "iaaccintro': selected hypothesis must be spatial"
-    let x ← mkFreshExprMVar A
-    unless ← isDefEq (mkApp α x) out do
+    /- The witness may be a packed tuple.  A single metavariable cannot be
+    unified against `auUncurry … ?x`, because that has to pattern-match its
+    argument and a metavariable matches nothing -- so build the pair explicitly
+    when a flat witness fails.  Packing is right-nested, so peeling one
+    component leaves the same problem: recurse. -/
+    let rec packedWitness (T : Expr) : MetaM (Option Expr) := do
+      let x ← mkFreshExprMVar T
+      if ← isDefEq (mkApp α x) out then return some x
+      let Twh ← whnf T
+      let_expr Prod T₁ T₂ := Twh | return none
+      let a ← mkFreshExprMVar T₁
+      let b ← mkFreshExprMVar T₂
+      let xp ← mkAppM ``Prod.mk #[a, b]
+      if ← isDefEq (mkApp α xp) out then return some xp
+      /- The right component is itself packed when there are three or more
+      binders; splitting it is the same step again. -/
+      let Twh₂ ← whnf T₂
+      let_expr Prod T₂₁ T₂₂ := Twh₂ | return none
+      let b₁ ← mkFreshExprMVar T₂₁
+      let b₂ ← mkFreshExprMVar T₂₂
+      let bp ← mkAppM ``Prod.mk #[b₁, b₂]
+      let xp₂ ← mkAppM ``Prod.mk #[a, bp]
+      if ← isDefEq (mkApp α xp₂) out then return some xp₂ else return none
+    let some x ← packedWitness A |
       throwError "iaaccintro': selected hypothesis does not match the atomic precondition"
     let x ← instantiateMVars x
     let some Eiq ← checkTypeQ Ei q(CoPset) |
