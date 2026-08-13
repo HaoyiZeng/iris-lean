@@ -22,15 +22,15 @@ open COFE
 abbrev GType := Nat
 
 @[rocq_alias gFunctor]
-abbrev GFunctor := Σ F : OFunctorPre, RFunctorContractive F
+abbrev GFunctor.{u, v, w} := Σ F : OFunctorPre.{u, v, w}, RFunctorContractive F
 
 @[rocq_alias gFunctors]
-def BundledGFunctors := GType → GFunctor
+def BundledGFunctors.{u, v, w} := GType → GFunctor.{u, v, w}
 
 def BundledGFunctors.default : BundledGFunctors := fun _ => ⟨constOF (ULift Unit), by infer_instance⟩
 
-def BundledGFunctors.set (GF : BundledGFunctors) (i : Nat) (FB : GFunctor) :
-    BundledGFunctors :=
+def BundledGFunctors.set (GF : BundledGFunctors.{u, v, w}) (i : Nat) (FB : GFunctor.{u, v, w}) :
+    BundledGFunctors.{u, v, w} :=
   fun j => if j = i then FB else GF j
 
 #rocq_ignore gid "Use `GType` (= `Nat`) to index `BundledGFunctors` directly."
@@ -44,7 +44,7 @@ abbrev GName := Nat
 #rocq_ignore gnameO "Use `LeibnizO GName`."
 
 @[rocq_alias iResF]
-abbrev IResF (GF : BundledGFunctors) : OFunctorPre :=
+abbrev IResF (GF : BundledGFunctors.{u, u, u}) : OFunctorPre.{u, u, u} :=
   DiscreteFunOF (fun i => GenMapOF (GF i).fst)
 
 #rocq_ignore subG "Superseded by `ElemG`."
@@ -53,27 +53,27 @@ abbrev IResF (GF : BundledGFunctors) : OFunctorPre :=
 #rocq_ignore subG_app_l "Lemma about `subG`; obsolete with `ElemG`."
 #rocq_ignore subG_app_r "Lemma about `subG`; obsolete with `ElemG`."
 
-instance (GF : BundledGFunctors) (i : GName) : RFunctorContractive ((GF i).fst) := (GF i).snd
+instance (GF : BundledGFunctors.{u, u, u}) (i : GName) : RFunctorContractive ((GF i).fst) := (GF i).snd
 
 section IProp
 
-variable (GF : BundledGFunctors)
+variable (GF : BundledGFunctors.{u, u, u})
 
 @[rocq_alias iProp_solution.iPrePropO, rocq_alias iProp_solution.iProp_result]
-def IPre : Type _ := OFunctor.Fix (UPredOF (IResF GF))
+def IPre : Type u := OFunctor.Fix (UPredOF (IResF GF))
 
 @[rocq_alias iProp_solution.iPreProp_cofe]
 instance : COFE (IPre GF) := inferInstanceAs (COFE (OFunctor.Fix _))
 
 @[rocq_alias iProp_solution.iResUR]
-def IResUR.{u} : Type u := (i : GType) → GenMap (GF i |>.fst (IPre GF) (IPre GF))
+def IResUR : Type u := (i : GType) → GenMap (GF i |>.fst (IPre GF) (IPre GF))
 
 #rocq_ignore iResUR "Sealed copy of `iProp_solution.iResUR`; not needed since Lean does not seal it."
 
 instance : UCMRA (IResUR GF) :=
   ucmraDiscreteFunO (β := fun (i : GType) => GenMap (GF i |>.fst (IPre GF) (IPre GF)))
 
-abbrev IProp.{u} : Type u := UPred (IResUR GF)
+abbrev IProp : Type u := UPred (IResUR GF)
 
 @[rocq_alias iProp_solution.iProp_unfold]
 def IProp.unfold : IProp GF -n> IPre GF :=

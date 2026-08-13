@@ -98,11 +98,10 @@ macro_rules
   | `(⟪ $[∀ $xs* , ]? $α:term ⟫ $e:term @ $E:term
       ⟪ $β:term | $z:ident : $_zty:term, RET $v:term; $post:term ⟫) => do
       let xs : List Ident := (xs.map (·.toList)).getD []
-      let zs : List Ident := [z]
       let pre  (b : Term) : MacroM Term := buildAuLam xs b
       let mid  (b : Term) : MacroM Term := do buildAuLam xs (← buildAuLam [] b)
       let full (b : Term) : MacroM Term := do
-        buildAuLam xs (← buildAuLam [] (← buildAuLam zs b))
+        buildAuLam xs (← buildAuLam [] (← `(fun ($z : $_zty) => $b)))
       `(atomicWP $e $E
           $(← pre  (← `(iprop($α))))
           $(← mid  (← `(iprop($β))))

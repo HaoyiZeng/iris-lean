@@ -1,7 +1,6 @@
 module
 
 public import Iris.HeapLang.Syntax
-public import Iris.Std.ULiftMap
 public import Iris.HeapLang.Semantics
 public import Iris.HeapLang.Notation
 public import Iris.HeapLang.Instances
@@ -21,9 +20,9 @@ open Iris ProgramLogic Language.Notation Std FromMathlib
 
 section HeapLangGS
 
-abbrev HeapF : Type → Type 1 := fun V => ULift (Std.ExtTreeMap Loc V compare)
+abbrev HeapF : Type → Type := fun V => Std.ExtTreeMap Loc V compare
 
-abbrev ProphMapF : Type → Type 1 := fun V => ULift (Std.ExtTreeMap ProphId V compare)
+abbrev ProphMapF : Type → Type := fun V => Std.ExtTreeMap ProphId V compare
 
 class HeapLangGpreS (hlc : outParam HasLC) (GF : BundledGFunctors) extends InvGpreS GF where
   heap_pre : genHeapPreS Loc (Option Val) GF HeapF
@@ -40,11 +39,11 @@ attribute [reducible, instance] HeapLangGS.heap
 attribute [reducible, instance] HeapLangGS.proph
 
 instance HeapLangState [HeapLangGS hlc GF] : StateInterp State Observation GF where
-  stateInterp σ _ κs _ := iprop% genHeapInterp ⟨σ.heap⟩ ∗ prophMapInterp κs σ.usedProphId
+  stateInterp σ _ κs _ := iprop% genHeapInterp σ.heap ∗ prophMapInterp κs σ.usedProphId
 
 theorem stateInterp_split [HeapLangGS hlc GF] (σ : State) (ns : Nat)
     (κs : List Observation) (nt : Nat) : iprop%
-    stateInterp σ ns κs nt ⊣⊢ genHeapInterp ⟨σ.heap⟩ ∗ prophMapInterp κs σ.usedProphId :=
+    stateInterp σ ns κs nt ⊣⊢ genHeapInterp σ.heap ∗ prophMapInterp κs σ.usedProphId :=
   .rfl
 
 theorem prophMapInterp_nil_append [HeapLangGS hlc GF] (κs : List Observation)
@@ -103,7 +102,7 @@ theorem heap_adequacy [HeapLangGpreS .hasLC GF] (e : Exp) σ (φ : Val → Prop)
   refine wp_adequacy (GF := GF) .NotStuck e σ φ ?_
   intro inst κs
   imod iOwn_alloc (E := GhostMapG.elem) (HeapView.Auth (H := HeapF) (.own 1)
-      (Std.PartialMap.map (fun v : Option Val => toAgree (LeibnizO.mk v)) ⟨σ.heap⟩))
+      (Std.PartialMap.map (fun v : Option Val => toAgree (LeibnizO.mk v)) σ.heap))
     HeapView.auth_one_valid with ⟨%γh, Hh⟩
   imod iOwn_alloc (E := GhostMapG.elem) (HeapView.Auth (H := HeapF) (.own 1)
       (Std.PartialMap.map (fun g : GName => toAgree (LeibnizO.mk g)) (∅ : HeapF GName)))
@@ -111,7 +110,7 @@ theorem heap_adequacy [HeapLangGpreS .hasLC GF] (e : Exp) σ (φ : Val → Prop)
   imod (ProphMap.init (H := ProphMapF) κs σ.usedProphId) with ⟨%Gproph, Hproph⟩
   letI instHeapLangGS : HeapLangGS .hasLC GF := ⟨⟨γh, γm⟩, Gproph⟩
   imodintro
-  iexists (fun σ κs => iprop% Iris.genHeapInterp ⟨σ.heap⟩ ∗ Iris.prophMapInterp κs σ.usedProphId)
+  iexists (fun σ κs => iprop% Iris.genHeapInterp σ.heap ∗ Iris.prophMapInterp κs σ.usedProphId)
   iexists (fun _ => iprop(True))
   simp only []
   -- NOTE: iframe %(@Hwp _) does not work here
@@ -230,7 +229,7 @@ theorem wp_alloc (v : Val) (Φ : Val → IProp GF ) :
     List.range_one, List.foldl_cons, List.foldl_nil]
   specialize Hi 0 (by simp) (by simp)
   rw [show l' + (0 : Int) = l' by cases l'; simp only [HAdd.hAdd, Loc.mk.injEq]; grind] at Hi ⊢
-  imod genHeap_alloc (v := some v) Hi $$ Hσ with ⟨Hσ, Hpt, _Hmt⟩
+  imod genHeap_alloc (H := HeapF) (v := some v) Hi $$ Hσ with ⟨Hσ, Hpt, _Hmt⟩
   imodintro
   iframe Hσ Hproph
   isplit <;> try itrivial

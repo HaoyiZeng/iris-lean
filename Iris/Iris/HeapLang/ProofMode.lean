@@ -162,23 +162,22 @@ public structure WpGoal where
   {bi : Q(BI $prop)}
   {ehyps : Q($prop)}
   hyps : Hyps bi ehyps
-  {GF : Q(BundledGFunctors.{1, 1, 1})}
+  {GF : Q(BundledGFunctors.{0, 0, 0})}
   {hlc : Q(HasLC)}
   ι : Q(IrisGS_gen $hlc Exp $GF)
   s : Q(Stuckness)
   E : Q(CoPset)
   e : Q(Exp)
   Φ : Q(Val → IProp $GF)
-  -- TODO: make the tactics work for universes other than 1
-  hu : QuotedLevelDefEq u 1
+  hu : QuotedLevelDefEq u 0
   hprop : $prop =Q IProp $GF
   hbi : $bi =Q UPred.instBIUPred
 
 public meta def ProofModeM.runTacticWp {α} (k : MVarId → WpGoal → ProofModeM α)
   : TacticM α := do
   ProofModeM.runTactic fun mvar {u, prop, bi, hyps, goal, ..} => do
-    let .defEq _ ← isLevelDefEqQ u 1
-      | throwError "The goal {goal} must be an `IProp` at universe level 1"
+    let .defEq _ ← isLevelDefEqQ u 0
+      | throwError "The goal {goal} must be an `IProp` at universe level 0"
     let ~q(IProp $GF) := prop
       | throwError "The goal {goal} must be an `IProp`"
     let ~q(UPred.instBIUPred) := bi
@@ -199,7 +198,7 @@ public theorem tac_wp_value_nofupd [ι : IrisGS_gen hlc Exp GF] {Δ} {s : Stuckn
   H.trans <| fupd_intro.trans (wp_value_fupd ⟨rfl⟩).2
 
 public meta def iWpValueHead {u}
-  {GF : Q(BundledGFunctors.{1, 1, 1})}
+  {GF : Q(BundledGFunctors.{0, 0, 0})}
   {hlc : Q(HasLC)}
   {prop : Q(Type u)}
   {bi : Q(BI $prop)}
@@ -212,7 +211,7 @@ public meta def iWpValueHead {u}
   (e : Q(Exp))
   (Φ : Q(Val → $prop))
 
-  (_hu : QuotedLevelDefEq u 1 := ⟨⟩)
+  (_hu : QuotedLevelDefEq u 0 := ⟨⟩)
   (_hprop : $prop =Q IProp $GF := ⟨⟩)
   (_hbi : $bi =Q UPred.instBIUPred := ⟨⟩)
   (_hwp : $κ =Q wp.def := ⟨⟩) :
@@ -268,7 +267,7 @@ elab "wp_expr_simp" : tactic =>
     mvar.assign q(tac_wp_expr_simp $pf $pfeq)
 
 public meta def iWpFinish {u}
-  {GF : Q(BundledGFunctors.{1, 1, 1})}
+  {GF : Q(BundledGFunctors.{0, 0, 0})}
   {hlc : Q(HasLC)}
   {prop : Q(Type u)}
   {bi : Q(BI $prop)}
@@ -281,7 +280,7 @@ public meta def iWpFinish {u}
   (e : Q(Exp))
   (Φ : Q(Val → $prop))
 
-  (_hu : QuotedLevelDefEq u 1 := ⟨⟩)
+  (_hu : QuotedLevelDefEq u 0 := ⟨⟩)
   (_hprop : $prop =Q IProp $GF := ⟨⟩)
   (_hbi : $bi =Q UPred.instBIUPred := ⟨⟩)
   (_hwp : $κ =Q wp.def := ⟨⟩) :
