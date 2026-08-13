@@ -162,8 +162,10 @@ nonrec theorem inv_alloc {p : NaInvPoolName} {E : CoPset} {N : Namespace} {P : I
     .prod (P := (· = ⟨valid ∅⟩)) (.id rfl)
       (Iris.Algebra.UpdateP.uLift (alloc_empty_updateP_strong' (fresh_name · N)))
       (fun a b ha ⟨i, hb, hi⟩ => ⟨i, Prod.ext ha (congrArg ULift.up hb), hi⟩)
-  imod iOwn_updateP Hupd $$ Hempty with ⟨%y, %Hy, Hown⟩
-  obtain ⟨i, rfl, Hi⟩ := Hy
+  imod iOwn_updateP Hupd $$ Hempty with ⟨%y1, %y2, %Hy, Hown⟩
+  obtain ⟨i, hy, Hi⟩ := Hy
+  simp only [Prod.mk.injEq] at hy
+  obtain ⟨rfl, rfl⟩ := hy
   unfold inv
   imod inv_alloc N E iprop( P ∗ iOwn (E := W.inv) p (⟨valid ∅⟩, ⟨valid {i}⟩) ∨ own p {i}) $$ [HP Hown]
     with HI
