@@ -17,13 +17,13 @@ namespace Iris
 
 /-- Stable head symbol for packed atomic-update binders.  Kept separate from
 `Std.uncurry` so notation and delaboration can recognize AU binder packing. -/
-def auUncurry {α β : Type _} {PROP : Type _} (p : α → β → PROP) : α × β → PROP :=
+@[reducible] def auUncurry {α β : Type _} {PROP : Type _} (p : α → β → PROP) : α × β → PROP :=
   fun (x, y) => p x y
 
 @[simp] theorem auUncurry_pair {α β : Type _} {PROP : Type _}
     (x : α) (y : β) (p : α → β → PROP) : auUncurry p (x, y) = p x y := rfl
 
-theorem auUncurry_eq {α β : Type _} {PROP : Type _}
+@[defeq] theorem auUncurry_eq {α β : Type _} {PROP : Type _}
     (x : α × β) (p : α → β → PROP) : auUncurry p x = p x.fst x.snd := rfl
 
 end Iris
@@ -96,6 +96,32 @@ def delabUncurryAsTuple (k : DelabM α) : DelabM (Term × α) :=
   enterUncurryChain #[] fun binders => do
     let (pats, a) ← delabBinders binders.toList k
     return (← buildTupleTerm pats, a)
+
+def prodMk? (e : Expr) : Option (Expr × Expr) := do
+  let e := e.consumeMData
+  guard (e.isAppOfArity ``Prod.mk 4)
+  let args := e.getAppArgs
+  some (args[2]!, args[3]!)
+
+/-- Delaborate an applied packed AU family:
+`auUncurry f (a, b)` is displayed as `f a b`.
+
+This is separate from the atomic-update delaborators: it also cleans proof-mode
+hypotheses whose type contains an already-applied packed family. -/
+@[delab app.Iris.auUncurry]
+def delabAuUncurryApp : Delab := do
+  let e ← getExpr
+  /- At least the four arguments of `auUncurry` plus the tuple.  Anything beyond
+  that is over-application -- `auUncurry f (a, b) y` -- which happens whenever a
+  packed family is a *function*, as the commit side of an update is.  Those
+  extra arguments are carried through rather than dropped. -/
+  guard (e.isAppOfArity' ``_root_.Iris.auUncurry 5 || e.getAppNumArgs > 5)
+  guard (e.isAppOf ``_root_.Iris.auUncurry)
+  let args := e.getAppArgs
+  let some (a, b) := prodMk? args[4]! | failure
+  let extra := args[5:].toArray
+  let reduced ← Core.betaReduce (mkAppN (mkAppN args[3]! #[a, b]) extra)
+  withTheReader SubExpr (fun ctx => { ctx with expr := reduced }) delab
 
 end Iris.Delab
 
