@@ -370,7 +370,8 @@ PROP : Type u_1
 inst✝ : BI PROP
 P : PROP
 ⊢ ⏎
-  ⊢ ∀ x, P
+  ────────────────────────────────────────────────────────────∗
+  ∀ x, P
 -/
 #guard_msgs in
 example [BI PROP] (P : PROP) {x : Nat} : ⊢ P := by
@@ -1079,7 +1080,8 @@ example [BI PROP] (Q : PROP) : P ⊢ (P -∗ Q) -∗ Q := by
 -- Test `ispecialize` with failing `//`
 /--
 error: ispecialize: itrivial could not solve ⏎
-⊢ False
+────────────────────────────────────────────────────────────∗
+False
 -/
 #guard_msgs in
 example [BI PROP] (Q : PROP) : ⊢ (False -∗ Q) -∗ Q := by
@@ -2227,8 +2229,9 @@ PROP : Type u_1
 inst✝ : BI PROP
 P Q : PROP
 ⊢ ⏎
-  ∗HQ : Q
-  ⊢ emp
+  HQ : Q
+  ────────────────────────────────────────────────────────────∗
+  emp
 -/
 #guard_msgs in
 example [BI PROP] (P Q : PROP) : P ∗ Q ⊢ P := by
@@ -2658,8 +2661,10 @@ PROP : Type u
 ι₂ : BILoeb PROP
 P Q : PROP
 ⊢ ⏎
-  □IHH : ▷ (P -∗ Q)
-  ⊢ P -∗ Q
+  IHH : ▷ (P -∗ Q)
+  ────────────────────────────────────────────────────────────□
+  ────────────────────────────────────────────────────────────∗
+  P -∗ Q
 -/
 #guard_msgs in
 example (P Q : PROP) :
@@ -2674,9 +2679,11 @@ PROP : Type u
 ι₂ : BILoeb PROP
 P Q : PROP
 ⊢ ⏎
-  □IH : ▷ (P -∗ Q)
-  ∗HP : P
-  ⊢ Q
+  IH : ▷ (P -∗ Q)
+  ────────────────────────────────────────────────────────────□
+  HP : P
+  ────────────────────────────────────────────────────────────∗
+  Q
 -/
 #guard_msgs in
 example (P Q : PROP) :
@@ -2692,10 +2699,12 @@ PROP : Type u
 ι₂ : BILoeb PROP
 P₁ P₂ Q : PROP
 ⊢ ⏎
-  □HP1 : P₁
-  □IH : ▷ (P₂ -∗ Q)
-  ∗HP2 : P₂
-  ⊢ Q
+  HP1 : P₁
+  IH : ▷ (P₂ -∗ Q)
+  ────────────────────────────────────────────────────────────□
+  HP2 : P₂
+  ────────────────────────────────────────────────────────────∗
+  Q
 -/
 #guard_msgs in
 example (P₁ P₂ Q : PROP) :
@@ -2711,11 +2720,13 @@ PROP : Type u
 ι₂ : BILoeb PROP
 P₁ P₂ P₃ Q : PROP
 ⊢ ⏎
-  □HP1 : P₁
-  □IH : ▷ (P₃ -∗ P₂ -∗ Q)
-  ∗HP3 : P₃
-  ∗HP2 : P₂
-  ⊢ Q
+  HP1 : P₁
+  IH : ▷ (P₃ -∗ P₂ -∗ Q)
+  ────────────────────────────────────────────────────────────□
+  HP3 : P₃
+  HP2 : P₂
+  ────────────────────────────────────────────────────────────∗
+  Q
 -/
 #guard_msgs in
 example (P₁ P₂ P₃ Q : PROP) :
@@ -2734,9 +2745,11 @@ P Q : Nat → PROP
 n : Nat
 h1 : H₁ n
 ⊢ ⏎
-  □IH : ▷ ∀ n, <affine> ⌜H₁ n⌝ -∗ P n -∗ Q n
-  ∗p : P n
-  ⊢ Q n
+  IH : ▷ ∀ n, <affine> ⌜H₁ n⌝ -∗ P n -∗ Q n
+  ────────────────────────────────────────────────────────────□
+  p : P n
+  ────────────────────────────────────────────────────────────∗
+  Q n
 -/
 #guard_msgs in
 example (n : Nat) (H₁ : Nat → Prop) (P Q : Nat → PROP) :
@@ -2757,9 +2770,11 @@ P Q : Nat → PROP
 n : Nat
 h1 : H₁ n
 ⊢ ⏎
-  □IH : ▷ ∀ n, ⌜H₁ n⌝ -∗ P n -∗ Q n
-  ∗p : P n
-  ⊢ Q n
+  IH : ▷ ∀ n, ⌜H₁ n⌝ -∗ P n -∗ Q n
+  ────────────────────────────────────────────────────────────□
+  p : P n
+  ────────────────────────────────────────────────────────────∗
+  Q n
 -/
 #guard_msgs in
 example [i : BIAffine PROP] (n : Nat) (H₁ : Nat → Prop) (P Q : Nat → PROP) :

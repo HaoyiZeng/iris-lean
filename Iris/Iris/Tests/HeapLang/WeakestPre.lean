@@ -28,7 +28,8 @@ GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 v : Val
 ⊢ ⏎
-  ⊢ |={⊤}=> True
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> True
 -/
 #guard_msgs in
 example : ⊢@{IProp GF} WP (v : Exp) {{ v, True }} := by
@@ -41,7 +42,8 @@ GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 v : Val
 ⊢ ⏎
-  ⊢ |={⊤}=> True
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> True
 -/
 #guard_msgs in
 example : ⊢@{IProp GF} WP (v : Exp) {{ v, |={⊤}=> True }} := by
@@ -54,7 +56,8 @@ GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 v : Val
 ⊢ ⏎
-  ⊢ WP hl(v(&v)) {{ v, True }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl(v(&v)) {{ v, True }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF} WP (v : Exp) {{ v, WP ((v : Val) : Exp) {{ v, True }} }} := by
@@ -71,7 +74,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl(((#0 + #1) + #2)) {{ v, WP hl((v(&v) + #3)) {{ v, True }} }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl(((#0 + #1) + #2)) {{ v, WP hl((v(&v) + #3)) {{ v, True }} }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(((#0 + #1) + #2) + #3) {{ v, True }} := by
@@ -84,7 +88,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl((((#0 + #1) + #2) + #3)) {{ v, True }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl((((#0 + #1) + #2) + #3)) {{ v, True }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(((#0 + #1) + #2) + #3) {{ v, True }} := by
@@ -96,7 +101,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl(((#0 + #1) + #2)) {{ v, WP hl((v(&v) + #3)) {{ v, True }} }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl(((#0 + #1) + #2)) {{ v, WP hl((v(&v) + #3)) {{ v, True }} }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(((#0 + #1) + #2) + #3) {{ v, True }} := by
@@ -108,7 +114,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl((#0 + #1)) {{ v, WP hl(((v(&v) + #2) + #3)) {{ v, True }} }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl((#0 + #1)) {{ v, WP hl(((v(&v) + #2) + #3)) {{ v, True }} }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(((#0 + #1) + #2) + #3) {{ v, True }} := by
@@ -120,7 +127,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl((#2 + (#1 + #2))) {{ v, True }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl((#2 + (#1 + #2))) {{ v, True }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(#2 + (#1 + #2)) {{ v, True }} := by
@@ -133,7 +141,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl((#1 + #2)) {{ v, WP hl((#2 + v(&v))) {{ v, True }} }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl((#1 + #2)) {{ v, WP hl((#2 + v(&v))) {{ v, True }} }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(#2 + (#1 + #2)) {{ v, True }} := by
@@ -145,7 +154,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ WP hl(snd((#1, #0))) {{ v, WP hl((v(&v) + #1)) {{ v, True }} }}
+  ────────────────────────────────────────────────────────────∗
+  WP hl(snd((#1, #0))) {{ v, WP hl((v(&v) + #1)) {{ v, True }} }}
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(snd((#1,#0)) + #1) {{ v, True }} := by
@@ -161,7 +171,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ |={⊤}=> ⌜hl_val(#0) = hl_val(#0)⌝
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> ⌜hl_val(#0) = hl_val(#0)⌝
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(if #false then #1 else #0) {{ v, ⌜v = hl_val(#0)⌝ }} := by
@@ -174,7 +185,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ |={⊤}=> ⌜hl_val(#1) = hl_val(#1)⌝
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> ⌜hl_val(#1) = hl_val(#1)⌝
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(if #true then #1 else #0) {{ v, ⌜v = hl_val(#1)⌝ }} := by
@@ -187,7 +199,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ |={⊤}=> ⌜hl_val(#2) = hl_val(#2)⌝
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> ⌜hl_val(#2) = hl_val(#2)⌝
 -/
 #guard_msgs in
 example : ⊢@{IProp GF}  WP hl(snd(v((#1,#2)))) {{ v, ⌜v = hl_val(#2)⌝ }} := by
@@ -205,7 +218,8 @@ hlc : HasLC
 GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 ⊢ ⏎
-  ⊢ |={⊤}=> ⌜hl_val(#2) = hl_val(#2)⌝
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> ⌜hl_val(#2) = hl_val(#2)⌝
 -/
 #guard_msgs in
 example : ⊢@{IProp GF} WP hl(if #true then if #false then #1 else #2 else #3) {{ v, ⌜v = hl_val(#2)⌝ }} := by
@@ -218,7 +232,8 @@ GF : BundledGFunctors
 ι : IrisGS_gen hlc Exp GF
 n : Int
 ⊢ ⏎
-  ⊢ |={⊤}=> ⌜hl_val(#(hl_val(#(decide (1 * 2 <<< 3 ≤ n + (1 &&& 2 ^^^ 3)))) == hl_val(#true))) = hl_val(#true)⌝
+  ────────────────────────────────────────────────────────────∗
+  |={⊤}=> ⌜hl_val(#(hl_val(#(decide (1 * 2 <<< 3 ≤ n + (1 &&& 2 ^^^ 3)))) == hl_val(#true))) = hl_val(#true)⌝
 -/
 #guard_msgs in
 example (n : Int) : ⊢@{IProp GF} WP hl((#1 * #2 <<< #3 ≤ #n + (#1 &&& #2 ^^^ #3)) = #true) {{ v, ⌜v = hl_val(#true)⌝ }} := by
