@@ -93,11 +93,11 @@ info: ⟪∀ x, α x⟫ e @ E ⟪∃ y, β x y | z, RET f x y z; POST x y z⟫ :
 #check (⟪ ∀ x, α x ⟫ e @ E ⟪ ∃ y, β x y | z, RET f x y z; POST x y z ⟫ : IProp GF)
 
 example : IProp GF :=
-  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ ∀ n m, α₂ n m ⟫ e @ E
   ⟪ β₂ n m | RET f₂ n m ⟫
 
 example : IProp GF :=
-  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ ∀ n m, α₂ n m ⟫ e @ E
   ⟪ ∃ y, β₂out n m y | z, RET f₂out n m y z; POST₂ n m y z ⟫
 
 example : IProp GF :=
@@ -109,7 +109,7 @@ example : IProp GF :=
   ⟪ ∃ y, β n y | RET fout n y ⟫
 
 example : IProp GF :=
-  ⟪ ∀ n, ∀ m, α₂ n m ⟫ e @ E
+  ⟪ ∀ n m, α₂ n m ⟫ e @ E
   ⟪ ∃ y, β₂out n m y | RET f₂pub n m y ⟫
 
 end AtomicWpNotation
@@ -172,12 +172,15 @@ theorem inc_spec (l : Loc) :
     · iintro %v ⟨%Hv, Hl⟩
       icases Hclose with ⟨-, Hcommit⟩
 
+      ispecialize Hcommit $$ %⟨⟩
       imod Hcommit $$ Hl with Hcommit
       imodintro
       rw [Hv]
       wp_pures
       imodintro
-      itrivial
+      ispecialize Hcommit $$ %⟨⟩
+      dsimp only [wandM]
+      iexact Hcommit
   · iapply wp_wand $$ [Hl]
     · iapply wp_cmpXchg_fail rfl rfl $$ Hl
       · trivial

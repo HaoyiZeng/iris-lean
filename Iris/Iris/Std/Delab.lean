@@ -16,9 +16,18 @@ accepts plain identifier binders.
 namespace Iris
 
 /-- Stable head symbol for packed atomic-update binders.  Kept separate from
-`Std.uncurry` so notation and delaboration can recognize AU binder packing. -/
+`Std.uncurry` so notation and delaboration can recognize AU binder packing.
+
+Defined with *projections* rather than a pattern match on purpose.  `fun (x, y) =>
+p x y` elaborates to a `match` on the argument, which is stuck whenever that
+argument is a metavariable -- exactly the situation every tactic is in when it
+has to synthesize a packed witness (`ispecialize`, `imod`, `iaaccintro'`, ...).
+With projections the application beta-reduces to `p ?y.1 ?y.2` instead, and
+first-order unification plus definitional eta for structures recovers
+`?y := (a, b)`.  This is what the telescope encoding got for free by recursing
+on the (closed) telescope rather than matching on the argument. -/
 @[reducible] def auUncurry {α β : Type _} {PROP : Type _} (p : α → β → PROP) : α × β → PROP :=
-  fun (x, y) => p x y
+  fun x => p x.fst x.snd
 
 @[simp] theorem auUncurry_pair {α β : Type _} {PROP : Type _}
     (x : α) (y : β) (p : α → β → PROP) : auUncurry p (x, y) = p x y := rfl

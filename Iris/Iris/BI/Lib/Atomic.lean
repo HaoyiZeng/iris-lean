@@ -1,7 +1,7 @@
 module
 
 public import Iris.BI
-public meta import Iris.Std.Delab
+public import Iris.Std.Delab
 public import Iris.BI.Updates
 public import Iris.BI.Lib.Fixpoint
 public meta import Iris.ProofMode.Tactics
