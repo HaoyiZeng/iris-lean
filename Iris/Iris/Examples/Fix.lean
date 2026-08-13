@@ -27,6 +27,10 @@ by relying on the default Lean tactics.
 section Fix
 open Iris OFE COFE
 
+/- `constOF` used to fix its argument at `Type 1`, which pinned these; it is
+universe-polymorphic now, so say so explicitly rather than leave the level to
+be solved from nothing. -/
+variable {Val Err : Type 1}
 variable [OFE Val] [OFE Err] [IsCOFE Val] [IsCOFE Err] [Inhabited Err]
 
 abbrev DomF : OFunctorPre :=
@@ -44,6 +48,7 @@ abbrev Dom (Val : Type _) (Err : Type _) [OFE Val] [OFE Err] [IsCOFE Val] [IsCOF
 namespace Dom
 open Iris OFE COFE
 
+variable {V E : Type 1}
 variable [OFE V] [Leibniz V] [OFE E] [Leibniz E] [IsCOFE V] [IsCOFE E] [Inhabited E]
 
 def fold : V ⊕ E ⊕ Later (Dom V E) ⊕ Later (Dom V E -n> Dom V E) -n> Dom V E :=

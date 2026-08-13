@@ -13,7 +13,7 @@ public import Iris.ProgramLogic.WeakestPre
 
 namespace Iris.HeapLang
 
-variable {hlc} {GF : BundledGFunctors} [ι : IrisGS_gen hlc HeapLang.Exp GF]
+variable {hlc} {GF : BundledGFunctors.{0,0,0}} [ι : IrisGS_gen hlc HeapLang.Exp GF]
 set_option linter.unusedVariables false
 set_option pp.mvars false
 

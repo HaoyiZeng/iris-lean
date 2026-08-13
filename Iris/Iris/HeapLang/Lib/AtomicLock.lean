@@ -201,7 +201,7 @@ theorem release_tada_spec (γ : ALockName) (lk : Val) :
   -- open the atomic update *before* the physical step (release commits its
   -- abstract effect via ghost state, independent of the store's timing)
   iapply fupd_wp
-  iauopen HAU with ⟨Hl, Hclose⟩
+  iauopen HAU with ⟨%_, Hl, Hclose⟩
   simp only [tada_lock_state, ↓reduceIte]
   icases Hl with ⟨Hvar1, Hlocked, Hvar2⟩
   icases Hclose with ⟨-, Hcommit⟩
@@ -533,7 +533,7 @@ theorem release_plock_spec (γ : GName) (l : Loc) :
     · iframe HAU; iexact Hinv
   · -- commit: fire the client AU, ghost-update `Locked → Free`, rebuild the invariant
     iintro %y Hl
-    iauopen HAU with ⟨Hst3, Hclose⟩   -- open client AU (Unit witness)
+    iauopen HAU with ⟨%_, Hst3, Hclose⟩   -- open client AU (Unit witness)
     cases b
     · -- physical `false` contradicts the client's `Locked`
       simp only [bToState]
