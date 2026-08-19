@@ -590,23 +590,75 @@ elab "iauintro" : tactic => do
     let pf ← mkAppM ``tacAupdIntroExplicitPM #[α, β, Φ, Δactual, Eo, Ei, Hacc]
     mvar.assign pf
 
-elab "iaaccintro" " with " h:ident : tactic => do
+/-- Discharge an atomic accessor goal `atomicAcc Eo Ei α P β Φ` using a hypothesis
+that supplies the atomic precondition, leaving the abort and commit branches as
+subgoals **at the outer mask** -- the descent to `Ei` and the climb back are done
+here, so neither subgoal mentions `Ei`.
+
+The witness `x` is recovered by unifying `α x` against the selected hypothesis.
+It may be a packed tuple: multi-binder notation compiles `⟪ ∀ x y, α ⟫` to
+`auUncurry (fun x y => α)`, whose head symbol is not `α` and which cannot reduce
+against a bare metavariable, so the pair is built explicitly when a flat witness
+fails. -/
+syntax "iaaccintro" " with " ident (" using " term)? : tactic
+
+elab_rules : tactic
+  | `(tactic| iaaccintro with $h:ident $[using $w:term]?) => do
   let pmt ← liftMacroM <| PMTerm.parse (← `(pmTerm| $h:ident))
   ProofModeM.runTactic λ mvar g => do
     let { prop, hyps, goal, .. } := g
     let goal ← instantiateMVars goal
-    let_expr atomicAcc _ _ _ _ B Eo Ei α P β Φ := goal |
+    let_expr atomicAcc _ _ _ A B Eo Ei α P β Φ := goal |
       throwError "iaaccintro: goal is not an atomic accessor"
     let ⟨_, hyps', p, out, Hsel⟩ ← iHave hyps pmt false
     unless p.isConstOf ``false do
       throwError "iaaccintro: selected hypothesis must be spatial"
-    let outFn := out.getAppFn
-    let outArgs := out.getAppArgs
-    unless outArgs.size == 1 do
-      throwError "iaaccintro: selected hypothesis does not match the atomic precondition"
-    unless ← isDefEq outFn α do
-      throwError "iaaccintro: selected hypothesis does not match the atomic precondition"
-    let x := outArgs[0]!
+    /- The witness may be a packed tuple.  A single metavariable cannot be
+    unified against `auUncurry … ?x`, because that has to pattern-match its
+    argument and a metavariable matches nothing -- so build the pair explicitly
+    when a flat witness fails.  Packing is right-nested, so peeling one
+    component leaves the same problem: recurse. -/
+    let rec packedWitness (T : Expr) : MetaM (Option Expr) := do
+      let x ← mkFreshExprMVar T
+      if ← isDefEq (mkApp α x) out then return some x
+      let Twh ← whnf T
+      let_expr Prod T₁ T₂ := Twh | return none
+      let a ← mkFreshExprMVar T₁
+      let b ← mkFreshExprMVar T₂
+      let xp ← mkAppM ``Prod.mk #[a, b]
+      if ← isDefEq (mkApp α xp) out then return some xp
+      /- The right component is itself packed when there are three or more
+      binders; splitting it is the same step again. -/
+      let Twh₂ ← whnf T₂
+      let_expr Prod T₂₁ T₂₂ := Twh₂ | return none
+      let b₁ ← mkFreshExprMVar T₂₁
+      let b₂ ← mkFreshExprMVar T₂₂
+      let bp ← mkAppM ``Prod.mk #[b₁, b₂]
+      let xp₂ ← mkAppM ``Prod.mk #[a, bp]
+      if ← isDefEq (mkApp α xp₂) out then return some xp₂ else return none
+    /- Inferring the witness costs a `isDefEq` against `α`, which on a large
+    precondition can be far more expensive than the rest of the tactic.  `using e`
+    supplies it directly and skips the search. -/
+    let x ← match w with
+      | some wStx => Lean.Elab.Term.elabTerm wStx (some A)
+      | none => do
+          let some x ← packedWitness A |
+            throwError "iaaccintro: selected hypothesis does not match the atomic \
+              precondition; supply the witness with `iaaccintro with h using e`"
+          pure x
+    unless ← isDefEq (mkApp α x) out do
+      throwError "iaaccintro: the witness does not match the selected hypothesis"
+    /- A binder group the precondition ignores -- an empty group, which the
+    notation encodes as `Unit` -- is not determined by matching, so its
+    component of the witness comes back unassigned.  Nothing downstream can
+    ever determine it either, and it would surface much later as a stray
+    `⊢ Unit` obligation attached to whichever block happens to close last.
+    There is exactly one inhabitant, so fill it in here. -/
+    for mvarId in ← getMVars x do
+      unless ← mvarId.isAssigned do
+        if ← isDefEq (← mvarId.getType) (mkConst ``Unit) then
+          mvarId.assign (mkConst ``Unit.unit)
+    let x ← instantiateMVars x
     let some Eiq ← checkTypeQ Ei q(CoPset) |
       throwError "iaaccintro: malformed atomic accessor inner mask"
     let some Eoq ← checkTypeQ Eo q(CoPset) |
@@ -620,8 +672,7 @@ elab "iaaccintro" " with " h:ident : tactic => do
     let αx := mkApp α x
     let fupdP ← mkAppM ``FUpd.fupd #[Eo, Eo, P]
     let abortGoal ← mkAppM ``BIBase.wand #[αx, fupdP]
-    let yTy := B
-    let commitGoal ← withLocalDeclD `y yTy fun y => do
+    let commitGoal ← withLocalDeclD `y B fun y => do
       let βxy := mkApp2 β x y
       let Φxy := mkApp2 Φ x y
       let fupdΦ ← mkAppM ``FUpd.fupd #[Eo, Eo, Φxy]

@@ -78,7 +78,7 @@ theorem aacc_inv {E1 E2 : CoPset} {N : Namespace} {I : IProp GF} [Timeless I]
 
 /-- Open a timeless invariant `h : inv N I` *inside an atomic accessor goal*
 `atomicAcc E1 E2 α P β Φ` (via `aacc_inv`), handing you the body as `body`. The
-accessor is preserved, so `iaaccintro'` can finish it — this is the Rocq
+accessor is preserved, so `iaaccintro` can finish it — this is the Rocq
 `iInv … ; iaaccintro …` idiom. Companion to the fupd-goal `iinv … with …`. -/
 macro "iinv " h:ident " as " body:ident : tactic =>
   `(tactic|
@@ -99,83 +99,11 @@ end AaccInv
 section AaccIntroPacked
 open Lean Lean.Elab Lean.Elab.Tactic Lean.Meta Qq Std Iris.ProofMode
 
-/-- Like `iaaccintro`, but it locates the packed witness by unifying `α x` with
-the selected hypothesis. This handles notation-generated lambdas whose head symbol
-is not syntactically visible in the selected resource. -/
-elab "iaaccintro' " " with " h:ident : tactic => do
-  let pmt ← liftMacroM <| PMTerm.parse (← `(pmTerm| $h:ident))
-  ProofModeM.runTactic λ mvar g => do
-    let { prop, hyps, goal, .. } := g
-    let goal ← instantiateMVars goal
-    let_expr atomicAcc _ _ _ A B Eo Ei α P β Φ := goal |
-      throwError "iaaccintro': goal is not an atomic accessor"
-    let ⟨_, hyps', p, out, Hsel⟩ ← iHave hyps pmt false
-    unless p.isConstOf ``false do
-      throwError "iaaccintro': selected hypothesis must be spatial"
-    /- The witness may be a packed tuple.  A single metavariable cannot be
-    unified against `auUncurry … ?x`, because that has to pattern-match its
-    argument and a metavariable matches nothing -- so build the pair explicitly
-    when a flat witness fails.  Packing is right-nested, so peeling one
-    component leaves the same problem: recurse. -/
-    let rec packedWitness (T : Expr) : MetaM (Option Expr) := do
-      let x ← mkFreshExprMVar T
-      if ← isDefEq (mkApp α x) out then return some x
-      let Twh ← whnf T
-      let_expr Prod T₁ T₂ := Twh | return none
-      let a ← mkFreshExprMVar T₁
-      let b ← mkFreshExprMVar T₂
-      let xp ← mkAppM ``Prod.mk #[a, b]
-      if ← isDefEq (mkApp α xp) out then return some xp
-      /- The right component is itself packed when there are three or more
-      binders; splitting it is the same step again. -/
-      let Twh₂ ← whnf T₂
-      let_expr Prod T₂₁ T₂₂ := Twh₂ | return none
-      let b₁ ← mkFreshExprMVar T₂₁
-      let b₂ ← mkFreshExprMVar T₂₂
-      let bp ← mkAppM ``Prod.mk #[b₁, b₂]
-      let xp₂ ← mkAppM ``Prod.mk #[a, bp]
-      if ← isDefEq (mkApp α xp₂) out then return some xp₂ else return none
-    let some x ← packedWitness A |
-      throwError "iaaccintro': selected hypothesis does not match the atomic precondition"
-    /- A binder group the precondition ignores -- an empty group, which the
-    notation encodes as `Unit` -- is not determined by matching, so its
-    component of the witness comes back unassigned.  Nothing downstream can
-    ever determine it either, and it would surface much later as a stray
-    `⊢ Unit` obligation attached to whichever block happens to close last.
-    There is exactly one inhabitant, so fill it in here. -/
-    for mvarId in ← getMVars x do
-      unless ← mvarId.isAssigned do
-        if ← isDefEq (← mvarId.getType) (mkConst ``Unit) then
-          mvarId.assign (mkConst ``Unit.unit)
-    let x ← instantiateMVars x
-    let some Eiq ← checkTypeQ Ei q(CoPset) |
-      throwError "iaaccintro': malformed atomic accessor inner mask"
-    let some Eoq ← checkTypeQ Eo q(CoPset) |
-      throwError "iaaccintro': malformed atomic accessor outer mask"
-    let Hsub : Q($Eiq ⊆ $Eoq) ← mkFreshExprSyntheticOpaqueMVar q($Eiq ⊆ $Eoq)
-    let sideGoals ← evalTacticAt
-      (← `(tactic| first | exact LawfulSet.empty_subset | assumption | trivial))
-      Hsub.mvarId!
-    for sideGoal in sideGoals do
-      addMVarGoal sideGoal
-    let αx := mkApp α x
-    let fupdP ← mkAppM ``FUpd.fupd #[Eo, Eo, P]
-    let abortGoal ← mkAppM ``BIBase.wand #[αx, fupdP]
-    let commitGoal ← withLocalDeclD `y B fun y => do
-      let βxy := mkApp2 β x y
-      let Φxy := mkApp2 Φ x y
-      let fupdΦ ← mkAppM ``FUpd.fupd #[Eo, Eo, Φxy]
-      let body ← mkAppM ``BIBase.wand #[βxy, fupdΦ]
-      let lam ← mkLambdaFVars #[y] body
-      mkAppM ``BIBase.forall #[lam]
-    let some abortGoal ← checkTypeQ abortGoal prop |
-      throwError "iaaccintro': internal error, malformed abort subgoal"
-    let some commitGoal ← checkTypeQ commitGoal prop |
-      throwError "iaaccintro': internal error, malformed commit subgoal"
-    let Habort ← addBIGoal hyps' abortGoal
-    let Hcommit ← addBIGoal hyps' commitGoal
-    let pf ← mkAppM ``tacAaccIntro #[α, β, Φ, P, Eo, Ei, x, Hsub, Hsel, Habort, Hcommit]
-    mvar.assign pf
+/- The packed-witness `iaaccintro` that used to live here now *is* `iaaccintro`,
+in `Iris/BI/Lib/Atomic.lean`: the version defined there could only match a
+hypothesis that was syntactically `α` applied to one argument, which no
+multi-binder triple ever produces, so it was unusable and the two have been
+merged. -/
 
 /-- Cast lemma used by `iunfold`: from a definitional equality `ty = ty'`, produce the
 persistent replacement wand needed by `Hyps.replace`. -/
